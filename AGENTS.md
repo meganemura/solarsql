@@ -9,11 +9,14 @@ It is designed for a reader that starts from an empty context: a coding agent fi
 
 The shape, in one paragraph.
 A module owns its tables and shows other modules one public file.
-The schema is SQLite DDL in a tagged template.
-Queries are SQL in tagged templates, listed in a named catalog.
+The schema is SQLite DDL in a string literal.
+Queries are SQL in string literals with named parameters, listed in a named catalog.
 Commands are verbs on a noun, and a command is a plan: a list of statements and asserts that runs as one D1 batch or one Durable Object transaction.
 Rows are plain values with no methods and no callbacks.
 Types come from the real engine at build time, and a stale type fails to compile.
+
+The library is in `src/`: `index.ts` (the API), `d1.ts` and `durable.ts` (the adapters), `build/` (the CLI, the scanner, the engine facts, the type generator, the migration diff), and `runtime/plan.ts` (what the build and the adapters share).
+The example project in `example/` is the one the tests run.
 
 The design records live in `docs/` as ADRs.
 Read them before you change the shape.
@@ -36,8 +39,10 @@ If you want to cite an internal document, write its substance in place instead.
 
 ## Commands
 
-- `npm test` runs every test with the Node test runner. Three suites start Miniflare, and the run takes about 1.5 seconds.
-- `npm run typecheck` runs `tsc --noEmit` over `spike/` and `test/`.
-- `node spike/<file>.ts` runs one experiment and prints the measurements that `docs/v0-measurements.md` cites.
+- `npm test` runs every test with the Node test runner. Miniflare, `tsc` in a child process, and `npm pack` take part, and the run takes about three seconds.
+- `npm run typecheck` runs `tsc --noEmit` over `src/`, `test/`, `example/`, and `spike/`.
+- `npm run build` emits `dist/` from `src/`. Only the pack test needs it.
+- `node src/build/cli.ts build example/solarsql.config.ts` builds the example from the source.
+- `node spike/<file>.ts` runs one experiment and prints the measurements that `docs/v0-measurements.md` and `docs/v1-measurements.md` cite.
 
-The `spike/` directory holds the v0 experiments. They are evidence for the ADRs. The library code starts in a later version.
+The `spike/` directory holds the experiments. They are evidence for the ADRs.

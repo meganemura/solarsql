@@ -31,8 +31,15 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0018](adr/0018-primary-keys-are-not-null.md) | A primary key column is NOT NULL |
 | [0019](adr/0019-table-rebuild-order.md) | A table rebuild copies rows through a side table |
 | [0020](adr/0020-no-sql-parser.md) | No SQL parser: a scanner and engine probes |
+| [0021](adr/0021-sql-is-a-string-literal.md) | SQL is a plain string literal (supersedes the template form of 0004) |
+| [0022](adr/0022-named-parameters-bound-by-position.md) | Named parameters, bound by position |
+| [0023](adr/0023-command-result-is-a-value.md) | A command result is a value, and an assert failure is one of its cases |
+| [0024](adr/0024-package-ships-source-and-dist.md) | The package ships the source and the compiled output |
+| [0025](adr/0025-generated-file-per-module.md) | One generated file per module, committed |
+| [0026](adr/0026-migration-on-demand.md) | The build checks migrations, a separate command writes one |
+| [0027](adr/0027-boundary-scope.md) | What the boundary check sees |
 
 ## Measurements
 
-[v0-measurements.md](v0-measurements.md) records the experiments that the ADRs cite.
+[v0-measurements.md](v0-measurements.md) and [v1-measurements.md](v1-measurements.md) record the experiments that the ADRs cite.
 Each entry has the command, the output, and the conclusion.
