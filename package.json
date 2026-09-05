@@ -5,11 +5,35 @@
   "license": "MIT",
   "author": "meganemura",
   "type": "module",
+  "engines": {
+    "node": ">=24.10.0"
+  },
   "files": [
+    "src",
+    "dist",
     "README.md",
     "LICENSE"
   ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./d1": {
+      "types": "./dist/d1.d.ts",
+      "default": "./dist/d1.js"
+    },
+    "./durable": {
+      "types": "./dist/durable.d.ts",
+      "default": "./dist/durable.js"
+    }
+  },
+  "bin": {
+    "solarsql": "./dist/build/cli.js"
+  },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
     "test": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit"
   },
