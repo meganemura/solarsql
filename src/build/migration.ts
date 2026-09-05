@@ -1,0 +1,245 @@
+// Responsibility: the statements that take the current schema to the
+// declared schema. The current schema is the result of the migration files
+// applied in order. The declared schema is the DDL of every module plus the
+// guard table. Both live in node:sqlite, and the engine decides whether a
+// cheap ALTER is enough: the candidate runs on a scratch database and is
+// kept only when the scratch shape equals the declared shape.
+// Boundary: no file system. build.ts reads and writes the files. Views are
+// out of scope; tables, indexes, and triggers are diffed.
+import { DatabaseSync } from "node:sqlite";
+import { definitions, normalize, quoteIdent, splitStatements } from "./scan.ts";
+
+export type Column = { name: string; type: string; notnull: boolean; dflt: string | null; pk: number; def: string };
+export type ForeignKey = { table: string; from: string; to: string; onUpdate: string; onDelete: string };
+export type Table = { name: string; sql: string; columns: Column[]; foreignKeys: ForeignKey[]; constraints: string[]; withoutRowid: boolean };
+export type Index = { name: string; table: string; sql: string };
+export type Trigger = { name: string; table: string; sql: string };
+export type Schema = { tables: Map<string, Table>; indexes: Map<string, Index>; triggers: Map<string, Trigger> };
+export type Rename = { table: string; from: string; to: string };
+export type Plan = { kind: "ok"; statements: string[] } | { kind: "blocked"; reason: string };
+
+export function open(statements: readonly string[]): DatabaseSync {
+  const db = new DatabaseSync(":memory:");
+  for (const s of statements) db.exec(s);
+  return db;
+}
+
+// The schema after the migration files, applied in order, one transaction
+// per file, the way wrangler applies them.
+export function applied(files: readonly string[]): DatabaseSync {
+  const db = new DatabaseSync(":memory:");
+  for (const file of files) {
+    db.exec("begin");
+    for (const s of splitStatements(file)) db.exec(s);
+    db.exec("commit");
+  }
+  return db;
+}
+
+export function introspect(db: DatabaseSync): Schema {
+  const tables = new Map<string, Table>();
+  const indexes = new Map<string, Index>();
+  const triggers = new Map<string, Trigger>();
+  const rows = db
+    .prepare(`select type, name, tbl_name, sql from sqlite_schema where sql is not null and name not like 'sqlite_%' order by name`)
+    .all() as { type: string; name: string; tbl_name: string; sql: string }[];
+  for (const row of rows) {
+    if (row.type === "table") {
+      const defs = definitions(row.sql);
+      const columns = (db.prepare(`select name, type, "notnull" as nn, dflt_value, pk from pragma_table_xinfo(?) where hidden = 0`).all(row.name) as {
+        name: string;
+        type: string;
+        nn: number;
+        dflt_value: string | null;
+        pk: number;
+      }[]).map((c) => ({ name: c.name, type: c.type, notnull: c.nn === 1, dflt: c.dflt_value, pk: c.pk, def: defs?.columns.get(c.name) ?? "" }));
+      const foreignKeys = (db.prepare(`select "table", "from", "to", on_update, on_delete from pragma_foreign_key_list(?) order by id, seq`).all(row.name) as {
+        table: string;
+        from: string;
+        to: string;
+        on_update: string;
+        on_delete: string;
+      }[]).map((f) => ({ table: f.table, from: f.from, to: f.to, onUpdate: f.on_update, onDelete: f.on_delete }));
+      tables.set(row.name, {
+        name: row.name,
+        sql: row.sql,
+        columns,
+        foreignKeys,
+        constraints: defs?.constraints ?? [],
+        withoutRowid: /\bwithout\s+rowid\b/i.test(row.sql.slice(row.sql.lastIndexOf(")"))),
+      });
+    } else if (row.type === "index") {
+      indexes.set(row.name, { name: row.name, table: row.tbl_name, sql: row.sql });
+    } else if (row.type === "trigger") {
+      triggers.set(row.name, { name: row.name, table: row.tbl_name, sql: row.sql });
+    }
+  }
+  return { tables, indexes, triggers };
+}
+
+// A comparable value. Two schemas with equal shapes accept the same rows
+// and enforce the same constraints. The CREATE text of a table is not
+// compared, since ADD COLUMN and RENAME rewrite it in their own way.
+export function shape(schema: Schema): unknown {
+  return {
+    tables: [...schema.tables.values()].sort(byName).map(tableShape),
+    indexes: [...schema.indexes.values()].sort(byName).map((i) => ({ name: i.name, table: i.table, sql: normalize(i.sql) })),
+    triggers: [...schema.triggers.values()].sort(byName).map((t) => ({ name: t.name, table: t.table, sql: normalize(t.sql) })),
+  };
+}
+
+function byName(a: { name: string }, b: { name: string }): number {
+  return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+}
+
+function tableShape(t: Table): unknown {
+  return { name: t.name, columns: t.columns, foreignKeys: t.foreignKeys, constraints: [...t.constraints].sort(), withoutRowid: t.withoutRowid };
+}
+
+function same(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+// The declared CREATE TABLE under another name.
+function renamedCreate(sql: string, newName: string): string {
+  return sql.replace(/^(\s*create\s+table\s+(?:if\s+not\s+exists\s+)?)("(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]|[^\s(]+)/i, `$1${quoteIdent(newName)}`);
+}
+
+function tableStatements(current: Table, target: Table, renames: readonly Rename[], keptIndexes: readonly string[]): Plan & { rebuilt?: boolean } {
+  const statements: string[] = [];
+  const currentColumns = new Map(current.columns.map((c) => [c.name, c]));
+  for (const r of renames.filter((r) => r.table === current.name)) {
+    const from = currentColumns.get(r.from);
+    if (!from || currentColumns.has(r.to) || !target.columns.some((c) => c.name === r.to)) {
+      return { kind: "blocked", reason: `table ${current.name}: rename ${r.from} -> ${r.to} does not match the schemas` };
+    }
+    statements.push(`alter table ${quoteIdent(current.name)} rename column ${quoteIdent(r.from)} to ${quoteIdent(r.to)}`);
+    currentColumns.delete(r.from);
+    currentColumns.set(r.to, { ...from, name: r.to });
+  }
+  const targetNames = new Set(target.columns.map((c) => c.name));
+  const removed = [...currentColumns.keys()].filter((n) => !targetNames.has(n));
+  const added = target.columns.filter((c) => !currentColumns.has(c.name)).map((c) => c.name);
+  if (removed.length > 0 && added.length > 0) {
+    return {
+      kind: "blocked",
+      reason:
+        `table ${current.name}: columns [${removed.join(", ")}] removed and [${added.join(", ")}] added in one change. ` +
+        `Declare a rename if the data must move, or split the change into two migrations.`,
+    };
+  }
+  // A migration runs on databases with rows the generator cannot see. A new
+  // NOT NULL column without a default has no value for those rows.
+  for (const n of added) {
+    const col = target.columns.find((c) => c.name === n)!;
+    if (col.notnull && col.dflt === null) {
+      return {
+        kind: "blocked",
+        reason: `table ${current.name}: new column ${n} is NOT NULL without a default. Existing rows have no value for it. Add a default or allow null.`,
+      };
+    }
+  }
+
+  // Candidate: the cheap ALTERs. The engine judges them on a scratch copy
+  // that carries the indexes the migration keeps, because DROP COLUMN fails
+  // on an indexed column there as it would in production.
+  const candidate = [...statements];
+  for (const n of removed) candidate.push(`alter table ${quoteIdent(current.name)} drop column ${quoteIdent(n)}`);
+  for (const n of added) candidate.push(`alter table ${quoteIdent(current.name)} add column ${target.columns.find((c) => c.name === n)!.def}`);
+  const scratch = open([current.sql, ...keptIndexes]);
+  try {
+    for (const s of candidate) scratch.exec(s);
+    const after = introspect(scratch).tables.get(current.name)!;
+    if (same(tableShape(after), tableShape(target))) return { kind: "ok", statements: candidate };
+  } catch {
+    // The engine refused the cheap path. Rebuild below.
+  } finally {
+    scratch.close();
+  }
+
+  // Rebuild. Only this order commits inside one transaction when the table
+  // is a foreign-key parent: the rows must re-enter under the final name so
+  // the deferred foreign-key counter returns to zero.
+  const common = target.columns.map((c) => c.name).filter((n) => currentColumns.has(n)).map(quoteIdent).join(", ");
+  const name = quoteIdent(current.name);
+  const fresh = quoteIdent(`_solarsql_new_${current.name}`);
+  const copy = quoteIdent(`_solarsql_copy_${current.name}`);
+  return {
+    kind: "ok",
+    rebuilt: true,
+    statements: [
+      ...statements,
+      renamedCreate(target.sql, `_solarsql_new_${current.name}`),
+      `create table ${copy} as select ${common} from ${name}`,
+      `drop table ${name}`,
+      `alter table ${fresh} rename to ${name}`,
+      `insert into ${name} (${common}) select ${common} from ${copy}`,
+      `drop table ${copy}`,
+    ],
+  };
+}
+
+export function diff(current: Schema, target: Schema, renames: readonly Rename[] = []): Plan {
+  // Order: drop triggers and indexes, drop tables, change tables, create
+  // indexes and triggers. An index that names a column must go before the
+  // column does. An index or trigger on a rebuilt table disappears with it.
+  const dropFirst: string[] = [];
+  const dropTables: string[] = [];
+  const changeTables: string[] = [];
+  const createLast: string[] = [];
+  const rebuilt = new Set<string>();
+  let needsDefer = false;
+
+  const keptIndexes = new Map<string, string[]>();
+  const dropIndexOf = new Map<string, string>();
+  for (const [name, index] of current.indexes) {
+    const t = target.indexes.get(name);
+    if (!t || normalize(t.sql) !== normalize(index.sql)) dropIndexOf.set(name, index.table);
+    else keptIndexes.set(index.table, [...(keptIndexes.get(index.table) ?? []), index.sql]);
+  }
+  const dropTriggerOf = new Map<string, string>();
+  for (const [name, trigger] of current.triggers) {
+    const t = target.triggers.get(name);
+    if (!t || normalize(t.sql) !== normalize(trigger.sql)) dropTriggerOf.set(name, trigger.table);
+  }
+  for (const name of current.tables.keys()) {
+    if (!target.tables.has(name)) dropTables.push(`drop table ${quoteIdent(name)}`);
+  }
+  for (const [name, target_] of target.tables) {
+    const current_ = current.tables.get(name);
+    if (!current_) {
+      changeTables.push(target_.sql);
+      continue;
+    }
+    if (same(tableShape(current_), tableShape(target_))) continue;
+    const plan = tableStatements(current_, target_, renames, keptIndexes.get(name) ?? []);
+    if (plan.kind === "blocked") return plan;
+    if (plan.rebuilt) {
+      rebuilt.add(name);
+      needsDefer = true;
+    }
+    changeTables.push(...plan.statements);
+  }
+  const gone = (table: string) => rebuilt.has(table) || !target.tables.has(table);
+  for (const [name, table] of dropTriggerOf) if (!gone(table)) dropFirst.push(`drop trigger ${quoteIdent(name)}`);
+  for (const [name, table] of dropIndexOf) if (!gone(table)) dropFirst.push(`drop index ${quoteIdent(name)}`);
+  for (const [name, index] of target.indexes) {
+    const c = current.indexes.get(name);
+    if (rebuilt.has(index.table) || !c || normalize(c.sql) !== normalize(index.sql)) createLast.push(index.sql);
+  }
+  for (const [name, trigger] of target.triggers) {
+    const c = current.triggers.get(name);
+    if (rebuilt.has(trigger.table) || !c || normalize(c.sql) !== normalize(trigger.sql)) createLast.push(trigger.sql);
+  }
+  const statements = [...dropFirst, ...dropTables, ...changeTables, ...createLast];
+  if (needsDefer) statements.unshift(`pragma defer_foreign_keys = on`);
+  return { kind: "ok", statements };
+}
+
+// wrangler applies `migrations/<NNNN>_<name>.sql` in name order and records
+// each file in d1_migrations. The file holds statements separated by ';'.
+export function render(sequence: number, name: string, statements: readonly string[]): { filename: string; sql: string } {
+  const filename = `${String(sequence).padStart(4, "0")}_${name}.sql`;
+  const sql = `-- Migration ${filename}. Generated by solarsql from the declared schema.\n` + statements.map((s) => `${s.trim()};`).join("\n") + "\n";
+  return { filename, sql };
+}

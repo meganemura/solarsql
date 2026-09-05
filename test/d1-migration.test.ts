@@ -5,7 +5,8 @@
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { D1Harness, type WorkerOk } from "./d1.ts";
-import { applied, diff, introspect, open, render, splitStatements } from "../spike/migration.ts";
+import { applied, diff, introspect, open, render } from "../src/build/migration.ts";
+import { splitStatements } from "../src/build/scan.ts";
 
 const v1 = [
   `create table customers (id text primary key not null, name text not null)`,

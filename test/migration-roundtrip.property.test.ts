@@ -6,7 +6,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
-import { diff, introspect, open, shape, splitStatements, render } from "../spike/migration.ts";
+import { diff, introspect, open, shape, render } from "../src/build/migration.ts";
+import { splitStatements } from "../src/build/scan.ts";
 
 type ColumnType = "text" | "integer" | "real";
 type Column = { name: string; type: ColumnType; notnull: boolean; check: boolean };
@@ -29,7 +30,10 @@ function columnDdl(c: Column): string {
 }
 
 function ddl(s: Schema): string[] {
-  const out: string[] = [];
+  const out: string[] = [
+    `create table guard (name text not null, ok integer not null)`,
+    `create trigger guard_check before insert on guard when new.ok = 0 begin select raise(abort, new.name); end`,
+  ];
   for (const t of s.tables) {
     const cols = [`id text primary key not null`];
     if (t.name === "b" && t.fkToA) cols.push(`a_id text not null references a(id)`);
