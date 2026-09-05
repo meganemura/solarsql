@@ -1,0 +1,90 @@
+diff -r -u --exclude=node_modules --exclude=.runs-*.log --exclude=package-lock.json <starters>/solarsql/modules/orders/commands.ts <runs>/solarsql-3/modules/orders/commands.ts
+--- <starters>/solarsql/modules/orders/commands.ts	2026-09-06 08:03:18
++++ <runs>/solarsql-3/modules/orders/commands.ts	2026-09-06 08:08:44
+@@ -26,4 +26,27 @@
+     plan: ["insert into inventory (sku, qty) values (:sku, :qty) on conflict (sku) do update set qty = excluded.qty"],
+     returns: "select sku, qty from inventory where sku = :sku",
+   },
++  cancel: {
++    plan: [
++      assert("not_confirmed", "exists (select 1 from orders where id = :id and status = 'confirmed')"),
++      // The cap check runs before the restock, grouped by sku, because two
++      // lines of the same order can share a sku.
++      assert(
++        "restock_failed",
++        `not exists (
++          select 1
++          from (select sku, sum(qty) as qty from order_lines where order_id = :id group by sku) restock
++          join inventory on inventory.sku = restock.sku
++          where inventory.qty + restock.qty > 100
++        )`,
++      ),
++      "update orders set status = 'cancelled' where id = :id",
++      `update inventory
++       set qty = qty + (
++         select coalesce(sum(qty), 0) from order_lines where order_lines.sku = inventory.sku and order_lines.order_id = :id
++       )
++       where sku in (select sku from order_lines where order_id = :id)`,
++    ],
++    returns: "select id, customer_id, status, note from orders where id = :id",
++  },
+ });
+diff -r -u --exclude=node_modules --exclude=.runs-*.log --exclude=package-lock.json <starters>/solarsql/modules/orders/solarsql.generated.ts <runs>/solarsql-3/modules/orders/solarsql.generated.ts
+--- <starters>/solarsql/modules/orders/solarsql.generated.ts	2026-09-06 08:03:24
++++ <runs>/solarsql-3/modules/orders/solarsql.generated.ts	2026-09-06 08:08:59
+@@ -67,6 +67,22 @@
+     params: { sku: InventoryId };
+     row: { sku: InventoryId; qty: number };
+   };
++  "exists (select 1 from orders where id = :id and status = 'confirmed')": {
++    params: { id: OrdersId };
++    row: {};
++  };
++  "not exists (\n          select 1\n          from (select sku, sum(qty) as qty from order_lines where order_id = :id group by sku) restock\n          join inventory on inventory.sku = restock.sku\n          where inventory.qty + restock.qty > 100\n        )": {
++    params: { id: OrdersId };
++    row: {};
++  };
++  "update orders set status = 'cancelled' where id = :id": {
++    params: { id: OrdersId };
++    row: {};
++  };
++  "update inventory\n       set qty = qty + (\n         select coalesce(sum(qty), 0) from order_lines where order_lines.sku = inventory.sku and order_lines.order_id = :id\n       )\n       where sku in (select sku from order_lines where order_id = :id)": {
++    params: { id: OrdersId };
++    row: {};
++  };
+ };
+ 
+ export const generated: Meta<Generated> = {
+@@ -83,4 +99,8 @@
+   "update orders set note = :note where id = :id": { params: ["note", "id"], encode: [], json: [] },
+   "insert into inventory (sku, qty) values (:sku, :qty) on conflict (sku) do update set qty = excluded.qty": { params: ["sku", "qty"], encode: [], json: [] },
+   "select sku, qty from inventory where sku = :sku": { params: ["sku"], encode: [], json: [] },
++  "exists (select 1 from orders where id = :id and status = 'confirmed')": { params: ["id"], encode: [], json: [] },
++  "not exists (\n          select 1\n          from (select sku, sum(qty) as qty from order_lines where order_id = :id group by sku) restock\n          join inventory on inventory.sku = restock.sku\n          where inventory.qty + restock.qty > 100\n        )": { params: ["id"], encode: [], json: [] },
++  "update orders set status = 'cancelled' where id = :id": { params: ["id"], encode: [], json: [] },
++  "update inventory\n       set qty = qty + (\n         select coalesce(sum(qty), 0) from order_lines where order_lines.sku = inventory.sku and order_lines.order_id = :id\n       )\n       where sku in (select sku from order_lines where order_id = :id)": { params: ["id"], encode: [], json: [] },
+ };
+Only in <runs>/solarsql-3/test: cancel.test.ts
+diff -r -u --exclude=node_modules --exclude=.runs-*.log --exclude=package-lock.json <starters>/solarsql/worker.ts <runs>/solarsql-3/worker.ts
+--- <starters>/solarsql/worker.ts	2026-09-06 08:03:18
++++ <runs>/solarsql-3/worker.ts	2026-09-06 08:08:53
+@@ -12,6 +12,7 @@
+   | { step: "createCustomer"; id: string; name: string; email: string }
+   | { step: "placeOrder"; id: string; customer_id: string; lines: { id: string; sku: string; qty: number; price: number }[] }
+   | { step: "confirm"; id: string }
++  | { step: "cancel"; id: string }
+   | { step: "annotate"; id: string; note: string | null }
+   | { step: "order"; id: string }
+   | { step: "ordersOf"; customer_id: string }
+@@ -38,6 +39,11 @@
+     }
+     case "confirm": {
+       const r = await db.run(orderCommands.confirm, { id: s.id as OrdersId });
++      if (r.ok) return r.rows[0];
++      return { refused: r.kind === "assert" ? r.assert : r.kind };
++    }
++    case "cancel": {
++      const r = await db.run(orderCommands.cancel, { id: s.id as OrdersId });
+       if (r.ok) return r.rows[0];
+       return { refused: r.kind === "assert" ? r.assert : r.kind };
+     }

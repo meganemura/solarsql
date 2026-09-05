@@ -1,0 +1,17 @@
+(node:44031) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+▶ three cancels at once
+  ✔ round 1: the stock gains the lines once, and one cancel succeeds (521.690708ms)
+  ✔ round 2: the stock gains the lines once, and one cancel succeeds (333.011209ms)
+  ✔ round 3: the stock gains the lines once, and one cancel succeeds (319.635041ms)
+  ✔ round 4: the stock gains the lines once, and one cancel succeeds (285.705791ms)
+  ✔ round 5: the stock gains the lines once, and one cancel succeeds (333.065333ms)
+✔ three cancels at once (1820.852208ms)
+ℹ tests 5
+ℹ suites 1
+ℹ pass 5
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2256.023084

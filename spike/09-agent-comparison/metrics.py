@@ -22,7 +22,7 @@ import re
 import sys
 
 work, tdir = sys.argv[1], sys.argv[2]
-runs_dir = os.path.join(work, "runs")
+runs_dir = os.path.realpath(os.path.join(work, "runs"))
 runs = sorted(d for d in os.listdir(runs_dir) if os.path.isdir(os.path.join(runs_dir, d)))
 
 READERS = ("cat", "sed", "head", "tail", "grep", "less", "more")
@@ -104,7 +104,9 @@ for name in os.listdir(tdir):
         continue
     events = load(os.path.join(tdir, name))
     d = run_dir_of(events)
-    if d:
+    # Keyed by the full run directory, so the transcripts of another
+    # experiment in the same folder stay apart.
+    if d and os.path.dirname(d) == os.path.realpath(runs_dir):
         transcripts[os.path.basename(d)] = (name, events)
 
 for run in runs:

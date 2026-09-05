@@ -1,0 +1,18 @@
+(node:18400) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+▶ cancel with restock
+  ✔ 1 a confirmed order cancels, and its lines go back to stock (12.870209ms)
+  ✔ 2 a second cancel is refused and restocks nothing (8.924166ms)
+  ✔ 3 a draft order is refused, stays draft, and restocks nothing (13.3645ms)
+  ✔ 4 an unknown order is refused (3.796167ms)
+  ✔ 5 a restock over the cap is refused, and the order stays confirmed (11.802459ms)
+  ✔ 6 the same order cancels once the shelf has room (10.080375ms)
+✔ cancel with restock (434.982167ms)
+ℹ tests 6
+ℹ suites 1
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 866.362166

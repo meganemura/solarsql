@@ -8,6 +8,18 @@ packed tarball; the other uses `drizzle-orm@0.45.2` with the D1 driver.
 A fresh agent gets `task.md` with the path of its own copy, adds a `cancel`
 step, and stops. Hidden tests, the transcript, and the diff are read after.
 
+Experiment 2 uses the same kit with `exp2/`: both starters gain an
+inventory table with a capped qty, and the task is a cancel that also
+restocks the lines. `build-starters.sh <work dir> 3 2` builds it, and
+`collect.sh <work dir> 2` scores it with `exp2/hidden.test.ts`.
+`exp2/race.test.ts` is a post-hoc test that was written after the runs
+were read; `results/2026-09-06-exp2/*.race.txt` holds its output. The file
+`power-check-drizzle-1-with-50ms-pause.race.txt` is the same test on a copy
+of the drizzle-1 run with `await new Promise((r) => setTimeout(r, 50))`
+inserted after its read of the order's status, and
+`power-check-solarsql-1-with-50ms-pause.race.txt` is the same pause in a
+copy of the solarsql-1 run, before its one `db.run`.
+
 ## Files
 
 - `build-starters.sh [work dir] [runs per arm]` builds both starters in a
@@ -22,6 +34,8 @@ step, and stops. Hidden tests, the transcript, and the diff are read after.
   build and check runs, and tokens from the agent transcripts.
 - `results/<date>/` holds the metrics, the diffs, and the hidden test output
   of one execution.
+- `exp2/` holds what experiment 2 adds: the starter files with the inventory
+  table, its visible test, `task.md`, `hidden.test.ts`, and `race.test.ts`.
 
 ## Running the agents
 

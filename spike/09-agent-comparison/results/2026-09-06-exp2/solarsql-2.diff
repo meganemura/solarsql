@@ -1,0 +1,97 @@
+diff -r -u --exclude=node_modules --exclude=.runs-*.log --exclude=package-lock.json <starters>/solarsql/modules/orders/commands.ts <runs>/solarsql-2/modules/orders/commands.ts
+--- <starters>/solarsql/modules/orders/commands.ts	2026-09-06 08:03:18
++++ <runs>/solarsql-2/modules/orders/commands.ts	2026-09-06 08:08:12
+@@ -22,6 +22,32 @@
+     plan: ["update orders set note = :note where id = :id"],
+     returns: "select id, customer_id, status, note from orders where id = :id",
+   },
++  cancel: {
++    plan: [
++      // Only a confirmed order can be cancelled: draft, cancelled, and
++      // unknown orders all fail this assert the same way.
++      assert("not_confirmed", "exists (select 1 from orders where id = :id and status = 'confirmed')"),
++      // Checked before the restock runs, against the sum per sku (an order
++      // can list the same sku on more than one line), so a cap breach
++      // leaves the order confirmed and the stock untouched.
++      assert(
++        "restock_failed",
++        `not exists (
++          select 1
++          from (select sku, sum(qty) as add_qty from order_lines where order_id = :id group by sku) as restock
++          join inventory on inventory.sku = restock.sku
++          where inventory.qty + restock.add_qty > 100
++        )`,
++      ),
++      `update inventory
++       set qty = qty + (
++         select coalesce(sum(qty), 0) from order_lines where order_lines.order_id = :id and order_lines.sku = inventory.sku
++       )
++       where sku in (select sku from order_lines where order_id = :id)`,
++      "update orders set status = 'cancelled' where id = :id and status = 'confirmed'",
++    ],
++    returns: "select id, customer_id, status, note from orders where id = :id",
++  },
+   setStock: {
+     plan: ["insert into inventory (sku, qty) values (:sku, :qty) on conflict (sku) do update set qty = excluded.qty"],
+     returns: "select sku, qty from inventory where sku = :sku",
+diff -r -u --exclude=node_modules --exclude=.runs-*.log --exclude=package-lock.json <starters>/solarsql/modules/orders/solarsql.generated.ts <runs>/solarsql-2/modules/orders/solarsql.generated.ts
+--- <starters>/solarsql/modules/orders/solarsql.generated.ts	2026-09-06 08:03:24
++++ <runs>/solarsql-2/modules/orders/solarsql.generated.ts	2026-09-06 08:08:27
+@@ -59,6 +59,22 @@
+     params: { note: string | null; id: OrdersId };
+     row: {};
+   };
++  "exists (select 1 from orders where id = :id and status = 'confirmed')": {
++    params: { id: OrdersId };
++    row: {};
++  };
++  "not exists (\n          select 1\n          from (select sku, sum(qty) as add_qty from order_lines where order_id = :id group by sku) as restock\n          join inventory on inventory.sku = restock.sku\n          where inventory.qty + restock.add_qty > 100\n        )": {
++    params: { id: OrdersId };
++    row: {};
++  };
++  "update inventory\n       set qty = qty + (\n         select coalesce(sum(qty), 0) from order_lines where order_lines.order_id = :id and order_lines.sku = inventory.sku\n       )\n       where sku in (select sku from order_lines where order_id = :id)": {
++    params: { id: OrdersId };
++    row: {};
++  };
++  "update orders set status = 'cancelled' where id = :id and status = 'confirmed'": {
++    params: { id: OrdersId };
++    row: {};
++  };
+   "insert into inventory (sku, qty) values (:sku, :qty) on conflict (sku) do update set qty = excluded.qty": {
+     params: { sku: InventoryId; qty: number };
+     row: {};
+@@ -81,6 +97,10 @@
+   "update orders set status = 'confirmed' where id = :id and status = 'draft'": { params: ["id"], encode: [], json: [] },
+   "changes() = 1": { params: [], encode: [], json: [] },
+   "update orders set note = :note where id = :id": { params: ["note", "id"], encode: [], json: [] },
++  "exists (select 1 from orders where id = :id and status = 'confirmed')": { params: ["id"], encode: [], json: [] },
++  "not exists (\n          select 1\n          from (select sku, sum(qty) as add_qty from order_lines where order_id = :id group by sku) as restock\n          join inventory on inventory.sku = restock.sku\n          where inventory.qty + restock.add_qty > 100\n        )": { params: ["id"], encode: [], json: [] },
++  "update inventory\n       set qty = qty + (\n         select coalesce(sum(qty), 0) from order_lines where order_lines.order_id = :id and order_lines.sku = inventory.sku\n       )\n       where sku in (select sku from order_lines where order_id = :id)": { params: ["id"], encode: [], json: [] },
++  "update orders set status = 'cancelled' where id = :id and status = 'confirmed'": { params: ["id"], encode: [], json: [] },
+   "insert into inventory (sku, qty) values (:sku, :qty) on conflict (sku) do update set qty = excluded.qty": { params: ["sku", "qty"], encode: [], json: [] },
+   "select sku, qty from inventory where sku = :sku": { params: ["sku"], encode: [], json: [] },
+ };
+Only in <runs>/solarsql-2/test: cancel.test.ts
+diff -r -u --exclude=node_modules --exclude=.runs-*.log --exclude=package-lock.json <starters>/solarsql/worker.ts <runs>/solarsql-2/worker.ts
+--- <starters>/solarsql/worker.ts	2026-09-06 08:03:18
++++ <runs>/solarsql-2/worker.ts	2026-09-06 08:08:20
+@@ -12,6 +12,7 @@
+   | { step: "createCustomer"; id: string; name: string; email: string }
+   | { step: "placeOrder"; id: string; customer_id: string; lines: { id: string; sku: string; qty: number; price: number }[] }
+   | { step: "confirm"; id: string }
++  | { step: "cancel"; id: string }
+   | { step: "annotate"; id: string; note: string | null }
+   | { step: "order"; id: string }
+   | { step: "ordersOf"; customer_id: string }
+@@ -38,6 +39,11 @@
+     }
+     case "confirm": {
+       const r = await db.run(orderCommands.confirm, { id: s.id as OrdersId });
++      if (r.ok) return r.rows[0];
++      return { refused: r.kind === "assert" ? r.assert : r.kind };
++    }
++    case "cancel": {
++      const r = await db.run(orderCommands.cancel, { id: s.id as OrdersId });
+       if (r.ok) return r.rows[0];
+       return { refused: r.kind === "assert" ? r.assert : r.kind };
+     }

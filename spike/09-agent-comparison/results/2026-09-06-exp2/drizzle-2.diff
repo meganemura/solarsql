@@ -1,0 +1,53 @@
+Only in <runs>/drizzle-2/test: cancel.test.ts
+diff -r -u --exclude=node_modules --exclude=.runs-*.log --exclude=package-lock.json <starters>/drizzle/worker.ts <runs>/drizzle-2/worker.ts
+--- <starters>/drizzle/worker.ts	2026-09-06 08:03:24
++++ <runs>/drizzle-2/worker.ts	2026-09-06 08:11:29
+@@ -8,6 +8,7 @@
+   | { step: "createCustomer"; id: string; name: string; email: string }
+   | { step: "placeOrder"; id: string; customer_id: string; lines: { id: string; sku: string; qty: number; price: number }[] }
+   | { step: "confirm"; id: string }
++  | { step: "cancel"; id: string }
+   | { step: "annotate"; id: string; note: string | null }
+   | { step: "order"; id: string }
+   | { step: "ordersOf"; customer_id: string }
+@@ -54,6 +55,40 @@
+       if (row) return row;
+       const current = await db.select({ status: orders.status }).from(orders).where(eq(orders.id, s.id)).get();
+       return { refused: current?.status === "draft" ? "has_lines" : "was_draft" };
++    }
++    case "cancel": {
++      // This pre-check is what enforces "only a confirmed order": the
++      // restock statements below must not be built, let alone run, for an
++      // order this step will refuse. The status match repeated in the
++      // update's WHERE below is not itself the guard, since an update that
++      // matches zero rows is not an error and would not roll back the
++      // restocks in the same batch.
++      const order = await db.select({ status: orders.status }).from(orders).where(eq(orders.id, s.id)).get();
++      if (order?.status !== "confirmed") return { refused: "not_confirmed" };
++
++      const lines = await db
++        .select({ sku: orderLines.sku, qty: orderLines.qty })
++        .from(orderLines)
++        .where(eq(orderLines.order_id, s.id))
++        .orderBy(orderLines.id);
++      const cancelOrder = db
++        .update(orders)
++        .set({ status: "cancelled" })
++        .where(and(eq(orders.id, s.id), eq(orders.status, "confirmed")))
++        .returning(orderColumns);
++      const restock = lines.map((l) => db.update(inventory).set({ qty: sql`${inventory.qty} + ${l.qty}` }).where(eq(inventory.sku, l.sku)));
++
++      try {
++        // The 100 cap is a CHECK constraint on inventory: a restock that
++        // would break it throws, and one batch is one transaction, so the
++        // cancel and every restock in it roll back together.
++        const [rows] = await db.batch([cancelOrder, ...restock]);
++        return rows[0];
++      } catch (e) {
++        const cause = (e as Error & { cause?: Error }).cause;
++        if (cause?.message.includes("CHECK constraint failed")) return { refused: "restock_failed" };
++        throw e;
++      }
+     }
+     case "annotate": {
+       const [row] = await db.update(orders).set({ note: s.note }).where(eq(orders.id, s.id)).returning(orderColumns);

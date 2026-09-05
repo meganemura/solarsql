@@ -1,0 +1,100 @@
+diff -r -u --exclude=node_modules --exclude=.runs-*.log --exclude=package-lock.json <starters>/drizzle/test/visible.test.ts <runs>/drizzle-1/test/visible.test.ts
+--- <starters>/drizzle/test/visible.test.ts	2026-09-06 08:03:24
++++ <runs>/drizzle-1/test/visible.test.ts	2026-09-06 08:11:39
+@@ -98,4 +98,52 @@
+     assert.deepEqual(await value({ step: "stock", sku: "A" }), { sku: "A", qty: 12 });
+     assert.equal(await value({ step: "stock", sku: "B" }), null);
+   });
++
++  test("cancel a confirmed order: it returns its lines to stock", async () => {
++    await value({ step: "setStock", sku: "C", qty: 5 });
++    await value({ step: "setStock", sku: "D", qty: 20 });
++    await value({
++      step: "placeOrder",
++      id: "o3",
++      customer_id: "c1",
++      lines: [
++        { id: "l3", sku: "C", qty: 3, price: 2 },
++        { id: "l4", sku: "D", qty: 4, price: 1 },
++      ],
++    });
++    assert.deepEqual(await value({ step: "confirm", id: "o3" }), { id: "o3", customer_id: "c1", status: "confirmed", note: null });
++    assert.deepEqual(await value({ step: "cancel", id: "o3" }), { id: "o3", customer_id: "c1", status: "cancelled", note: null });
++    assert.deepEqual(await value({ step: "stock", sku: "C" }), { sku: "C", qty: 8 });
++    assert.deepEqual(await value({ step: "stock", sku: "D" }), { sku: "D", qty: 24 });
++  });
++
++  test("cancelling an already-cancelled order is refused, and stock does not move again", async () => {
++    assert.deepEqual(await value({ step: "cancel", id: "o3" }), { refused: "not_confirmed" });
++    assert.deepEqual(await value({ step: "stock", sku: "C" }), { sku: "C", qty: 8 });
++    assert.deepEqual(await value({ step: "stock", sku: "D" }), { sku: "D", qty: 24 });
++  });
++
++  test("a draft order with lines cannot be cancelled, and its stock does not move", async () => {
++    await value({ step: "setStock", sku: "E", qty: 5 });
++    await value({ step: "placeOrder", id: "o5", customer_id: "c1", lines: [{ id: "l6", sku: "E", qty: 2, price: 1 }] });
++    assert.deepEqual(await value({ step: "cancel", id: "o5" }), { refused: "not_confirmed" });
++    assert.deepEqual(await value({ step: "stock", sku: "E" }), { sku: "E", qty: 5 });
++  });
++
++  test("a draft order without lines cannot be cancelled", async () => {
++    assert.deepEqual(await value({ step: "cancel", id: "o2" }), { refused: "not_confirmed" });
++  });
++
++  test("an unknown order cannot be cancelled", async () => {
++    assert.deepEqual(await value({ step: "cancel", id: "nope" }), { refused: "not_confirmed" });
++  });
++
++  test("cancelling is refused when a restock would go over the cap, and nothing changes", async () => {
++    await value({ step: "setStock", sku: "F", qty: 99 });
++    await value({ step: "placeOrder", id: "o4", customer_id: "c1", lines: [{ id: "l7", sku: "F", qty: 2, price: 1 }] });
++    assert.deepEqual(await value({ step: "confirm", id: "o4" }), { id: "o4", customer_id: "c1", status: "confirmed", note: null });
++    assert.deepEqual(await value({ step: "cancel", id: "o4" }), { refused: "restock_failed" });
++    assert.deepEqual(await value({ step: "order", id: "o4" }), { id: "o4", status: "confirmed", lines: [{ id: "l7", sku: "F", qty: 2, price: 1 }] });
++    assert.deepEqual(await value({ step: "stock", sku: "F" }), { sku: "F", qty: 99 });
++  });
+ });
+diff -r -u --exclude=node_modules --exclude=.runs-*.log --exclude=package-lock.json <starters>/drizzle/worker.ts <runs>/drizzle-1/worker.ts
+--- <starters>/drizzle/worker.ts	2026-09-06 08:03:24
++++ <runs>/drizzle-1/worker.ts	2026-09-06 08:12:49
+@@ -8,6 +8,7 @@
+   | { step: "createCustomer"; id: string; name: string; email: string }
+   | { step: "placeOrder"; id: string; customer_id: string; lines: { id: string; sku: string; qty: number; price: number }[] }
+   | { step: "confirm"; id: string }
++  | { step: "cancel"; id: string }
+   | { step: "annotate"; id: string; note: string | null }
+   | { step: "order"; id: string }
+   | { step: "ordersOf"; customer_id: string }
+@@ -54,6 +55,32 @@
+       if (row) return row;
+       const current = await db.select({ status: orders.status }).from(orders).where(eq(orders.id, s.id)).get();
+       return { refused: current?.status === "draft" ? "has_lines" : "was_draft" };
++    }
++    case "cancel": {
++      // A D1 batch runs every statement regardless of what earlier ones
++      // matched, so a zero-row order update would not stop the restocks
++      // below. The pre-read decides eligibility before any write.
++      const found = await db.select({ status: orders.status }).from(orders).where(eq(orders.id, s.id)).get();
++      if (found?.status !== "confirmed") return { refused: "not_confirmed" };
++      const lines = await db.select({ sku: orderLines.sku, qty: orderLines.qty }).from(orderLines).where(eq(orderLines.order_id, s.id));
++      const cancelOrder = db
++        .update(orders)
++        .set({ status: "cancelled" })
++        .where(and(eq(orders.id, s.id), eq(orders.status, "confirmed")))
++        .returning(orderColumns);
++      // One update per line, each gaining that line's qty. The table's own
++      // check (qty <= 100) decides the cap: a violation throws, and the
++      // batch is one D1 transaction, so the order update rolls back with it.
++      const restocks = lines.map((l) => db.update(inventory).set({ qty: sql`${inventory.qty} + ${l.qty}` }).where(eq(inventory.sku, l.sku)));
++      try {
++        const [rows] = await db.batch([cancelOrder, ...restocks]);
++        return rows[0];
++      } catch (e) {
++        const err = e as Error & { cause?: Error };
++        const message = `${err.message} ${err.cause?.message ?? ""}`;
++        if (message.includes("CHECK constraint failed")) return { refused: "restock_failed" };
++        throw e;
++      }
+     }
+     case "annotate": {
+       const [row] = await db.update(orders).set({ note: s.note }).where(eq(orders.id, s.id)).returning(orderColumns);

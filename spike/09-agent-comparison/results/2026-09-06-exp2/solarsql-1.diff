@@ -1,0 +1,67 @@
+diff -r -u --exclude=node_modules --exclude=.runs-*.log --exclude=package-lock.json <starters>/solarsql/modules/orders/commands.ts <runs>/solarsql-1/modules/orders/commands.ts
+--- <starters>/solarsql/modules/orders/commands.ts	2026-09-06 08:03:18
++++ <runs>/solarsql-1/modules/orders/commands.ts	2026-09-06 08:07:55
+@@ -26,4 +26,14 @@
+     plan: ["insert into inventory (sku, qty) values (:sku, :qty) on conflict (sku) do update set qty = excluded.qty"],
+     returns: "select sku, qty from inventory where sku = :sku",
+   },
++  cancel: {
++    plan: [
++      "update orders set status = 'cancelled' where id = :id and status = 'confirmed'",
++      assert("not_confirmed", "changes() = 1"),
++      `update inventory
++       set qty = qty + (select coalesce(sum(order_lines.qty), 0) from order_lines where order_lines.order_id = :id and order_lines.sku = inventory.sku)
++       where sku in (select sku from order_lines where order_id = :id)`,
++    ],
++    returns: "select id, customer_id, status, note from orders where id = :id",
++  },
+ });
+diff -r -u --exclude=node_modules --exclude=.runs-*.log --exclude=package-lock.json <starters>/solarsql/modules/orders/solarsql.generated.ts <runs>/solarsql-1/modules/orders/solarsql.generated.ts
+--- <starters>/solarsql/modules/orders/solarsql.generated.ts	2026-09-06 08:03:24
++++ <runs>/solarsql-1/modules/orders/solarsql.generated.ts	2026-09-06 08:08:01
+@@ -67,6 +67,14 @@
+     params: { sku: InventoryId };
+     row: { sku: InventoryId; qty: number };
+   };
++  "update orders set status = 'cancelled' where id = :id and status = 'confirmed'": {
++    params: { id: OrdersId };
++    row: {};
++  };
++  "update inventory\n       set qty = qty + (select coalesce(sum(order_lines.qty), 0) from order_lines where order_lines.order_id = :id and order_lines.sku = inventory.sku)\n       where sku in (select sku from order_lines where order_id = :id)": {
++    params: { id: OrdersId };
++    row: {};
++  };
+ };
+ 
+ export const generated: Meta<Generated> = {
+@@ -83,4 +91,6 @@
+   "update orders set note = :note where id = :id": { params: ["note", "id"], encode: [], json: [] },
+   "insert into inventory (sku, qty) values (:sku, :qty) on conflict (sku) do update set qty = excluded.qty": { params: ["sku", "qty"], encode: [], json: [] },
+   "select sku, qty from inventory where sku = :sku": { params: ["sku"], encode: [], json: [] },
++  "update orders set status = 'cancelled' where id = :id and status = 'confirmed'": { params: ["id"], encode: [], json: [] },
++  "update inventory\n       set qty = qty + (select coalesce(sum(order_lines.qty), 0) from order_lines where order_lines.order_id = :id and order_lines.sku = inventory.sku)\n       where sku in (select sku from order_lines where order_id = :id)": { params: ["id"], encode: [], json: [] },
+ };
+Only in <runs>/solarsql-1/test: cancel.test.ts
+diff -r -u --exclude=node_modules --exclude=.runs-*.log --exclude=package-lock.json <starters>/solarsql/worker.ts <runs>/solarsql-1/worker.ts
+--- <starters>/solarsql/worker.ts	2026-09-06 08:03:18
++++ <runs>/solarsql-1/worker.ts	2026-09-06 08:08:15
+@@ -12,6 +12,7 @@
+   | { step: "createCustomer"; id: string; name: string; email: string }
+   | { step: "placeOrder"; id: string; customer_id: string; lines: { id: string; sku: string; qty: number; price: number }[] }
+   | { step: "confirm"; id: string }
++  | { step: "cancel"; id: string }
+   | { step: "annotate"; id: string; note: string | null }
+   | { step: "order"; id: string }
+   | { step: "ordersOf"; customer_id: string }
+@@ -40,6 +41,11 @@
+       const r = await db.run(orderCommands.confirm, { id: s.id as OrdersId });
+       if (r.ok) return r.rows[0];
+       return { refused: r.kind === "assert" ? r.assert : r.kind };
++    }
++    case "cancel": {
++      const r = await db.run(orderCommands.cancel, { id: s.id as OrdersId });
++      if (r.ok) return r.rows[0];
++      return { refused: r.kind === "assert" ? r.assert : r.kind === "check" ? "restock_failed" : r.kind };
+     }
+     case "annotate": {
+       const r = await db.run(orderCommands.annotate, { id: s.id as OrdersId, note: s.note });

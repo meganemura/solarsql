@@ -1,0 +1,157 @@
+diff -r -u --exclude=node_modules --exclude=.runs-*.log --exclude=package-lock.json <starters>/drizzle/test/visible.test.ts <runs>/drizzle-3/test/visible.test.ts
+--- <starters>/drizzle/test/visible.test.ts	2026-09-06 08:03:24
++++ <runs>/drizzle-3/test/visible.test.ts	2026-09-06 08:11:29
+@@ -98,4 +98,82 @@
+     assert.deepEqual(await value({ step: "stock", sku: "A" }), { sku: "A", qty: 12 });
+     assert.equal(await value({ step: "stock", sku: "B" }), null);
+   });
++
++  test("cancel a confirmed order: it goes back to stock and the order is cancelled", async () => {
++    await value({ step: "setStock", sku: "X", qty: 90 });
++    await value({ step: "placeOrder", id: "o3", customer_id: "c1", lines: [{ id: "l3", sku: "X", qty: 5, price: 1 }] });
++    await value({ step: "confirm", id: "o3" });
++
++    assert.deepEqual(await value({ step: "cancel", id: "o3" }), { id: "o3", customer_id: "c1", status: "cancelled", note: null });
++    assert.deepEqual(await value({ step: "stock", sku: "X" }), { sku: "X", qty: 95 });
++    const order = (await value({ step: "order", id: "o3" })) as { status: string };
++    assert.equal(order.status, "cancelled");
++  });
++
++  test("cancelling sums qty across lines that share a sku", async () => {
++    await value({ step: "setStock", sku: "Z", qty: 50 });
++    await value({
++      step: "placeOrder",
++      id: "o6",
++      customer_id: "c1",
++      lines: [
++        { id: "l6a", sku: "Z", qty: 20, price: 1 },
++        { id: "l6b", sku: "Z", qty: 25, price: 1 },
++      ],
++    });
++    await value({ step: "confirm", id: "o6" });
++
++    assert.deepEqual(await value({ step: "cancel", id: "o6" }), { id: "o6", customer_id: "c1", status: "cancelled", note: null });
++    assert.deepEqual(await value({ step: "stock", sku: "Z" }), { sku: "Z", qty: 95 });
++  });
++
++  test("cancelling a draft order is refused, and nothing changes", async () => {
++    await value({ step: "placeOrder", id: "o4", customer_id: "c1", lines: [{ id: "l4", sku: "X", qty: 3, price: 1 }] });
++
++    assert.deepEqual(await value({ step: "cancel", id: "o4" }), { refused: "not_confirmed" });
++    const order = (await value({ step: "order", id: "o4" })) as { status: string };
++    assert.equal(order.status, "draft");
++    assert.deepEqual(await value({ step: "stock", sku: "X" }), { sku: "X", qty: 95 });
++  });
++
++  test("cancelling an already cancelled order is refused, and nothing changes twice", async () => {
++    assert.deepEqual(await value({ step: "cancel", id: "o3" }), { refused: "not_confirmed" });
++    assert.deepEqual(await value({ step: "stock", sku: "X" }), { sku: "X", qty: 95 });
++  });
++
++  test("cancelling an unknown order is refused", async () => {
++    assert.deepEqual(await value({ step: "cancel", id: "nope" }), { refused: "not_confirmed" });
++  });
++
++  test("cancelling is refused when a restock would go over the cap, and nothing changes", async () => {
++    await value({ step: "setStock", sku: "Y", qty: 95 });
++    await value({ step: "placeOrder", id: "o5", customer_id: "c1", lines: [{ id: "l5", sku: "Y", qty: 10, price: 2 }] });
++    await value({ step: "confirm", id: "o5" });
++
++    assert.deepEqual(await value({ step: "cancel", id: "o5" }), { refused: "restock_failed" });
++    const order = (await value({ step: "order", id: "o5" })) as { status: string };
++    assert.equal(order.status, "confirmed");
++    assert.deepEqual(await value({ step: "stock", sku: "Y" }), { sku: "Y", qty: 95 });
++  });
++
++  test("one sku over the cap refuses the whole cancel, so a fitting sku on the same order is untouched", async () => {
++    await value({ step: "setStock", sku: "P", qty: 10 });
++    await value({ step: "setStock", sku: "Q", qty: 95 });
++    await value({
++      step: "placeOrder",
++      id: "o7",
++      customer_id: "c1",
++      lines: [
++        { id: "l7a", sku: "P", qty: 5, price: 1 }, // fits: 10 + 5 = 15
++        { id: "l7b", sku: "Q", qty: 10, price: 1 }, // over the cap: 95 + 10 = 105
++      ],
++    });
++    await value({ step: "confirm", id: "o7" });
++
++    assert.deepEqual(await value({ step: "cancel", id: "o7" }), { refused: "restock_failed" });
++    assert.deepEqual(await value({ step: "stock", sku: "P" }), { sku: "P", qty: 10 });
++    assert.deepEqual(await value({ step: "stock", sku: "Q" }), { sku: "Q", qty: 95 });
++    const order = (await value({ step: "order", id: "o7" })) as { status: string };
++    assert.equal(order.status, "confirmed");
++  });
+ });
+diff -r -u --exclude=node_modules --exclude=.runs-*.log --exclude=package-lock.json <starters>/drizzle/worker.ts <runs>/drizzle-3/worker.ts
+--- <starters>/drizzle/worker.ts	2026-09-06 08:03:24
++++ <runs>/drizzle-3/worker.ts	2026-09-06 08:11:20
+@@ -1,6 +1,6 @@
+ // A Worker that runs the data layer on D1. The tests send one JSON request
+ // per step and read the reply.
+-import { and, desc, eq, exists, sql } from "drizzle-orm";
++import { and, desc, eq, exists, inArray, sql } from "drizzle-orm";
+ import { drizzle, type DrizzleD1Database } from "drizzle-orm/d1";
+ import { customers, inventory, orderLines, orders } from "./schema.ts";
+ 
+@@ -8,6 +8,7 @@
+   | { step: "createCustomer"; id: string; name: string; email: string }
+   | { step: "placeOrder"; id: string; customer_id: string; lines: { id: string; sku: string; qty: number; price: number }[] }
+   | { step: "confirm"; id: string }
++  | { step: "cancel"; id: string }
+   | { step: "annotate"; id: string; note: string | null }
+   | { step: "order"; id: string }
+   | { step: "ordersOf"; customer_id: string }
+@@ -54,6 +55,51 @@
+       if (row) return row;
+       const current = await db.select({ status: orders.status }).from(orders).where(eq(orders.id, s.id)).get();
+       return { refused: current?.status === "draft" ? "has_lines" : "was_draft" };
++    }
++    case "cancel": {
++      // Only a confirmed order can be cancelled; draft, cancelled, and
++      // missing orders all read the same "not_confirmed" refusal.
++      const order = await db.select({ status: orders.status }).from(orders).where(eq(orders.id, s.id)).get();
++      if (order?.status !== "confirmed") return { refused: "not_confirmed" };
++
++      const updateOrder = db
++        .update(orders)
++        .set({ status: "cancelled" })
++        .where(and(eq(orders.id, s.id), eq(orders.status, "confirmed")))
++        .returning(orderColumns);
++
++      const lines = await db.select({ sku: orderLines.sku, qty: orderLines.qty }).from(orderLines).where(eq(orderLines.order_id, s.id));
++      if (lines.length === 0) {
++        const [row] = await updateOrder;
++        return row ?? { refused: "not_confirmed" };
++      }
++
++      // The same sku can appear on more than one line; restock the sum once per sku.
++      const bySku = new Map<string, number>();
++      for (const l of lines) bySku.set(l.sku, (bySku.get(l.sku) ?? 0) + l.qty);
++
++      // The cap check runs before any write, so a refusal changes nothing.
++      const stock = await db
++        .select({ sku: inventory.sku, qty: inventory.qty })
++        .from(inventory)
++        .where(inArray(inventory.sku, [...bySku.keys()]));
++      const stockBySku = new Map(stock.map((r) => [r.sku, r.qty]));
++      for (const [sku, add] of bySku) {
++        if ((stockBySku.get(sku) ?? 0) + add > 100) return { refused: "restock_failed" };
++      }
++
++      // One batch is one transaction: the order and every restocked sku land
++      // together. No extra WHERE guard here: if the cap check above were
++      // ever stale, the inventory_qty CHECK constraint aborts the whole
++      // batch instead of cancelling the order while under-restocking a sku.
++      const restock = [...bySku].map(([sku, add]) =>
++        db
++          .update(inventory)
++          .set({ qty: sql`${inventory.qty} + ${add}` })
++          .where(eq(inventory.sku, sku)),
++      );
++      const [rows] = await db.batch([updateOrder, ...restock]);
++      return rows[0] ?? { refused: "not_confirmed" };
+     }
+     case "annotate": {
+       const [row] = await db.update(orders).set({ note: s.note }).where(eq(orders.id, s.id)).returning(orderColumns);
