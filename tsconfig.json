@@ -15,10 +15,14 @@
     ]
   },
   "include": [
+    "src",
     "spike",
-    "test"
+    "test",
+    "example"
   ],
   "exclude": [
-    "spike/stale-type"
+    "spike/stale-type",
+    "spike/phantom/stale.ts",
+    "spike/tagged"
   ]
 }
