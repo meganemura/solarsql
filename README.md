@@ -35,7 +35,7 @@ export const orders = table(`
     customer_id text not null references customers(id),
     status text not null check (status in ('draft', 'confirmed')),
     note text
-  )
+  ) strict
 `);
 
 export const orderLinesByOrder = index(`create index order_lines_order_id on order_lines (order_id)`);
@@ -44,6 +44,7 @@ export const orderLinesByOrder = index(`create index order_lines_order_id on ord
 The leading `--` lines are the documentation of the table.
 A primary key column must be `not null`.
 A `check (x in (...))` becomes a union type.
+Every table is `strict`, so the engine rejects a value that does not match the declared type, and the generated types hold for every stored value.
 
 ### queries.ts
 
@@ -71,6 +72,19 @@ Parameters are named, `:id`.
 The build finds their types from where they sit: `where id = :id` gives `:id` the type of the column.
 A JSON aggregation becomes an array type, and the adapter parses it.
 An expression column needs a `cast(... as integer | real | text)`, because the engine reports no type for an expression.
+
+Dynamic needs are static SQL with a typed parameter:
+
+```sql
+-- a list: pass an array, any length, one bound value
+select id from orders where id in (select value from json_each(:ids))
+-- many rows: pass an array of objects
+insert into order_lines (id, order_id, qty) select value ->> 'id', :order_id, value ->> 'qty' from json_each(:lines)
+-- an optional filter: pass null to skip it (the build reports the full scan)
+select id from orders where customer_id = :customer_id and (:status is null or status = :status)
+-- a sort column and paging
+order by case :sort when 'id' then id when 'status' then status end limit :limit offset :offset
+```
 
 ### commands.ts
 
@@ -107,11 +121,23 @@ const order = await db.first(orderQueries.byId, { id });
 // { id: OrdersId; customer_id: CustomersId; status: "draft" | "confirmed"; note: string | null } | null
 
 const result = await db.run(orderCommands.confirm, { id });
-// { ok: true; rows: [...] } | { ok: false; assert: "has_lines" | "was_draft" }
+// { ok: true; rows: [...] }
+// | { ok: false; kind: "assert"; assert: "has_lines" | "was_draft" }
+// | { ok: false; kind: "unique"; table: string; columns: string[] }
+// | { ok: false; kind: "check" | "not_null" | "foreign_key" | "datatype"; ... }
 ```
 
 The same module code runs on both adapters.
 `db.all` returns every row, `db.first` returns one row or null, and `db.run` runs a command.
+A failed assert and a rejected row are values with one `kind`. Every other engine error is thrown.
+
+An adapter takes an `observe` hook for a logger or a tracer:
+
+```ts
+const db = d1(env.DB, { observe: (e) => console.log(e.kind, e.name, e.outcome, `${e.ms.toFixed(1)}ms`) });
+```
+
+Retry, concurrency, and dependency injection stay in the calling code. A module function takes `db: Database`.
 
 ### solarsql.config.ts
 
@@ -141,6 +167,7 @@ It fails with one message when:
 - a parameter has two different types in one command;
 - a statement touches a table that another module owns;
 - a primary key allows NULL;
+- a table is not `strict`;
 - the migration files do not match the schema.
 
 The generated types are keyed by the SQL text.

@@ -38,8 +38,11 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0025](adr/0025-generated-file-per-module.md) | One generated file per module, committed |
 | [0026](adr/0026-migration-on-demand.md) | The build checks migrations, a separate command writes one |
 | [0027](adr/0027-boundary-scope.md) | What the boundary check sees |
+| [0028](adr/0028-dynamic-sql-is-static-sql.md) | Dynamic SQL is static SQL with typed parameters |
+| [0029](adr/0029-tables-are-strict.md) | Tables are STRICT, so stored values match the generated types |
+| [0030](adr/0030-program-model-stays-with-the-caller.md) | The program model stays with the caller, and failures are values |
 
 ## Measurements
 
-[v0-measurements.md](v0-measurements.md) and [v1-measurements.md](v1-measurements.md) record the experiments that the ADRs cite.
+[v0-measurements.md](v0-measurements.md), [v1-measurements.md](v1-measurements.md), and [v2-measurements.md](v2-measurements.md) record the experiments that the ADRs cite.
 Each entry has the command, the output, and the conclusion.
