@@ -35,6 +35,10 @@ function writeConsumer(dir: string): void {
 test("npm pack, install, and run the CLI from node_modules", { timeout: 180_000 }, () => {
   const dir = mkdtempSync(join(tmpdir(), "solarsql-pack-"));
   try {
+    // On the machine that wrote this test, `npm pack` did not run the prepack
+    // script (a wrapper around npm can pass --ignore-scripts), so dist/ is
+    // built here. The test must never pack a stale or missing dist/.
+    execFileSync("npm", ["run", "build", "--silent"], { cwd: root, encoding: "utf8" });
     const packOutput = execFileSync("npm", ["pack", "--silent", "--pack-destination", dir], { cwd: root, encoding: "utf8" });
     const tarball = join(dir, packOutput.trim().split("\n").pop()!);
     assert.ok(existsSync(tarball), tarball);
