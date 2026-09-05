@@ -45,4 +45,5 @@ A change to a decision gets a new ADR that supersedes the old one.
 ## Measurements
 
 [v0-measurements.md](v0-measurements.md), [v1-measurements.md](v1-measurements.md), and [v2-measurements.md](v2-measurements.md) record the experiments that the ADRs cite.
+[v3-measurements.md](v3-measurements.md) records the experiments of v3, which measure the premise of the library against Drizzle with fresh agents.
 Each entry has the command, the output, and the conclusion.
