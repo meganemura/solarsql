@@ -3,7 +3,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { d1 } from "../src/d1.ts";
 import { durable, migrate } from "../src/durable.ts";
-import type { Database } from "../src/index.ts";
+import type { Database, Observed } from "../src/index.ts";
 import { migrations } from "./migrations/index.ts";
 import { customerCommands, customerQueries } from "./modules/customers/public.ts";
 import { orderCommands, orderQueries } from "./modules/orders/public.ts";
@@ -21,7 +21,14 @@ type Step =
   | { step: "order"; id: string }
   | { step: "ordersOf"; customer_id: string }
   | { step: "revenue" }
-  | { step: "customers" };
+  | { step: "customers" }
+  | { step: "observed" };
+
+// What the observe hook saw, per isolate, so a test can read it back.
+const events: Observed[] = [];
+const observe = (e: Observed): void => {
+  events.push(e);
+};
 
 async function run(db: Database, s: Step): Promise<unknown> {
   switch (s.step) {
@@ -45,6 +52,8 @@ async function run(db: Database, s: Step): Promise<unknown> {
       return db.all(reportQueries.revenueByCustomer);
     case "customers":
       return db.all(customerQueries.all);
+    case "observed":
+      return events.splice(0).map((e) => ({ kind: e.kind, name: e.name, outcome: e.outcome, timed: e.ms >= 0 }));
   }
 }
 
@@ -65,7 +74,7 @@ export class Store extends DurableObject {
     });
   }
   override async fetch(request: Request): Promise<Response> {
-    return handle(durable(this.ctx.storage), request);
+    return handle(durable(this.ctx.storage, { observe }), request);
   }
 }
 
@@ -78,6 +87,6 @@ export default {
       const id = env.STORE.idFromName("example");
       return env.STORE.get(id).fetch(new Request("http://do/", { method: "POST", body: await request.text() }));
     }
-    return handle(d1(env.DB), request);
+    return handle(d1(env.DB, { observe }), request);
   },
 };

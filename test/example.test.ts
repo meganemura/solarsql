@@ -71,13 +71,19 @@ for (const target of ["d1", "do"] as const) {
       const first = await value({ step: "confirm", id: "o1" });
       assert.deepEqual(first, { ok: true, rows: [{ id: "o1", customer_id: "c1", status: "confirmed", note: null }] });
       const second = await value({ step: "confirm", id: "o1" });
-      assert.deepEqual(second, { ok: false, assert: "was_draft" });
+      assert.deepEqual(second, { ok: false, kind: "assert", assert: "was_draft" });
+    });
+
+    test("a unique constraint of the DDL arrives as a value that names the columns", async () => {
+      const duplicate = await value({ step: "createCustomer", id: "c2", name: "Bob", email: "ann@example.com" });
+      assert.deepEqual(duplicate, { ok: false, kind: "unique", table: "customers", columns: ["email"] });
+      assert.deepEqual(await value({ step: "customers" }), [{ id: "c1", name: "Ann", email: "ann@example.com" }]);
     });
 
     test("an order without lines cannot be confirmed", async () => {
       await value({ step: "placeOrder", id: "o2", customer_id: "c1", lines: [] });
       const result = await value({ step: "confirm", id: "o2" });
-      assert.deepEqual(result, { ok: false, assert: "has_lines" });
+      assert.deepEqual(result, { ok: false, kind: "assert", assert: "has_lines" });
       const order = await value({ step: "order", id: "o2" });
       assert.deepEqual(order, { id: "o2", status: "draft", lines: [] });
     });
@@ -87,11 +93,10 @@ for (const target of ["d1", "do"] as const) {
       assert.deepEqual(await value({ step: "annotate", id: "o1", note: null }), { ok: true, rows: [] });
     });
 
-    test("a failed plan leaves no partial writes", async () => {
-      // The second line repeats l1, so the unique primary key fails inside the plan.
-      const reply = await send({ step: "placeOrder", id: "o3", customer_id: "c1", lines: [{ id: "l9", sku: "Z", qty: 1, price: 1 }, { id: "l1", sku: "A", qty: 1, price: 1 }] });
-      assert.equal(reply.ok, false);
-      assert.match((reply as { message: string }).message, /UNIQUE constraint failed/);
+    test("a failed plan leaves no partial writes, and the failure is a value", async () => {
+      // The second line repeats l1, so the primary key of order_lines rejects it inside the plan.
+      const result = await value({ step: "placeOrder", id: "o3", customer_id: "c1", lines: [{ id: "l9", sku: "Z", qty: 1, price: 1 }, { id: "l1", sku: "A", qty: 1, price: 1 }] });
+      assert.deepEqual(result, { ok: false, kind: "unique", table: "order_lines", columns: ["id"] });
       const orders = await value({ step: "ordersOf", customer_id: "c1" });
       assert.deepEqual(orders, [{ id: "o2", status: "draft" }, { id: "o1", status: "confirmed" }]);
     });
@@ -117,6 +122,16 @@ for (const target of ["d1", "do"] as const) {
 
     test("a query without parameters", async () => {
       assert.deepEqual(await value({ step: "customers" }), [{ id: "c1", name: "Ann", email: "ann@example.com" }]);
+    });
+
+    test("the observe hook saw every call with its name and outcome", async () => {
+      const seen = (await value({ step: "observed" })) as { kind: string; name: string; outcome: string; timed: boolean }[];
+      assert.ok(seen.every((e) => e.timed));
+      const outcomes = seen.map((e) => `${e.kind} ${e.name} ${e.outcome}`);
+      assert.ok(outcomes.includes("command confirm ok"), outcomes.join("\n"));
+      assert.ok(outcomes.includes("command confirm assert:was_draft"));
+      assert.ok(outcomes.includes("command create unique"));
+      assert.ok(outcomes.includes("query withLines ok"));
     });
   });
 }

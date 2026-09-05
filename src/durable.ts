@@ -1,13 +1,13 @@
 // Responsibility: run queries and commands on the SQLite storage of a
 // Durable Object, and apply migration files to it.
-// A command becomes one transactionSync() call. An assert that fails throws
-// inside it, the transaction rolls back, and the adapter returns a value
-// that names the assert. The API returns promises like the D1 adapter, so a
-// module runs on both without a change.
+// A command becomes one transactionSync() call. An assert that fails or a
+// constraint that rejects a row throws inside it, the transaction rolls
+// back, and the adapter returns a value that says which. The API returns
+// promises like the D1 adapter, so a module runs on both without a change.
 // Boundary: no SQL is composed here beyond the assert statement that
 // runtime/plan.ts defines.
-import type { Command, CommandResult, Database, Entry, GeneratedMap, ParamsArg, PlanShape, Query, Row, SqlValue, StatementMeta } from "./index.ts";
-import { assertFailure, assertStatement, bindValues, parseJson } from "./runtime/plan.ts";
+import type { AdapterOptions, Command, CommandResult, Database, Entry, GeneratedMap, ParamsArg, PlanShape, Query, Row, SqlValue, StatementMeta } from "./index.ts";
+import { assertFailure, assertStatement, bindValues, constraintFailure, observed, outcomeOf, parseJson } from "./runtime/plan.ts";
 import { splitStatements } from "./build/scan.ts";
 
 // The part of DurableObjectStorage this adapter uses. Structural, so no
@@ -17,36 +17,40 @@ export type StorageLike = {
   transactionSync<T>(closure: () => T): T;
 };
 
-export function durable(storage: StorageLike): Database {
+export function durable(storage: StorageLike, options: AdapterOptions = {}): Database {
   const rows = (sql: string, meta: StatementMeta, params: Record<string, unknown>) =>
     parseJson(storage.sql.exec(sql, ...bindValues(meta, params)).toArray(), meta.json);
 
+  const all = <Q extends Query<string, Entry>>(query: Q, ...args: ParamsArg<Q>): Promise<Row<Q>[]> =>
+    observed(options.observe, "query", query.name, async () => rows(query.sql, query.meta, (args[0] ?? {}) as Record<string, unknown>) as Row<Q>[], () => "ok");
+
   return {
-    async all<Q extends Query<string, Entry>>(query: Q, ...args: ParamsArg<Q>): Promise<Row<Q>[]> {
-      return rows(query.sql, query.meta, (args[0] ?? {}) as Record<string, unknown>) as Row<Q>[];
-    },
-    async first<Q extends Query<string, Entry>>(query: Q, ...args: ParamsArg<Q>): Promise<Row<Q> | null> {
-      const out = rows(query.sql, query.meta, (args[0] ?? {}) as Record<string, unknown>) as Row<Q>[];
+    all,
+    async first(query, ...args) {
+      const out = await all(query, ...args);
       return out[0] ?? null;
     },
-    async run<C extends Command<GeneratedMap, PlanShape<GeneratedMap>>>(command: C, ...args: ParamsArg<C>): Promise<CommandResult<C>> {
-      const params = (args[0] ?? {}) as Record<string, SqlValue>;
-      try {
-        const out = storage.transactionSync(() => {
-          command.plan.forEach((item, i) => {
-            const sql = typeof item === "string" ? item : assertStatement(item.name, item.predicate);
-            storage.sql.exec(sql, ...bindValues(command.meta.statements[i]!, params)).toArray();
+    run: <C extends Command<GeneratedMap, PlanShape<GeneratedMap>>>(command: C, ...args: ParamsArg<C>): Promise<CommandResult<C>> =>
+      observed(options.observe, "command", command.name, async () => {
+        const params = (args[0] ?? {}) as Record<string, SqlValue>;
+        try {
+          const out = storage.transactionSync(() => {
+            command.plan.forEach((item, i) => {
+              const sql = typeof item === "string" ? item : assertStatement(item.name, item.predicate);
+              storage.sql.exec(sql, ...bindValues(command.meta.statements[i]!, params)).toArray();
+            });
+            if (command.returns === null) return [];
+            return rows(command.returns, command.meta.returns!, params);
           });
-          if (command.returns === null) return [];
-          return rows(command.returns, command.meta.returns!, params);
-        });
-        return { ok: true, rows: out } as CommandResult<C>;
-      } catch (e) {
-        const failed = assertFailure(e, command.meta.asserts);
-        if (failed !== null) return { ok: false, assert: failed } as CommandResult<C>;
-        throw e;
-      }
-    },
+          return { ok: true, rows: out } as CommandResult<C>;
+        } catch (e) {
+          const failed = assertFailure(e, command.meta.asserts);
+          if (failed !== null) return { ok: false, kind: "assert", assert: failed } as CommandResult<C>;
+          const constraint = constraintFailure(e);
+          if (constraint !== null) return { ok: false, ...constraint } as CommandResult<C>;
+          throw e;
+        }
+      }, (r) => outcomeOf(r as { ok: boolean; kind?: string; assert?: string })),
   };
 }
 

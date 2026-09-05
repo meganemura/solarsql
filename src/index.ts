@@ -59,6 +59,8 @@ export function index<const S extends string>(sql: S): Index & { sql: S } {
 
 export type Query<S extends string, E extends Entry> = {
   kind: "query";
+  // The key in the catalog, for the observe hook.
+  name: string;
   sql: S;
   meta: StatementMeta;
   readonly __entry?: E;
@@ -75,7 +77,7 @@ export type Queries<G extends GeneratedMap, Q extends Record<string, keyof G & s
 export function queries<G extends GeneratedMap, const Q extends Record<string, keyof G & string>>(generated: Meta<G>, q: Q): Queries<G, Q> {
   const entries = {} as Record<string, Query<string, Entry>>;
   for (const [name, sql] of Object.entries(q)) {
-    entries[name] = { kind: "query", sql, meta: metaOf(generated, sql) };
+    entries[name] = { kind: "query", name, sql, meta: metaOf(generated, sql) };
   }
   return { kind: "queries", entries, ...entries } as unknown as Queries<G, Q>;
 }
@@ -113,6 +115,7 @@ export type PlanAsserts<P extends { plan: readonly unknown[] }> = Extract<P["pla
 
 export type Command<G extends GeneratedMap, P extends PlanShape<G>> = {
   kind: "command";
+  name: string;
   plan: readonly PlanItem[];
   returns: string | null;
   meta: { statements: readonly StatementMeta[]; returns: StatementMeta | null; asserts: readonly string[] };
@@ -134,6 +137,7 @@ export function commands<G extends GeneratedMap, const C extends Record<string, 
     const plan = shape.plan as readonly PlanItem[];
     entries[name] = {
       kind: "command",
+      name,
       plan,
       returns: shape.returns ?? null,
       meta: {
@@ -146,11 +150,34 @@ export function commands<G extends GeneratedMap, const C extends Record<string, 
   return { kind: "commands", entries, ...entries } as unknown as Commands<G, C>;
 }
 
-// The result of a command. An assert that yields 0 is a normal outcome and
-// arrives as a value.
+// A constraint of the DDL that a statement of the plan violated. The engine
+// reports it, and the adapter turns the message into this value.
+export type ConstraintFailure =
+  | { kind: "unique"; table: string; columns: string[] }
+  | { kind: "check"; constraint: string }
+  | { kind: "not_null"; table: string; column: string }
+  | { kind: "foreign_key" }
+  | { kind: "datatype"; table: string; column: string; stored: string; declared: string };
+
+// The result of a command. An assert that yields 0 and a constraint that
+// rejects a row are normal outcomes, and both arrive as values with one
+// discriminant. Every other engine error is thrown.
 export type CommandResult<C> = C extends Command<infer G, infer P>
-  ? { ok: true; rows: PlanRows<G, P>[] } | { ok: false; assert: PlanAsserts<P> }
+  ? { ok: true; rows: PlanRows<G, P>[] } | { ok: false; kind: "assert"; assert: PlanAsserts<P> } | ({ ok: false } & ConstraintFailure)
   : never;
+
+// What the observe hook of an adapter receives after each query or command.
+export type Observed = {
+  kind: "query" | "command";
+  name: string;
+  ms: number;
+  // "ok", "assert:<name>", a constraint kind, or "error" when thrown.
+  outcome: string;
+};
+
+export type AdapterOptions = {
+  observe?: (event: Observed) => void;
+};
 
 export type Row<Q> = Q extends Query<string, infer E> ? E["row"] : Q extends Command<infer G, infer P> ? PlanRows<G, P> : never;
 export type Params<Q> = Q extends Query<string, infer E> ? E["params"] : Q extends Command<infer G, infer P> ? PlanParams<G, P> : never;
