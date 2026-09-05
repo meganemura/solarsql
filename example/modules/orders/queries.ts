@@ -17,4 +17,15 @@ export const orderQueries = queries(generated, {
   byCustomer: `
     -- The orders of one customer, newest id first.
     select id, status from orders where customer_id = :customer_id order by id desc`,
+  byIds: `
+    -- The orders with the given ids. One parameter carries the whole list,
+    -- so the list can be longer than the 100 bound values D1 allows.
+    select id, status from orders where id in (select value from json_each(:ids)) order by id`,
+  search: `
+    -- Orders of one customer, with an optional status and a chosen order.
+    -- The optional filter reads the table in full, which the build reports.
+    select id, status, note from orders
+    where customer_id = :customer_id and (:status is null or status = :status)
+    order by case :sort when 'id' then id when 'status' then status end
+    limit :limit offset :offset`,
 });

@@ -58,8 +58,9 @@ export function emitGenerated(input: GeneratedInput): string {
   lines.push("export const generated: Meta<Generated> = {");
   for (const { key, analysis } of input.entries) {
     const params = analysis.params.map((p) => JSON.stringify(p.name)).join(", ");
+    const encode = analysis.params.filter((p) => p.encode).map((p) => JSON.stringify(p.name)).join(", ");
     const json = analysis.columns.filter((c) => c.json).map((c) => JSON.stringify(c.name)).join(", ");
-    lines.push(`  ${JSON.stringify(key)}: { params: [${params}], json: [${json}] },`);
+    lines.push(`  ${JSON.stringify(key)}: { params: [${params}], encode: [${encode}], json: [${json}] },`);
   }
   lines.push("};");
   lines.push("");

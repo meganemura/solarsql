@@ -23,11 +23,16 @@ export function assertStatement(name: string, predicate: string): string {
 }
 
 // Values in the order SQLite numbers the named parameters. A missing value
-// is an error here, because an undefined value would bind as nothing.
+// is an error here, because an undefined value would bind as nothing. A
+// parameter that json_each reads is encoded as JSON text.
 export function bindValues(meta: StatementMeta, params: Record<string, unknown>): SqlValue[] {
   const missing = meta.params.filter((n) => params[n] === undefined);
   if (missing.length > 0) throw new Error(`missing parameter${missing.length > 1 ? "s" : ""}: ${missing.map((n) => `:${n}`).join(", ")}`);
-  return meta.params.map((n) => params[n] as SqlValue);
+  return meta.params.map((n) => {
+    const v = params[n];
+    if (meta.encode.includes(n) && typeof v !== "string") return JSON.stringify(v);
+    return v as SqlValue;
+  });
 }
 
 // The assert name when an error is the guard trigger firing, else null.
