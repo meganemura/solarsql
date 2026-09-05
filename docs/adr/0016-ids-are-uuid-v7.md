@@ -22,5 +22,6 @@ The generator is small and needs no dependency.
 
 ## Consequences
 
+- Version 1 takes the id from the caller. The generator arrives in a later version.
 - Tables that need an integer key for a `rowid` alias are out of the default shape.
 - A `WITHOUT ROWID` table is a good fit for a text primary key.

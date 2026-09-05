@@ -1,6 +1,6 @@
 # ADR 0004: Schema and queries are SQL in tagged templates
 
-Status: accepted (2026-09-06)
+Status: accepted (2026-09-06). The tagged-template form is superseded by ADR 0021: the SQL is a plain string literal.
 
 ## Context
 
