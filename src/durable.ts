@@ -58,7 +58,7 @@ const HISTORY = "solarsql_migrations";
 // one transaction per file. Call it inside blockConcurrencyWhile() from the
 // constructor of the Durable Object. Returns the names applied now.
 export function migrate(storage: StorageLike, files: readonly MigrationFile[]): string[] {
-  storage.sql.exec(`create table if not exists ${HISTORY} (name text primary key not null, applied_at text not null)`);
+  storage.sql.exec(`create table if not exists ${HISTORY} (name text primary key not null, applied_at text not null) strict`);
   const done = new Set(storage.sql.exec(`select name from ${HISTORY}`).toArray().map((r) => r.name as string));
   const applied: string[] = [];
   for (const file of [...files].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {

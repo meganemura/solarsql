@@ -11,7 +11,7 @@ import { definitions, normalize, quoteIdent, splitStatements } from "./scan.ts";
 
 export type Column = { name: string; type: string; notnull: boolean; dflt: string | null; pk: number; def: string };
 export type ForeignKey = { table: string; from: string; to: string; onUpdate: string; onDelete: string };
-export type Table = { name: string; sql: string; columns: Column[]; foreignKeys: ForeignKey[]; constraints: string[]; withoutRowid: boolean };
+export type Table = { name: string; sql: string; columns: Column[]; foreignKeys: ForeignKey[]; constraints: string[]; withoutRowid: boolean; strict: boolean };
 export type Index = { name: string; table: string; sql: string };
 export type Trigger = { name: string; table: string; sql: string };
 export type Schema = { tables: Map<string, Table>; indexes: Map<string, Index>; triggers: Map<string, Trigger> };
@@ -67,6 +67,7 @@ export function introspect(db: DatabaseSync): Schema {
         foreignKeys,
         constraints: defs?.constraints ?? [],
         withoutRowid: /\bwithout\s+rowid\b/i.test(row.sql.slice(row.sql.lastIndexOf(")"))),
+        strict: /\bstrict\b/i.test(row.sql.slice(row.sql.lastIndexOf(")"))),
       });
     } else if (row.type === "index") {
       indexes.set(row.name, { name: row.name, table: row.tbl_name, sql: row.sql });
@@ -93,7 +94,7 @@ function byName(a: { name: string }, b: { name: string }): number {
 }
 
 function tableShape(t: Table): unknown {
-  return { name: t.name, columns: t.columns, foreignKeys: t.foreignKeys, constraints: [...t.constraints].sort(), withoutRowid: t.withoutRowid };
+  return { name: t.name, columns: t.columns, foreignKeys: t.foreignKeys, constraints: [...t.constraints].sort(), withoutRowid: t.withoutRowid, strict: t.strict };
 }
 
 function same(a: unknown, b: unknown): boolean {

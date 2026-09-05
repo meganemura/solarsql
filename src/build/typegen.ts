@@ -50,6 +50,8 @@ export function brandName(table: string): string {
 
 export function scalarType(declared: string): string {
   const t = declared.toUpperCase();
+  // ANY is the STRICT column that holds any storage class.
+  if (t === "ANY") return "SqlValue";
   if (t.includes("INT")) return "number";
   if (t.includes("CHAR") || t.includes("TEXT") || t.includes("CLOB")) return "string";
   if (t.includes("REAL") || t.includes("FLOA") || t.includes("DOUB") || t.includes("NUM") || t.includes("DEC")) return "number";

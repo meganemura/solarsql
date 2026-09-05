@@ -136,8 +136,10 @@ export async function build(configPath: string): Promise<BuildResult> {
       const m = owner.get(t.name);
       if (!m) continue;
       if (pk.length === 0) throw new BuildError(`table ${t.name} has no primary key. Declare one: id text primary key not null.`);
-      if (pk.length === 1 && !pk[0]!.notnull) {
-        throw new BuildError(`table ${t.name}: the primary key ${pk[0]!.name} allows NULL. Declare it NOT NULL, or make the table WITHOUT ROWID.`);
+      // A STRICT table makes its primary key NOT NULL by itself, so the id
+      // brand is never nullable (ADR 0018, ADR 0029).
+      if (!t.strict) {
+        throw new BuildError(`table ${t.name} is not STRICT. Add \`strict\` after the closing parenthesis, so the engine rejects a value that does not match the declared type.`);
       }
       if (pk.length === 1) brands.set(t.name, { table: t.name, column: pk[0]!.name, typeName: brandName(t.name), module: m.name });
     }

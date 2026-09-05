@@ -97,12 +97,12 @@ describe("solarsql build", () => {
     }
   });
 
-  test("a primary key that allows NULL is refused", async () => {
+  test("a table that is not STRICT is refused with the fix in the message", async () => {
     const dir = copy();
     try {
       const schema = join(dir, "example/modules/customers/schema.ts");
-      writeFileSync(schema, readFileSync(schema, "utf8").replace("id text primary key not null,", "id text primary key,"));
-      await expectBuildError(dir, /table customers: the primary key id allows NULL/);
+      writeFileSync(schema, readFileSync(schema, "utf8").replace(") strict\n", ")\n"));
+      await expectBuildError(dir, /table customers is not STRICT\. Add `strict`/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
