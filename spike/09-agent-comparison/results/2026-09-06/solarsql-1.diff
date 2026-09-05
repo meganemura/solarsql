@@ -1,0 +1,82 @@
+diff -r -u --exclude=node_modules --exclude=.runs-*.log --exclude=package-lock.json <starters>/solarsql/modules/orders/commands.ts <runs>/solarsql-1/modules/orders/commands.ts
+--- <starters>/solarsql/modules/orders/commands.ts	2026-09-06 06:30:38
++++ <runs>/solarsql-1/modules/orders/commands.ts	2026-09-06 06:33:17
+@@ -22,4 +22,11 @@
+     plan: ["update orders set note = :note where id = :id"],
+     returns: "select id, customer_id, status, note from orders where id = :id",
+   },
++  cancel: {
++    plan: [
++      "update orders set status = 'cancelled' where id = :id and status = 'confirmed'",
++      assert("not_confirmed", "changes() = 1"),
++    ],
++    returns: "select id, customer_id, status, note from orders where id = :id",
++  },
+ });
+diff -r -u --exclude=node_modules --exclude=.runs-*.log --exclude=package-lock.json <starters>/solarsql/modules/orders/solarsql.generated.ts <runs>/solarsql-1/modules/orders/solarsql.generated.ts
+--- <starters>/solarsql/modules/orders/solarsql.generated.ts	2026-09-06 06:30:41
++++ <runs>/solarsql-1/modules/orders/solarsql.generated.ts	2026-09-06 06:33:23
+@@ -52,6 +52,10 @@
+     params: { note: string | null; id: OrdersId };
+     row: {};
+   };
++  "update orders set status = 'cancelled' where id = :id and status = 'confirmed'": {
++    params: { id: OrdersId };
++    row: {};
++  };
+ };
+ 
+ export const generated: Meta<Generated> = {
+@@ -65,4 +69,5 @@
+   "update orders set status = 'confirmed' where id = :id and status = 'draft'": { params: ["id"], encode: [], json: [] },
+   "changes() = 1": { params: [], encode: [], json: [] },
+   "update orders set note = :note where id = :id": { params: ["note", "id"], encode: [], json: [] },
++  "update orders set status = 'cancelled' where id = :id and status = 'confirmed'": { params: ["id"], encode: [], json: [] },
+ };
+diff -r -u --exclude=node_modules --exclude=.runs-*.log --exclude=package-lock.json <starters>/solarsql/test/visible.test.ts <runs>/solarsql-1/test/visible.test.ts
+--- <starters>/solarsql/test/visible.test.ts	2026-09-06 06:30:38
++++ <runs>/solarsql-1/test/visible.test.ts	2026-09-06 06:34:15
+@@ -91,4 +91,20 @@
+   test("an unknown order reads as null", async () => {
+     assert.equal(await value({ step: "order", id: "nope" }), null);
+   });
++
++  test("cancel a confirmed order, then cancel it again", async () => {
++    await value({ step: "placeOrder", id: "o3", customer_id: "c1", lines: [{ id: "l3", sku: "C", qty: 1, price: 2 }] });
++    await value({ step: "confirm", id: "o3" });
++    assert.deepEqual(await value({ step: "cancel", id: "o3" }), { id: "o3", customer_id: "c1", status: "cancelled", note: null });
++    assert.deepEqual(await value({ step: "cancel", id: "o3" }), { refused: "not_confirmed" });
++  });
++
++  test("a draft order cannot be cancelled", async () => {
++    assert.deepEqual(await value({ step: "cancel", id: "o2" }), { refused: "not_confirmed" });
++    assert.deepEqual(await value({ step: "order", id: "o2" }), { id: "o2", status: "draft", lines: [] });
++  });
++
++  test("an unknown order cannot be cancelled", async () => {
++    assert.deepEqual(await value({ step: "cancel", id: "nope" }), { refused: "not_confirmed" });
++  });
+ });
+diff -r -u --exclude=node_modules --exclude=.runs-*.log --exclude=package-lock.json <starters>/solarsql/worker.ts <runs>/solarsql-1/worker.ts
+--- <starters>/solarsql/worker.ts	2026-09-06 06:30:38
++++ <runs>/solarsql-1/worker.ts	2026-09-06 06:33:43
+@@ -12,6 +12,7 @@
+   | { step: "createCustomer"; id: string; name: string; email: string }
+   | { step: "placeOrder"; id: string; customer_id: string; lines: { id: string; sku: string; qty: number; price: number }[] }
+   | { step: "confirm"; id: string }
++  | { step: "cancel"; id: string }
+   | { step: "annotate"; id: string; note: string | null }
+   | { step: "order"; id: string }
+   | { step: "ordersOf"; customer_id: string }
+@@ -36,6 +37,11 @@
+     }
+     case "confirm": {
+       const r = await db.run(orderCommands.confirm, { id: s.id as OrdersId });
++      if (r.ok) return r.rows[0];
++      return { refused: r.kind === "assert" ? r.assert : r.kind };
++    }
++    case "cancel": {
++      const r = await db.run(orderCommands.cancel, { id: s.id as OrdersId });
+       if (r.ok) return r.rows[0];
+       return { refused: r.kind === "assert" ? r.assert : r.kind };
+     }

@@ -1,0 +1,18 @@
+(node:62247) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+▶ cancel
+  ✔ 1 a confirmed order cancels, and the reply is the order (8.639291ms)
+  ✔ 2 a cancelled order is refused the second time (7.065666ms)
+  ✔ 3 a draft order is refused and stays draft (6.832917ms)
+  ✔ 4 an unknown order is refused (4.262292ms)
+  ✔ 5 a cancelled order cannot be confirmed (4.15975ms)
+  ✔ 6 the note survives the cancel (16.747584ms)
+✔ cancel (357.008792ms)
+ℹ tests 6
+ℹ suites 1
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 736.967125

@@ -3,27 +3,14 @@
     "target": "esnext",
     "module": "nodenext",
     "strict": true,
-    "exactOptionalPropertyTypes": true,
     "noUncheckedIndexedAccess": true,
     "noEmit": true,
     "allowImportingTsExtensions": true,
     "erasableSyntaxOnly": true,
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
-    "types": [
-      "node"
-    ]
+    "types": ["node"]
   },
-  "include": [
-    "src",
-    "spike",
-    "test",
-    "example"
-  ],
-  "exclude": [
-    "spike/09-agent-comparison",
-    "spike/stale-type",
-    "spike/phantom/stale.ts",
-    "spike/tagged"
-  ]
+  "include": ["**/*.ts"],
+  "exclude": ["node_modules"]
 }
