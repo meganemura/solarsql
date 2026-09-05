@@ -1,6 +1,6 @@
 # ADR 0018: A primary key column is NOT NULL
 
-Status: accepted (2026-09-06)
+Status: accepted (2026-09-06). Since ADR 0029 every table is STRICT, and a STRICT table makes its primary key NOT NULL by itself, so the build no longer checks this separately.
 
 ## Context
 

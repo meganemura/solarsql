@@ -1,6 +1,6 @@
 # ADR 0023: A command result is a value
 
-Status: accepted (2026-09-06)
+Status: accepted (2026-09-06). ADR 0030 extends this: a constraint failure of the DDL is a value too, with the same discriminant.
 
 ## Context
 
