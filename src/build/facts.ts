@@ -26,6 +26,9 @@ export type TableFact = {
   columns: ColumnFact[];
   foreignKeys: ForeignKeyFact[];
   withoutRowid: boolean;
+  // A STRICT table rejects a value whose storage class differs from the
+  // declared type, so the generated types hold for every stored value.
+  strict: boolean;
 };
 
 export type OutputColumn = {
@@ -85,7 +88,8 @@ export class Engine {
       from: f.from,
       to: f.to,
     }));
-    return { name, sql: ddl, columns, foreignKeys, withoutRowid: /\bwithout\s+rowid\b/i.test(ddl.slice(ddl.lastIndexOf(")"))) };
+    const tail = ddl.slice(ddl.lastIndexOf(")"));
+    return { name, sql: ddl, columns, foreignKeys, withoutRowid: /\bwithout\s+rowid\b/i.test(tail), strict: /\bstrict\b/i.test(tail) };
   }
 
   // The output columns of a statement, with the origin of each.

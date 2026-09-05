@@ -31,14 +31,14 @@ function columnDdl(c: Column): string {
 
 function ddl(s: Schema): string[] {
   const out: string[] = [
-    `create table guard (name text not null, ok integer not null)`,
+    `create table guard (name text not null, ok integer not null) strict`,
     `create trigger guard_check before insert on guard when new.ok = 0 begin select raise(abort, new.name); end`,
   ];
   for (const t of s.tables) {
     const cols = [`id text primary key not null`];
     if (t.name === "b" && t.fkToA) cols.push(`a_id text not null references a(id)`);
     cols.push(...t.columns.map(columnDdl));
-    out.push(`create table ${t.name} (${cols.join(", ")})`);
+    out.push(`create table ${t.name} (${cols.join(", ")}) strict`);
   }
   for (const i of s.indexes) out.push(`create index ${i.name} on ${i.table} (${i.columns.join(", ")})`);
   return out;
@@ -49,7 +49,9 @@ function rowsFor(s: Schema): string[] {
   for (const t of s.tables) {
     for (const i of [1, 2]) {
       const cols = ["id", ...(t.name === "b" && t.fkToA ? ["a_id"] : []), ...t.columns.map((c) => c.name)];
-      const vals = [`'${t.name}${i}'`, ...(t.name === "b" && t.fkToA ? ["'a1'"] : []), ...t.columns.map((c) => (c.type === "text" ? `'v${i}'` : c.type === "integer" ? `${i}` : `${i}.5`))];
+      // Values that every STRICT type accepts without loss, so a retype of a
+      // column with rows rebuilds cleanly: '7' -> 7, 7.0 -> 7, 7 -> '7'.
+      const vals = [`'${t.name}${i}'`, ...(t.name === "b" && t.fkToA ? ["'a1'"] : []), ...t.columns.map((c) => (c.type === "text" ? `'${i}'` : c.type === "integer" ? `${i}` : `${i}.0`))];
       out.push(`insert into ${t.name} (${cols.join(", ")}) values (${vals.join(", ")})`);
     }
   }

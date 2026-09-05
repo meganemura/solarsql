@@ -33,6 +33,11 @@ describe("Engine", () => {
       { table: "customers", from: "customer_id", to: "id" },
     ]);
     assert.equal(orders.withoutRowid, false);
+    assert.equal(orders.strict, false);
+    const strict = new Engine(["create table s (id text primary key) strict"]).table("s");
+    assert.equal(strict.strict, true);
+    // A STRICT table makes its primary key NOT NULL without the words.
+    assert.equal(strict.columns[0]!.notnull, true);
   });
 
   test("columns: origins through aliases and views, null for expressions", () => {

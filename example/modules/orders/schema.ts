@@ -7,7 +7,7 @@ export const orders = table(`
     customer_id text not null references customers(id),
     status text not null check (status in ('draft', 'confirmed')),
     note text
-  )
+  ) strict
 `);
 
 export const orderLines = table(`
@@ -18,7 +18,7 @@ export const orderLines = table(`
     sku text not null,
     qty integer not null check (qty > 0),
     price real not null
-  )
+  ) strict
 `);
 
 export const orderLinesByOrder = index(`create index order_lines_order_id on order_lines (order_id)`);

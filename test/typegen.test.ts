@@ -9,7 +9,7 @@ import { GUARD_DDL, assertStatement } from "../src/runtime/plan.ts";
 
 const ddl = [
   `-- A customer.
-  create table customers (id text primary key not null, name text not null)`,
+  create table customers (id text primary key not null, name text not null) strict`,
   `create table orders (
     id text primary key not null,
     customer_id text not null references customers(id),

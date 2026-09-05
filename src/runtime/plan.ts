@@ -10,7 +10,7 @@ export const GUARD_TABLE = "solarsql_assert";
 // One guard table and one trigger serve every assert. raise(abort, new.name)
 // takes an expression, so the error message is the assert name.
 export const GUARD_DDL: readonly string[] = [
-  `create table ${GUARD_TABLE} (name text not null, ok integer not null)`,
+  `create table ${GUARD_TABLE} (name text not null, ok integer not null) strict`,
   `create trigger ${GUARD_TABLE}_check before insert on ${GUARD_TABLE}
   when new.ok = 0
 begin
