@@ -9,11 +9,13 @@ import { customerCommands, customerQueries } from "./modules/customers/public.ts
 import { orderCommands, orderQueries } from "./modules/orders/public.ts";
 import { reportQueries } from "./modules/reports/queries.ts";
 import type { CustomersId } from "./modules/customers/public.ts";
-import type { OrdersId } from "./modules/orders/public.ts";
+import type { OrderLinesId, OrdersId } from "./modules/orders/public.ts";
 
 type Step =
   | { step: "createCustomer"; id: string; name: string; email: string }
   | { step: "placeOrder"; id: string; customer_id: string; lines: { id: string; sku: string; qty: number; price: number }[] }
+  | { step: "ordersByIds"; ids: string[] }
+  | { step: "search"; customer_id: string; status: "draft" | "confirmed" | null; sort: "id" | "status"; limit: number; offset: number }
   | { step: "confirm"; id: string }
   | { step: "annotate"; id: string; note: string | null }
   | { step: "order"; id: string }
@@ -26,7 +28,7 @@ async function run(db: Database, s: Step): Promise<unknown> {
     case "createCustomer":
       return db.run(customerCommands.create, { id: s.id as CustomersId, name: s.name, email: s.email });
     case "placeOrder":
-      return db.run(orderCommands.place, { id: s.id as OrdersId, customer_id: s.customer_id as CustomersId, lines: JSON.stringify(s.lines) });
+      return db.run(orderCommands.place, { id: s.id as OrdersId, customer_id: s.customer_id as CustomersId, lines: s.lines.map((l) => ({ ...l, id: l.id as OrderLinesId })) });
     case "confirm":
       return db.run(orderCommands.confirm, { id: s.id as OrdersId });
     case "annotate":
@@ -35,6 +37,10 @@ async function run(db: Database, s: Step): Promise<unknown> {
       return db.first(orderQueries.withLines, { id: s.id as OrdersId });
     case "ordersOf":
       return db.all(orderQueries.byCustomer, { customer_id: s.customer_id as CustomersId });
+    case "ordersByIds":
+      return db.all(orderQueries.byIds, { ids: s.ids as OrdersId[] });
+    case "search":
+      return db.all(orderQueries.search, { customer_id: s.customer_id as CustomersId, status: s.status, sort: s.sort, limit: s.limit, offset: s.offset });
     case "revenue":
       return db.all(reportQueries.revenueByCustomer);
     case "customers":

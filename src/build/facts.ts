@@ -6,7 +6,7 @@
 // Boundary: nothing here reads SQL text beyond what scan.ts provides. Nothing
 // here produces TypeScript; typegen.ts does that from these facts.
 import { DatabaseSync, constants } from "node:sqlite";
-import { definitions, normalize, quoteIdent, tokenize, unquote } from "./scan.ts";
+import { aliasMap, definitions, normalize, quoteIdent, tokenize, unquote } from "./scan.ts";
 
 export type ColumnFact = {
   name: string;
@@ -110,11 +110,30 @@ export class Engine {
     return out;
   }
 
+  // Tables the plan reads in full (`SCAN t`), by table name. An optional
+  // filter written as `(:p is null or col = :p)` disables the index, and
+  // this is how the build tells the agent.
+  fullScans(sql: string): string[] {
+    // The plan names the alias; the text maps it back to the table.
+    const aliases = aliasMap(sql);
+    const out: string[] = [];
+    for (const r of this.db.prepare(`explain query plan ${sql}`).all()) {
+      const m = /^SCAN\s+(\S+)$/.exec((r as { detail: string }).detail);
+      if (!m) continue;
+      const alias = unquote(m[1]!);
+      const table = aliases.get(alias) ?? alias;
+      if (table && !out.includes(table)) out.push(table);
+    }
+    return out;
+  }
+
   // The declared type each output column would get in CREATE TABLE ... AS.
   // Only a column reference or a CAST has one; every other expression gets "".
   affinities(sql: string): Map<string, string> {
     const name = `_solarsql_probe_${Math.random().toString(36).slice(2)}`;
-    this.db.exec(`create temp table ${quoteIdent(name)} as ${sql} limit 0`);
+    // The statement is wrapped, so its own LIMIT and ORDER BY stay valid.
+    // Parameters bind as NULL, which is fine for a probe that reads no row.
+    this.db.exec(`create temp table ${quoteIdent(name)} as select * from (${sql}) limit 0`);
     try {
       const rows = this.db.prepare(`pragma table_xinfo(${quoteIdent(name)})`).all() as { name: string; type: string }[];
       return new Map(rows.map((r) => [r.name, r.type]));

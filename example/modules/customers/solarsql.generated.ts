@@ -27,8 +27,8 @@ export type Generated = {
 };
 
 export const generated: Meta<Generated> = {
-  "\n    -- One customer, or none.\n    select id, name, email from customers where id = :id": { params: ["id"], json: [] },
-  "\n    -- Every customer, by name.\n    select id, name, email from customers order by name": { params: [], json: [] },
-  "insert into customers (id, name, email) values (:id, :name, :email)": { params: ["id", "name", "email"], json: [] },
-  "select id, name, email from customers where id = :id": { params: ["id"], json: [] },
+  "\n    -- One customer, or none.\n    select id, name, email from customers where id = :id": { params: ["id"], encode: [], json: [] },
+  "\n    -- Every customer, by name.\n    select id, name, email from customers order by name": { params: [], encode: [], json: [] },
+  "insert into customers (id, name, email) values (:id, :name, :email)": { params: ["id", "name", "email"], encode: [], json: [] },
+  "select id, name, email from customers where id = :id": { params: ["id"], encode: [], json: [] },
 };

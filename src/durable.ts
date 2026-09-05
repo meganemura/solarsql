@@ -6,7 +6,7 @@
 // module runs on both without a change.
 // Boundary: no SQL is composed here beyond the assert statement that
 // runtime/plan.ts defines.
-import type { Command, CommandResult, Database, Entry, GeneratedMap, ParamsArg, PlanShape, Query, Row, SqlValue } from "./index.ts";
+import type { Command, CommandResult, Database, Entry, GeneratedMap, ParamsArg, PlanShape, Query, Row, SqlValue, StatementMeta } from "./index.ts";
 import { assertFailure, assertStatement, bindValues, parseJson } from "./runtime/plan.ts";
 import { splitStatements } from "./build/scan.ts";
 
@@ -18,7 +18,7 @@ export type StorageLike = {
 };
 
 export function durable(storage: StorageLike): Database {
-  const rows = (sql: string, meta: { params: readonly string[]; json: readonly string[] }, params: Record<string, unknown>) =>
+  const rows = (sql: string, meta: StatementMeta, params: Record<string, unknown>) =>
     parseJson(storage.sql.exec(sql, ...bindValues(meta, params)).toArray(), meta.json);
 
   return {

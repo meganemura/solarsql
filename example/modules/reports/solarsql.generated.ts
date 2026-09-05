@@ -12,5 +12,5 @@ export type Generated = {
 };
 
 export const generated: Meta<Generated> = {
-  "\n    -- Confirmed revenue per customer, largest first.\n    select c.id as customer_id, c.name,\n      cast(sum(l.qty * l.price) as real) as revenue,\n      cast(count(distinct o.id) as integer) as orders\n    from customers c\n    join orders o on o.customer_id = c.id and o.status = 'confirmed'\n    join order_lines l on l.order_id = o.id\n    group by c.id\n    order by revenue desc": { params: [], json: [] },
+  "\n    -- Confirmed revenue per customer, largest first.\n    select c.id as customer_id, c.name,\n      cast(sum(l.qty * l.price) as real) as revenue,\n      cast(count(distinct o.id) as integer) as orders\n    from customers c\n    join orders o on o.customer_id = c.id and o.status = 'confirmed'\n    join order_lines l on l.order_id = o.id\n    group by c.id\n    order by revenue desc": { params: [], encode: [], json: [] },
 };

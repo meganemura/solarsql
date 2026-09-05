@@ -33,6 +33,8 @@ describe("solarsql build", () => {
       const result = await build(join(dir, "example/solarsql.config.ts"));
       assert.deepEqual(result.modules.map((m) => [m.name, m.changed]), [["customers", false], ["orders", false], ["reports", false]]);
       assert.deepEqual(result.migration, { pending: false, statements: [], reason: null });
+      // The optional filter of orderQueries.search reads orders in full, and the build says so.
+      assert.deepEqual(result.scans.map((s) => [s.module, s.tables]), [["orders", ["orders"]]]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

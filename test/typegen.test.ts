@@ -38,7 +38,7 @@ describe("Typer.analyze", () => {
     const a = t.analyze("-- One order, or none.\nselect id, status, note from orders where id = :id", "orders");
     assert.equal(a.doc, "One order, or none.");
     assert.equal(a.returnsRows, true);
-    assert.deepEqual(a.params, [{ name: "id", type: "OrdersId" }]);
+    assert.deepEqual(a.params, [{ name: "id", type: "OrdersId", encode: false }]);
     assert.deepEqual(a.columns, [
       { name: "id", type: "OrdersId", json: false },
       { name: "status", type: '"draft" | "confirmed"', json: false },
@@ -50,13 +50,13 @@ describe("Typer.analyze", () => {
   test("an insert infers parameter types from the column list", () => {
     const a = t.analyze("insert into orders (id, customer_id, status) values (:id, :customer_id, 'draft')", "orders");
     assert.equal(a.returnsRows, false);
-    assert.deepEqual(a.params, [{ name: "id", type: "OrdersId" }, { name: "customer_id", type: "CustomersId" }]);
+    assert.deepEqual(a.params, [{ name: "id", type: "OrdersId", encode: false }, { name: "customer_id", type: "CustomersId", encode: false }]);
     assert.deepEqual([...a.brands].sort(), ["CustomersId", "OrdersId"]);
   });
 
   test("an update infers from SET and WHERE, nullable column allows null", () => {
     const a = t.analyze("update orders set note = :note where id = :id and status = :status", "orders");
-    assert.deepEqual(a.params, [{ name: "note", type: "string | null" }, { name: "id", type: "OrdersId" }, { name: "status", type: '"draft" | "confirmed"' }]);
+    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["note", "string | null"], ["id", "OrdersId"], ["status", '"draft" | "confirmed"']]);
   });
 
   test("a JSON aggregation over an outer join with a filter", () => {
@@ -67,7 +67,7 @@ describe("Typer.analyze", () => {
       where o.customer_id = :customer_id group by o.id`,
       "orders",
     );
-    assert.deepEqual(a.params, [{ name: "customer_id", type: "CustomersId" }]);
+    assert.deepEqual(a.params, [{ name: "customer_id", type: "CustomersId", encode: false }]);
     assert.deepEqual(a.columns, [
       { name: "id", type: "OrdersId", json: false },
       { name: "customer_name", type: "string", json: false },
@@ -111,12 +111,32 @@ describe("Typer.analyze", () => {
   test("an assert predicate as its composed statement", () => {
     const a = t.analyze(assertStatement("has_lines", "exists (select 1 from order_lines where order_id = :id)"), "orders");
     assert.equal(a.returnsRows, false);
-    assert.deepEqual(a.params, [{ name: "id", type: "OrdersId" }]);
+    assert.deepEqual(a.params, [{ name: "id", type: "OrdersId", encode: false }]);
   });
 
-  test("insert ... select maps a parameter by position, and a table-valued function parameter has the plain value type", () => {
+  test("insert ... select from json_each types the rows parameter from the column list", () => {
     const a = t.analyze("insert into order_lines (id, order_id, sku, qty) select value ->> 'id', :order_id, value ->> 'sku', value ->> 'qty' from json_each(:lines)", "orders");
-    assert.deepEqual(a.params, [{ name: "order_id", type: "OrdersId" }, { name: "lines", type: "SqlValue" }]);
+    assert.deepEqual(a.params, [
+      { name: "order_id", type: "OrdersId", encode: false },
+      { name: "lines", type: 'readonly { "id": OrderLinesId; "sku": string; "qty": number }[]', encode: true },
+    ]);
+  });
+
+  test("an IN list through json_each is an array of the column type", () => {
+    const a = t.analyze("select id from orders o where o.id in (select value from json_each(:ids))", "orders");
+    assert.deepEqual(a.params, [{ name: "ids", type: "readonly OrdersId[]", encode: true }]);
+  });
+
+  test("a sort chosen by a parameter is a union, and limit and offset are numbers", () => {
+    const a = t.analyze("select id from orders where customer_id = :c order by case :sort when 'id' then id when 'status' then status end limit :limit offset :offset", "orders");
+    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["c", "CustomersId"], ["sort", '"id" | "status"'], ["limit", "number"], ["offset", "number"]]);
+  });
+
+  test("an optional filter is reported as a full scan", () => {
+    const a = t.analyze("select id from orders where (:status is null or status = :status)", "orders");
+    assert.deepEqual(a.params, [{ name: "status", type: '"draft" | "confirmed" | null', encode: false }]);
+    assert.deepEqual(a.scans, ["orders"]);
+    assert.deepEqual(t.analyze("select id from orders where id = :id", "orders").scans, []);
   });
 
   test("returning gives rows with brands", () => {

@@ -31,6 +31,8 @@ export type Module = {
 export type BuildResult = {
   modules: { name: string; generatedPath: string; entries: number; changed: boolean }[];
   migration: { pending: boolean; statements: string[]; reason: string | null };
+  // Statements whose plan scans a table in full despite a WHERE clause.
+  scans: { module: string; sql: string; tables: string[] }[];
 };
 
 export type Loaded = { config: Config; configDir: string; modules: Module[] };
@@ -142,6 +144,7 @@ export async function build(configPath: string): Promise<BuildResult> {
     const typer = new Typer(engine, brands);
     const brandModule = new Map([...brands.values()].map((b) => [b.typeName, b.module]));
     const results: BuildResult["modules"] = [];
+    const scans: BuildResult["scans"] = [];
 
     for (const m of modules) {
       const entries: { key: string; analysis: Analysis }[] = [];
@@ -150,6 +153,7 @@ export async function build(configPath: string): Promise<BuildResult> {
         const analysis = typer.analyze(sql, m.name);
         checkBoundary(engine, m, owner, sql);
         for (const b of analysis.brands) used.add(b);
+        if (analysis.scans.length > 0) scans.push({ module: m.name, sql: key, tables: analysis.scans });
         entries.push({ key, analysis });
       }
       checkCommands(m, entries);
@@ -176,7 +180,7 @@ export async function build(configPath: string): Promise<BuildResult> {
     }
 
     const migration = migrationStatus(configDir, config, modules);
-    return { modules: results, migration };
+    return { modules: results, migration, scans };
   } finally {
     engine.close();
   }

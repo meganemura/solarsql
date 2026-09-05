@@ -360,10 +360,20 @@ export function aliasMap(sql: string): Map<string, string | null> {
 //   set:     `set <column> = :p`
 //   insert:  `insert into <table> (<columns>) values (..., :p, ...)`
 //   other:   anything else
+//   in_json: `<column> in (select value from json_each(:p))`, an array
+//   rows_json: `insert into t (c1, c2) select value ->> 'k1', value ->> 'k2' from json_each(:p)`, an array of objects
+//   one_of:  `case :p when 'a' ... when 'b'`, a union of the literals
+//   number:  `limit :p`, `offset :p`
 export type ParamSite =
   | { kind: "compare"; alias: string | null; column: string }
   | { kind: "set"; column: string }
   | { kind: "insert"; table: string; column: string }
+  | { kind: "in_json"; alias: string | null; column: string }
+  | { kind: "rows_json"; table: string; keys: { key: string; column: string }[] }
+  | { kind: "one_of"; literals: string[] }
+  | { kind: "number" }
+  // `:p is null`: the optional-filter idiom, so the parameter allows null.
+  | { kind: "nullable" }
   | { kind: "other" };
 
 const compareOps = new Set(["=", "==", "<>", "!=", "<", ">", "<=", ">=", "like", "glob", "is"]);
@@ -411,18 +421,30 @@ export function paramSites(sql: string): Map<string, ParamSite[]> {
     if (isKeyword(tok, "select") && insertTable && insertColumns.length > 0 && t[i - 1]?.text === ")" && t[i - 1]!.depth === tok.depth) {
       let index = 0;
       let itemStart = i + 1;
-      for (let k = i + 1; k <= t.length; k++) {
+      // `value ->> 'key'` items, for a json_each source below.
+      const keys: { key: string; column: string }[] = [];
+      let k = i + 1;
+      for (; k <= t.length; k++) {
         const cur = t[k];
         const ends = !cur || (cur.depth === tok.depth && (cur.text === "," || isKeyword(cur, "from") || cur.text === ";"));
         if (!ends) continue;
-        if (k - itemStart === 1 && t[itemStart]!.type === "param" && t[itemStart]!.text.startsWith(":") && insertColumns[index]) {
-          add(t[itemStart]!.text.slice(1), { kind: "insert", table: insertTable, column: insertColumns[index]! });
+        const column = insertColumns[index];
+        if (k - itemStart === 1 && t[itemStart]!.type === "param" && t[itemStart]!.text.startsWith(":") && column) {
+          add(t[itemStart]!.text.slice(1), { kind: "insert", table: insertTable, column });
           // Mark the token so the generic pass below skips it.
           (t[itemStart] as { handled?: boolean }).handled = true;
+        }
+        if (k - itemStart === 3 && isKeyword(t[itemStart], "value") && t[itemStart + 1]!.text === "->>" && t[itemStart + 2]!.type === "string" && column) {
+          keys.push({ key: t[itemStart + 2]!.text.slice(1, -1).replace(/''/g, "'"), column });
         }
         index++;
         itemStart = k + 1;
         if (!cur || cur.text !== ",") break;
+      }
+      // ... from json_each(:rows)
+      if (isKeyword(t[k], "from") && isKeyword(t[k + 1], "json_each") && t[k + 2]?.text === "(" && t[k + 3]?.type === "param" && t[k + 4]?.text === ")" && keys.length > 0) {
+        add(t[k + 3]!.text.slice(1), { kind: "rows_json", table: insertTable, keys });
+        (t[k + 3] as { handled?: boolean }).handled = true;
       }
       continue;
     }
@@ -434,6 +456,38 @@ export function paramSites(sql: string): Map<string, ParamSite[]> {
     const next = t[i + 1];
     if (valuesDepth !== -1 && tok.depth === valuesDepth && insertTable && insertColumns[valueIndex]) {
       add(name, { kind: "insert", table: insertTable, column: insertColumns[valueIndex]! });
+      continue;
+    }
+    // <ref> in (select value from json_each(:p))
+    if (
+      prev?.text === "(" && isKeyword(t[i - 2], "json_each") && isKeyword(t[i - 3], "from") && isKeyword(t[i - 4], "value") &&
+      isKeyword(t[i - 5], "select") && t[i - 6]?.text === "(" && isKeyword(t[i - 7], "in")
+    ) {
+      const ref = refAt(i - 8, -1);
+      if (ref) {
+        add(name, { kind: "in_json", alias: ref.alias, column: ref.column });
+        continue;
+      }
+    }
+    // case :p when 'a' then ... when 'b' then ... end
+    if (isKeyword(prev, "case")) {
+      const literals: string[] = [];
+      for (let k = i + 1; k < t.length; k++) {
+        const cur = t[k]!;
+        if (cur.depth < tok.depth || (cur.depth === tok.depth && isKeyword(cur, "end"))) break;
+        if (cur.depth === tok.depth && isKeyword(cur, "when") && t[k + 1]?.type === "string") literals.push(t[k + 1]!.text.slice(1, -1).replace(/''/g, "'"));
+      }
+      if (literals.length > 0) {
+        add(name, { kind: "one_of", literals });
+        continue;
+      }
+    }
+    if (isKeyword(prev, "limit") || isKeyword(prev, "offset")) {
+      add(name, { kind: "number" });
+      continue;
+    }
+    if (isKeyword(next, "is") && (isKeyword(t[i + 2], "null") || (isKeyword(t[i + 2], "not") && isKeyword(t[i + 3], "null")))) {
+      add(name, { kind: "nullable" });
       continue;
     }
     if (prev && compareOps.has(prev.text.toLowerCase())) {

@@ -18,21 +18,26 @@ export type Id<T extends string> = string & { readonly [idBrand]: T };
 // One entry of the generated map: the parameters a statement takes and the
 // row it returns. A statement that returns no rows has an empty row type.
 export type Entry = {
-  params: Record<string, SqlValue>;
+  params: Record<string, unknown>;
   row: Record<string, unknown>;
 };
 
 export type GeneratedMap = Record<string, Entry>;
 
 // The value the generated file exports. Per statement: the parameter names
-// in the order SQLite numbers them, and the columns that hold JSON text.
+// in the order SQLite numbers them, the parameters the adapter encodes as
+// JSON text (arrays for json_each), and the columns that hold JSON text.
 // The optional `__types` member carries the type map for inference only and
 // never holds a value.
 export type Meta<G extends GeneratedMap> = {
-  [K in keyof G]: { params: readonly (keyof G[K]["params"] & string)[]; json: readonly (keyof G[K]["row"] & string)[] };
+  [K in keyof G]: {
+    params: readonly (keyof G[K]["params"] & string)[];
+    encode: readonly (keyof G[K]["params"] & string)[];
+    json: readonly (keyof G[K]["row"] & string)[];
+  };
 } & { readonly __types?: G };
 
-export type StatementMeta = { params: readonly string[]; json: readonly string[] };
+export type StatementMeta = { params: readonly string[]; encode: readonly string[]; json: readonly string[] };
 
 // --- schema -------------------------------------------------------------------
 
@@ -163,7 +168,7 @@ export type Database = {
 
 function metaOf(generated: Meta<GeneratedMap>, sql: string): StatementMeta {
   const m = (generated as Record<string, StatementMeta | undefined>)[sql];
-  return m ?? { params: [], json: [] };
+  return m ?? { params: [], encode: [], json: [] };
 }
 
 // --- configuration ------------------------------------------------------------

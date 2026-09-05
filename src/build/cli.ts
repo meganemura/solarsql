@@ -17,6 +17,9 @@ async function main(argv: string[]): Promise<number> {
     for (const m of result.modules) {
       console.log(`${m.changed ? "wrote  " : "current"} ${m.generatedPath} (${m.entries} statements)`);
     }
+    for (const s of result.scans) {
+      console.log(`scan    ${s.module}: ${s.tables.join(", ")} read in full by: ${s.sql.replace(/\s+/g, " ").trim().slice(0, 100)}`);
+    }
     if (result.migration.reason) {
       console.error(`migration blocked: ${result.migration.reason}`);
       return 1;

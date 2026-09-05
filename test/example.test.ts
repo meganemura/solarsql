@@ -101,6 +101,20 @@ for (const target of ["d1", "do"] as const) {
       assert.deepEqual(revenue, [{ customer_id: "c1", name: "Ann", revenue: 7, orders: 1 }]);
     });
 
+    test("an IN list longer than D1's 100 bound values, through one json_each parameter", async () => {
+      const ids = ["o1", "o2", ...Array.from({ length: 150 }, (_, i) => `missing${i}`)];
+      assert.deepEqual(await value({ step: "ordersByIds", ids }), [{ id: "o1", status: "confirmed" }, { id: "o2", status: "draft" }]);
+    });
+
+    test("an optional filter, a sort chosen by a parameter, and paging in one static query", async () => {
+      assert.deepEqual(await value({ step: "search", customer_id: "c1", status: null, sort: "id", limit: 10, offset: 0 }), [
+        { id: "o1", status: "confirmed", note: null },
+        { id: "o2", status: "draft", note: null },
+      ]);
+      assert.deepEqual(await value({ step: "search", customer_id: "c1", status: "draft", sort: "id", limit: 10, offset: 0 }), [{ id: "o2", status: "draft", note: null }]);
+      assert.deepEqual(await value({ step: "search", customer_id: "c1", status: null, sort: "status", limit: 1, offset: 1 }), [{ id: "o2", status: "draft", note: null }]);
+    });
+
     test("a query without parameters", async () => {
       assert.deepEqual(await value({ step: "customers" }), [{ id: "c1", name: "Ann", email: "ann@example.com" }]);
     });

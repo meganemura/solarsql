@@ -26,10 +26,14 @@ export type Analysis = {
   doc: string;
   // A query returns rows. A statement of a plan returns nothing.
   returnsRows: boolean;
-  params: { name: string; type: string }[];
+  // `encode` marks a parameter the adapter turns into JSON text: an array
+  // for json_each.
+  params: { name: string; type: string; encode: boolean }[];
   columns: { name: string; type: string; json: boolean }[];
   // Brands this entry uses, for the imports of the generated file.
   brands: Set<string>;
+  // Tables the engine scans in full for a statement with a WHERE clause.
+  scans: string[];
 };
 
 export function pascal(name: string): string {
@@ -128,8 +132,9 @@ export class Typer {
         columns.push(this.outputColumn(sql, out, item, aliases, nullableAliases, affinities, note));
       }
     }
-    const params = names.map((name) => ({ name, type: this.paramType(sql, name, aliases, note) }));
-    return { sql, doc: leadingComment(sql), returnsRows, params, columns, brands };
+    const params = names.map((name) => ({ name, ...this.paramType(sql, name, aliases, note) }));
+    const scans = select && /\bwhere\b/i.test(sql) ? this.engine.fullScans(sql) : [];
+    return { sql, doc: leadingComment(sql), returnsRows, params, columns, brands, scans };
   }
 
   private outputColumn(
@@ -255,25 +260,54 @@ export class Typer {
   }
 
   // The type of one named parameter, from where it sits in the statement.
-  private paramType(sql: string, name: string, aliases: Map<string, string | null>, note: (r: Resolved) => Resolved): string {
+  private paramType(sql: string, name: string, aliases: Map<string, string | null>, note: (r: Resolved) => Resolved): { type: string; encode: boolean } {
     const sites = paramSites(sql).get(name) ?? [];
     const types = new Set<string>();
+    let encode = false;
+    let nullable = false;
+    const withNull = (r: Resolved) => (r.nullable ? `${note(r).type} | null` : note(r).type);
+    const ofRef = (alias: string | null, column: string): Resolved | null => {
+      const a = alias ?? this.aliasOfBareColumn(aliases, column);
+      const table = a === null ? null : aliases.get(a) ?? null;
+      return table ? this.column(table, column, sql) : null;
+    };
     for (const site of sites) {
       let r: Resolved | null = null;
       if (site.kind === "compare") {
-        const alias = site.alias ?? this.aliasOfBareColumn(aliases, site.column);
-        const table = alias === null ? null : aliases.get(alias) ?? null;
-        if (table) r = this.column(table, site.column, sql);
+        r = ofRef(site.alias, site.column);
       } else if (site.kind === "insert") {
         r = this.column(site.table, site.column, sql);
       } else if (site.kind === "set") {
         const table = updateTarget(sql);
         if (table) r = this.column(table, site.column, sql);
+      } else if (site.kind === "in_json") {
+        const e = ofRef(site.alias, site.column);
+        if (e) {
+          types.add(`readonly ${note(e).type}[]`);
+          encode = true;
+        }
+        continue;
+      } else if (site.kind === "rows_json") {
+        const fields = site.keys.map((k) => `${JSON.stringify(k.key)}: ${withNull(this.column(site.table, k.column, sql))}`);
+        types.add(`readonly { ${fields.join("; ")} }[]`);
+        encode = true;
+        continue;
+      } else if (site.kind === "one_of") {
+        types.add(site.literals.map((l) => JSON.stringify(l)).join(" | "));
+        continue;
+      } else if (site.kind === "number") {
+        types.add("number");
+        continue;
+      } else if (site.kind === "nullable") {
+        nullable = true;
+        continue;
       }
-      if (r) types.add(r.nullable ? `${note(r).type} | null` : note(r).type);
+      if (r) types.add(withNull(r));
     }
     if (types.size > 1) throw new BuildError(`parameter :${name} is used with two different types: ${[...types].join(" and ")}`, sql);
-    return types.size === 1 ? [...types][0]! : "SqlValue";
+    let type = types.size === 1 ? [...types][0]! : "SqlValue";
+    if (nullable && type !== "SqlValue" && !/\| null$/.test(type)) type = `${type} | null`;
+    return { type, encode };
   }
 }
 
