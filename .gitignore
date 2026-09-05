@@ -1,0 +1,17 @@
+# Local-only project instructions
+CLAUDE.local.md
+
+# Task specs and worker reports. Never referenced from committed content.
+.claude-team/
+
+node_modules/
+dist/
+
+# Local Claude Code settings for this checkout
+.claude/
+
+# Hegel failure database
+.hegel/
+
+# wrangler and miniflare local state
+.wrangler/
