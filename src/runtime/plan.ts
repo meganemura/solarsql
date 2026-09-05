@@ -3,7 +3,7 @@
 // order of parameter values, the detection of an assert failure in an
 // engine error, and the parsing of JSON columns.
 // Boundary: no engine access. The adapters call the engine.
-import type { SqlValue, StatementMeta } from "../index.ts";
+import type { ConstraintFailure, SqlValue, StatementMeta } from "../index.ts";
 
 export const GUARD_TABLE = "solarsql_assert";
 
@@ -62,4 +62,50 @@ export function parseJson<R extends Record<string, unknown>>(rows: readonly Reco
     }
     return out as R;
   });
+}
+
+// The message of an engine error without the D1 prefix and the extended
+// result code suffix that D1 and a Durable Object append.
+function bareMessage(error: unknown): string {
+  const e = error as { message?: string; cause?: { message?: string } };
+  const message = e.cause?.message ?? e.message ?? "";
+  return message.replace(/^D1_ERROR:\s*/, "").replace(/:\s*SQLITE_CONSTRAINT(?:_[A-Z]+)?\s*(?:\(extended:[^)]*\))?\s*$/, "");
+}
+
+// A constraint failure as a value, when the error is one. The text formats
+// are the same on node:sqlite, D1, and a Durable Object.
+export function constraintFailure(error: unknown): ConstraintFailure | null {
+  const m = bareMessage(error);
+  let match: RegExpExecArray | null;
+  if ((match = /^UNIQUE constraint failed: (.+)$/.exec(m))) {
+    const refs = match[1]!.split(",").map((r) => r.trim().split("."));
+    const table = refs[0]?.[0] ?? "";
+    return { kind: "unique", table, columns: refs.map((r) => r[1] ?? r[0] ?? "") };
+  }
+  if ((match = /^CHECK constraint failed: (.+)$/.exec(m))) return { kind: "check", constraint: match[1]! };
+  if ((match = /^NOT NULL constraint failed: ([^.]+)\.(.+)$/.exec(m))) return { kind: "not_null", table: match[1]!, column: match[2]! };
+  if (/^FOREIGN KEY constraint failed$/.test(m)) return { kind: "foreign_key" };
+  if ((match = /^cannot store (\w+) value in (\w+) column ([^.]+)\.(.+)$/.exec(m))) {
+    return { kind: "datatype", table: match[3]!, column: match[4]!, stored: match[1]!, declared: match[2]! };
+  }
+  return null;
+}
+
+// Time one call and report it to the observe hook.
+export async function observed<T>(hook: ((event: { kind: "query" | "command"; name: string; ms: number; outcome: string }) => void) | undefined, kind: "query" | "command", name: string, body: () => Promise<T>, outcomeOf: (value: T) => string): Promise<T> {
+  if (!hook) return body();
+  const start = performance.now();
+  try {
+    const value = await body();
+    hook({ kind, name, ms: performance.now() - start, outcome: outcomeOf(value) });
+    return value;
+  } catch (e) {
+    hook({ kind, name, ms: performance.now() - start, outcome: "error" });
+    throw e;
+  }
+}
+
+export function outcomeOf(result: { ok: boolean; kind?: string; assert?: string }): string {
+  if (result.ok) return "ok";
+  return result.kind === "assert" ? `assert:${result.assert}` : (result.kind ?? "error");
 }
