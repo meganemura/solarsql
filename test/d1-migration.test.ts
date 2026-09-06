@@ -1,5 +1,6 @@
-// A generated migration file must run on D1 the way wrangler runs it: split
-// into statements and sent as one batch. This file generates two migrations
+// A generated migration file must run on D1 the way wrangler runs it locally:
+// split into statements and sent as one batch. (Remotely D1 splits the file
+// on its own server side; ADR 0036 records what that changed.) This file generates two migrations
 // from declared DDL with node:sqlite, applies them to the local D1 engine, and
 // checks the shape, the rows, and the constraints after a table rebuild.
 import { after, before, describe, test } from "node:test";
