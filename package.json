@@ -11,6 +11,7 @@
   "files": [
     "src",
     "dist",
+    "skills",
     "README.md",
     "LICENSE"
   ],

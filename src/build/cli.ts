@@ -77,6 +77,7 @@ async function main(argv: string[]): Promise<number> {
     console.log(`next    node --test                 runs modules/${module}/module.test.ts on node:sqlite`);
     console.log(`        npx tsc --noEmit            typescript and @types/node are the dev dependencies it needs`);
     console.log(`        import { d1 } from "solarsql/d1", or "solarsql/durable", in the Worker; see the README`);
+    console.log(`        point AGENTS.md at node_modules/solarsql/skills/solarsql/SKILL.md, the usage documentation for an agent`);
     return 0;
   }
   console.error(usage);

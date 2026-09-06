@@ -48,6 +48,7 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0035](adr/0035-several-reads-in-one-round-trip.md) | Several reads go in one D1 round trip through db.batch |
 | [0036](adr/0036-the-example-deploys-with-wrangler.md) | The example deploys with wrangler, and a remote test runs its steps |
 | [0037](adr/0037-init-writes-the-first-module.md) | init writes the first module and runs the first build |
+| [0038](adr/0038-the-skill-is-the-usage-documentation.md) | The skill is the usage documentation, and the README is the door |
 
 ## Measurements
 

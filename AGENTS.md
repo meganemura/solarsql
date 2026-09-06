@@ -19,6 +19,7 @@ The library is in `src/`: `index.ts` (the API), `d1.ts`, `durable.ts`, and `node
 A module is three files: `module.ts` (its tables, indexes, search tables, views, triggers, queries, and commands), `public.ts` (what other modules may import), and `solarsql.generated.ts` (written by the build).
 The example project in `example/` is the one the tests run.
 
+The usage documentation is the skill in `skills/solarsql/`: `SKILL.md` is the workflow, and `references/` holds the rules by task (schema, queries, commands, running, build, migrations, deploy). It is the master; the README is the door for a human and points into it. A rule is written once, in a reference.
 The design records live in `docs/` as ADRs.
 Read them before you change the shape.
 

@@ -54,7 +54,7 @@ EOF
 
 # --- solarsql arm ---------------------------------------------------------
 A="$WORK/starters/solarsql"
-common "$A" solarsql "solarsql (typed SQL for D1 and Durable Objects)" "modules/ holds one directory per module: module.ts (the schema, the queries, and the commands), public.ts, and the generated types."
+common "$A" solarsql "solarsql (typed SQL for D1 and Durable Objects); its usage documentation for an agent is at node_modules/solarsql/skills/solarsql/SKILL.md" "modules/ holds one directory per module: module.ts (the schema, the queries, and the commands), public.ts, and the generated types."
 cp -R "$REPO/example/modules" "$A/modules"
 find "$A/modules" -name "*.ts" -exec sed -i '' -e 's#from "\(\.\./\)*src/index\.ts"#from "solarsql"#' {} +
 # The orders module of the starter is fixed here, so a later change to the

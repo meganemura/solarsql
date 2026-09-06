@@ -50,6 +50,7 @@ test("npm pack, install, and run the CLI from node_modules", { timeout: 180_000 
     // The installed package carries the source next to the compiled output.
     assert.ok(existsSync(join(dir, "consumer/node_modules/solarsql/src/index.ts")));
     assert.ok(existsSync(join(dir, "consumer/node_modules/solarsql/dist/index.js")));
+    assert.ok(existsSync(join(dir, "consumer/node_modules/solarsql/skills/solarsql/SKILL.md")));
 
     const cli = join(dir, "consumer/node_modules/.bin/solarsql");
     const built = spawnSync(cli, ["build", "example/solarsql.config.ts"], { cwd: join(dir, "consumer"), encoding: "utf8" });
