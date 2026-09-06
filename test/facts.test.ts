@@ -72,6 +72,16 @@ describe("Engine", () => {
     assert.deepEqual(select.filter((a) => a.action === "read").map((a) => `${a.table}.${a.column}`).sort(), ["customers.id", "customers.name", "orders.customer_id", "orders.id"]);
   });
 
+  test("fullScans: a scan through an index counts, a search and json_each do not", () => {
+    const e = new Engine([`create table t (id text primary key not null, a text not null, b text) strict`, `create index t_a on t (a)`]);
+    const plan = (sql: string) => e.fullScans(sql);
+    assert.deepEqual(plan("select id from t where b = :b"), ["t"]);
+    assert.deepEqual(plan("select id from t where b = :b order by id"), ["t"]);
+    assert.deepEqual(plan("select id from t where length(id) > 0 order by id"), ["t"]);
+    assert.deepEqual(plan("select id from t where a = :a"), []);
+    assert.deepEqual(plan("select id from t where id in (select value from json_each(:ids))"), []);
+  });
+
   test("prepare rejects an unknown column with the engine's message", () => {
     assert.throws(() => engine.prepare("select nope from orders"), /no such column: nope/);
   });

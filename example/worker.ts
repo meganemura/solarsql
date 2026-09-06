@@ -16,6 +16,7 @@ type Step =
   | { step: "placeOrder"; id: string; customer_id: string; lines: { id: string; sku: string; qty: number; price: number }[] }
   | { step: "ordersByIds"; ids: string[] }
   | { step: "search"; customer_id: string; status: "draft" | "confirmed" | null; sort: "id" | "status"; limit: number; offset: number }
+  | { step: "byNote"; pattern: string }
   | { step: "confirm"; id: string }
   | { step: "annotate"; id: string; note: string | null }
   | { step: "order"; id: string }
@@ -48,6 +49,8 @@ async function run(db: Database, s: Step): Promise<unknown> {
       return db.all(orderQueries.byIds, { ids: s.ids as OrdersId[] });
     case "search":
       return db.all(orderQueries.search, { customer_id: s.customer_id as CustomersId, status: s.status, sort: s.sort, limit: s.limit, offset: s.offset });
+    case "byNote":
+      return db.all(orderQueries.byNote, { pattern: s.pattern });
     case "revenue":
       return db.all(reportQueries.revenueByCustomer);
     case "customers":

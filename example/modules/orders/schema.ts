@@ -21,4 +21,5 @@ export const orderLines = table(`
   ) strict
 `);
 
+export const ordersByCustomer = index(`create index orders_customer_id on orders (customer_id)`);
 export const orderLinesByOrder = index(`create index order_lines_order_id on order_lines (order_id)`);

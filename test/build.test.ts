@@ -33,8 +33,8 @@ describe("solarsql build", () => {
       const result = await build(join(dir, "example/solarsql.config.ts"));
       assert.deepEqual(result.modules.map((m) => [m.name, m.changed]), [["customers", false], ["orders", false], ["reports", false]]);
       assert.deepEqual(result.migration, { pending: false, statements: [], reason: null });
-      // The optional filter of orderQueries.search reads orders in full, and the build says so.
-      assert.deepEqual(result.scans.map((s) => [s.module, s.tables]), [["orders", ["orders"]]]);
+      // orderQueries.byNote filters with LIKE on a column without an index, and the build says so.
+      assert.deepEqual(result.scans.map((s) => [s.module, s.tables, /note like/.test(s.sql)]), [["orders", ["orders"], true]]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -64,9 +64,10 @@ describe("solarsql build", () => {
       assert.deepEqual(first.migration.statements, [`alter table "orders" add column placed_at integer not null default 0`]);
 
       const written = await migration(join(dir, "example/solarsql.config.ts"), "placed_at");
-      assert.equal(written.filename, "0002_placed_at.sql");
+      // The example already holds two files, so the next one is the third.
+      assert.equal(written.filename, "0003_placed_at.sql");
       const index = readFileSync(join(dir, "example/migrations/index.ts"), "utf8");
-      assert.match(index, /0002_placed_at\.sql/);
+      assert.match(index, /0003_placed_at\.sql/);
 
       const second = await build(join(dir, "example/solarsql.config.ts"));
       assert.equal(second.migration.pending, false);

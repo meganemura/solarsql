@@ -122,7 +122,11 @@ export class Engine {
     const aliases = aliasMap(sql);
     const out: string[] = [];
     for (const r of this.db.prepare(`explain query plan ${sql}`).all()) {
-      const m = /^SCAN\s+(\S+)$/.exec((r as { detail: string }).detail);
+      const detail = (r as { detail: string }).detail;
+      // json_each is a parameter, and a scan of it is its only plan.
+      if (detail.includes("VIRTUAL TABLE")) continue;
+      // A scan through an index, covering or not, still visits every row.
+      const m = /^SCAN\s+(\S+)(?:\s+USING\s+(?:COVERING\s+)?INDEX\s+\S+)?$/.exec(detail);
       if (!m) continue;
       const alias = unquote(m[1]!);
       const table = aliases.get(alias) ?? alias;

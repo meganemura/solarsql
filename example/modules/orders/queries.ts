@@ -23,9 +23,12 @@ export const orderQueries = queries(generated, {
     select id, status from orders where id in (select value from json_each(:ids)) order by id`,
   search: `
     -- Orders of one customer, with an optional status and a chosen order.
-    -- The optional filter reads the table in full, which the build reports.
     select id, status, note from orders
     where customer_id = :customer_id and (:status is null or status = :status)
     order by case :sort when 'id' then id when 'status' then status end
     limit :limit offset :offset`,
+  byNote: `
+    -- Orders whose note matches a pattern. No index serves LIKE, so this
+    -- reads the table in full, and the build reports it.
+    select id, status, note from orders where note like :pattern order by id`,
 });
