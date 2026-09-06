@@ -276,7 +276,9 @@ function checkImports(modules: readonly Module[]): void {
 }
 
 // A module may touch its own tables, the primary key of a table its foreign
-// keys reference, the guard table, and everything when it reads all.
+// keys reference, the foreign key columns of tables that reference its own
+// (a delete from a parent table reads them), the guard table, and
+// everything when it reads all.
 // Tables outside the declared schema (json_each, pragma_*) are not checked.
 // `subject` names what is checked when it is not the statement itself: a
 // view, read whole, or a trigger body, seen through a statement that fires
@@ -289,7 +291,7 @@ function checkBoundary(engine: Engine, m: Module, owner: Map<string, Module>, sq
     const o = owner.get(table);
     if (!o || table === GUARD_TABLE || o === m) continue;
     if (a.action === "read" && m.readsAll) continue;
-    if (a.action === "read" && a.column && isReferencedKey(engine, m, table, a.column)) continue;
+    if (a.action === "read" && a.column && (isReferencedKey(engine, m, table, a.column) || isReferencingKey(engine, m, owner, table, a.column))) continue;
     const what = a.action === "read" ? `reads ${table}.${a.column}` : a.action === "insert" ? `inserts into ${table}` : a.action === "update" ? `updates ${table}` : `deletes from ${table}`;
     const who = subject ? `module ${m.name}: ${subject}` : `module ${m.name}`;
     throw new BuildError(`${who} ${what}. Module ${o.name} owns ${table}. Use its public.ts, or declare readsAll for a report module.`, subject ? undefined : sql);
@@ -326,6 +328,13 @@ function isReferencedKey(engine: Engine, m: Module, table: string, column: strin
     if (t.foreignKeys.some((f) => f.table === table && f.to === column)) return true;
   }
   return false;
+}
+
+// The engine checks a delete from, or an update of the key of, a parent
+// table by reading the foreign key columns of every child, in whichever
+// module the child lives.
+function isReferencingKey(engine: Engine, m: Module, owner: Map<string, Module>, table: string, column: string): boolean {
+  return engine.table(table).foreignKeys.some((f) => f.from === column && owner.get(f.table) === m);
 }
 
 // Rules a plan must follow: one type per parameter name across the plan,

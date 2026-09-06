@@ -129,6 +129,19 @@ describe("solarsql build", () => {
     }
   });
 
+  test("a delete from a parent table passes, and a read of the child beyond its foreign key does not", async () => {
+    // The engine checks a delete from customers by reading orders.customer_id;
+    // the example's clear command is that delete, and the build passes it.
+    const dir = copy();
+    try {
+      const queries = join(dir, "example/modules/customers/module.ts");
+      writeFileSync(queries, readFileSync(queries, "utf8").replace("all: `", "drafts: `select status from orders`,\n  all: `"));
+      await expectBuildError(dir, /module customers reads orders\.status\. Module orders owns orders/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a module that reads another module's table without readsAll is refused", async () => {
     const dir = copy();
     try {
