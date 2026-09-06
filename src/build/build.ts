@@ -8,12 +8,12 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { Command, Config, Index, ModuleConfig, PlanItem, Query, Table } from "../index.ts";
+import type { Command, Config, Index, ModuleConfig, PlanItem, Query, Table, Trigger, View } from "../index.ts";
 import { GUARD_DDL, GUARD_TABLE, assertStatement } from "../runtime/plan.ts";
 import { GENERATED_FILE, emitGenerated, emitMigrationsIndex, emitStub } from "./emit.ts";
 import { Engine } from "./facts.ts";
 import { applied, diff, introspect, open, render } from "./migration.ts";
-import { created } from "./scan.ts";
+import { created, quoteIdent, triggerTarget } from "./scan.ts";
 import { BuildError, Typer, brandName, type Analysis, type Brand } from "./typegen.ts";
 
 export type Module = {
@@ -22,6 +22,8 @@ export type Module = {
   readsAll: boolean;
   tables: string[];
   indexes: string[];
+  views: string[];
+  triggers: string[];
   // Every statement the module runs, keyed by what the generated map keys it
   // on: the SQL of a query or statement, or the predicate of an assert.
   statements: Map<string, string>;
@@ -59,10 +61,15 @@ export async function load(configPath: string): Promise<Loaded> {
     const schema = await importFresh(join(dir, "schema.ts"));
     const tables: string[] = [];
     const indexes: string[] = [];
+    const views: string[] = [];
+    const triggers: string[] = [];
     for (const value of Object.values(schema)) {
-      const v = value as Table | Index;
-      if (v && typeof v === "object" && v.kind === "table") tables.push(v.sql);
-      if (v && typeof v === "object" && v.kind === "index") indexes.push(v.sql);
+      const v = value as Table | Index | View | Trigger;
+      if (!v || typeof v !== "object") continue;
+      if (v.kind === "table") tables.push(v.sql);
+      if (v.kind === "index") indexes.push(v.sql);
+      if (v.kind === "view") views.push(v.sql);
+      if (v.kind === "trigger") triggers.push(v.sql);
     }
     const statements = new Map<string, string>();
     const commands: Module["commands"] = [];
@@ -91,7 +98,7 @@ export async function load(configPath: string): Promise<Loaded> {
         }
       }
     }
-    modules.push({ name, dir, readsAll: mc.readsAll ?? false, tables, indexes, statements, commands });
+    modules.push({ name, dir, readsAll: mc.readsAll ?? false, tables, indexes, views, triggers, statements, commands });
   }
   return { config, configDir, modules };
 }
@@ -114,8 +121,10 @@ async function importFresh(path: string): Promise<Record<string, unknown>> {
 
 // The declared schema: every table and index of every module, plus the
 // guard table and its trigger.
+// Tables first, then indexes, views, and triggers, since a view reads
+// tables and a trigger body may read a view.
 export function declaredDdl(modules: readonly Module[]): string[] {
-  return [...modules.flatMap((m) => m.tables), ...modules.flatMap((m) => m.indexes), ...GUARD_DDL];
+  return [...modules.flatMap((m) => m.tables), ...modules.flatMap((m) => m.indexes), ...modules.flatMap((m) => m.views), ...modules.flatMap((m) => m.triggers), ...GUARD_DDL];
 }
 
 export async function build(configPath: string): Promise<BuildResult> {
@@ -137,6 +146,19 @@ export async function build(configPath: string): Promise<BuildResult> {
       const c = created(sql);
       if (!c || c.kind !== "index") throw new BuildError(`module ${m.name}: index() needs one CREATE INDEX statement`, sql);
     }
+    for (const sql of m.views) {
+      const c = created(sql);
+      if (!c || c.kind !== "view") throw new BuildError(`module ${m.name}: view() needs one CREATE VIEW statement`, sql);
+    }
+  }
+  // A trigger sits on a table of its own module.
+  for (const m of modules) {
+    for (const sql of m.triggers) {
+      const t = triggerTarget(sql);
+      if (!t) throw new BuildError(`module ${m.name}: trigger() needs one CREATE TRIGGER statement with BEFORE, AFTER, or INSTEAD OF, an event, and ON <table>`, sql);
+      const o = owner.get(t.table);
+      if (o !== m) throw new BuildError(`module ${m.name}: trigger ${t.name} is on table ${t.table}, which ${o ? `module ${o.name} owns` : "no module declares"}. A trigger belongs to the module of its table.`, sql);
+    }
   }
 
   const engine = new Engine(declaredDdl(modules));
@@ -153,6 +175,10 @@ export async function build(configPath: string): Promise<BuildResult> {
         throw new BuildError(`table ${t.name} is not STRICT. Add \`strict\` after the closing parenthesis, so the engine rejects a value that does not match the declared type.`);
       }
       if (pk.length === 1) brands.set(t.name, { table: t.name, column: pk[0]!.name, typeName: brandName(t.name), module: m.name });
+    }
+    for (const m of modules) {
+      for (const sql of m.views) checkBoundary(engine, m, owner, `select * from ${quoteIdent(created(sql)!.name)}`, `view ${created(sql)!.name}`);
+      for (const sql of m.triggers) checkTriggerBoundary(engine, m, owner, sql);
     }
     const typer = new Typer(engine, brands);
     const brandModule = new Map([...brands.values()].map((b) => [b.typeName, b.module]));
@@ -206,17 +232,34 @@ export async function build(configPath: string): Promise<BuildResult> {
 // A module may touch its own tables, the primary key of a table its foreign
 // keys reference, the guard table, and everything when it reads all.
 // Tables outside the declared schema (json_each, pragma_*) are not checked.
-function checkBoundary(engine: Engine, m: Module, owner: Map<string, Module>, sql: string): void {
+// `subject` names what is checked when it is not the statement itself: a
+// view, read whole, or a trigger body, seen through a statement that fires
+// it. `via` keeps the accesses of one trigger only.
+function checkBoundary(engine: Engine, m: Module, owner: Map<string, Module>, sql: string, subject?: string, via?: string): void {
   for (const a of engine.accesses(sql)) {
     if (a.action === "function" || a.action === "other" || !a.table) continue;
+    if (via !== undefined && a.via !== via) continue;
     const table = a.table;
     const o = owner.get(table);
     if (!o || table === GUARD_TABLE || o === m) continue;
     if (a.action === "read" && m.readsAll) continue;
     if (a.action === "read" && a.column && isReferencedKey(engine, m, table, a.column)) continue;
     const what = a.action === "read" ? `reads ${table}.${a.column}` : `${a.action}s into ${table}`;
-    throw new BuildError(`module ${m.name} ${what}. Module ${o.name} owns ${table}. Use its public.ts, or declare readsAll for a report module.`, sql);
+    const who = subject ? `module ${m.name}: ${subject}` : `module ${m.name}`;
+    throw new BuildError(`${who} ${what}. Module ${o.name} owns ${table}. Use its public.ts, or declare readsAll for a report module.`, subject ? undefined : sql);
   }
+}
+
+// The engine compiles a trigger body with the statement that fires it, and
+// the authorizer reports the body's accesses with the trigger's name. So a
+// statement of the trigger's event is prepared, and the accesses it
+// reports through the trigger are checked.
+function checkTriggerBoundary(engine: Engine, m: Module, owner: Map<string, Module>, sql: string): void {
+  const t = triggerTarget(sql)!;
+  const table = quoteIdent(t.table);
+  const first = quoteIdent(engine.table(t.table).columns[0]!.name);
+  const firing = t.event === "insert" ? `insert into ${table} default values` : t.event === "delete" ? `delete from ${table}` : `update ${table} set ${first} = ${first}`;
+  checkBoundary(engine, m, owner, firing, `trigger ${t.name}`, t.name);
 }
 
 function isReferencedKey(engine: Engine, m: Module, table: string, column: string): boolean {

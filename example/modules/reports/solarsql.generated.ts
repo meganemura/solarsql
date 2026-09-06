@@ -3,6 +3,7 @@
 // Module reports.
 import type { Meta } from "../../../src/index.ts";
 import type { CustomersId } from "../customers/solarsql.generated.ts";
+import type { OrdersId } from "../orders/solarsql.generated.ts";
 
 export type Generated = {
   /** Confirmed revenue per customer, largest first. */
@@ -10,8 +11,14 @@ export type Generated = {
     params: {};
     row: { customer_id: CustomersId; name: string; revenue: number | null; orders: number };
   };
+  /** Every confirmed order with its customer's name, through the view. */
+  "\n    -- Every confirmed order with its customer's name, through the view.\n    select id, customer_id, customer_name from confirmed_orders order by id": {
+    params: {};
+    row: { id: OrdersId; customer_id: CustomersId; customer_name: string };
+  };
 };
 
 export const generated: Meta<Generated> = {
   "\n    -- Confirmed revenue per customer, largest first.\n    select c.id as customer_id, c.name,\n      cast(sum(l.qty * l.price) as real) as revenue,\n      cast(count(distinct o.id) as integer) as orders\n    from customers c\n    join orders o on o.customer_id = c.id and o.status = 'confirmed'\n    join order_lines l on l.order_id = o.id\n    group by c.id\n    order by revenue desc": { params: [], encode: [], json: [] },
+  "\n    -- Every confirmed order with its customer's name, through the view.\n    select id, customer_id, customer_name from confirmed_orders order by id": { params: [], encode: [], json: [] },
 };

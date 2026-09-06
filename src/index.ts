@@ -43,6 +43,8 @@ export type StatementMeta = { params: readonly string[]; encode: readonly string
 
 export type Table = { kind: "table"; sql: string };
 export type Index = { kind: "index"; sql: string };
+export type View = { kind: "view"; sql: string };
+export type Trigger = { kind: "trigger"; sql: string };
 
 // A table of this module. `sql` is one CREATE TABLE statement. The leading
 // `--` comment lines are the documentation of the table.
@@ -53,6 +55,18 @@ export function table<const S extends string>(sql: S): Table & { sql: S } {
 // An index on a table of this module. `sql` is one CREATE INDEX statement.
 export function index<const S extends string>(sql: S): Index & { sql: S } {
   return { kind: "index", sql };
+}
+
+// A view of this module. `sql` is one CREATE VIEW statement. A query reads
+// it like a table, and the boundary check sees the tables under it.
+export function view<const S extends string>(sql: S): View & { sql: S } {
+  return { kind: "view", sql };
+}
+
+// A trigger on a table of this module. `sql` is one CREATE TRIGGER
+// statement. Its body may touch the tables of this module only.
+export function trigger<const S extends string>(sql: S): Trigger & { sql: S } {
+  return { kind: "trigger", sql };
 }
 
 // --- queries ------------------------------------------------------------------

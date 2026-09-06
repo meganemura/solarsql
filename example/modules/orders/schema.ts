@@ -1,4 +1,4 @@
-import { index, table } from "../../../src/index.ts";
+import { index, table, trigger } from "../../../src/index.ts";
 
 export const orders = table(`
   -- An order placed by one customer.
@@ -6,8 +6,17 @@ export const orders = table(`
     id text primary key not null,
     customer_id text not null references customers(id),
     status text not null check (status in ('draft', 'confirmed')),
-    note text
+    note text,
+    updated_at text
   ) strict
+`);
+
+// The engine stamps the time of the last change, so no command has to.
+export const ordersTouch = trigger(`
+  create trigger orders_touch after update on orders
+  begin
+    update orders set updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = new.id;
+  end
 `);
 
 export const orderLines = table(`

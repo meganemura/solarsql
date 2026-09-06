@@ -23,6 +23,7 @@ type Step =
   | { step: "order"; id: string }
   | { step: "ordersOf"; customer_id: string }
   | { step: "revenue" }
+  | { step: "confirmedOrders" }
   | { step: "customers" }
   | { step: "observed" };
 
@@ -56,6 +57,8 @@ async function run(db: Database, s: Step): Promise<unknown> {
       return db.all(orderQueries.byNote, { pattern: s.pattern });
     case "revenue":
       return db.all(reportQueries.revenueByCustomer);
+    case "confirmedOrders":
+      return db.all(reportQueries.confirmedOrders);
     case "customers":
       return db.all(customerQueries.all);
     case "observed":

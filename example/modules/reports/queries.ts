@@ -12,4 +12,7 @@ export const reportQueries = queries(generated, {
     join order_lines l on l.order_id = o.id
     group by c.id
     order by revenue desc`,
+  confirmedOrders: `
+    -- Every confirmed order with its customer's name, through the view.
+    select id, customer_id, customer_name from confirmed_orders order by id`,
 });

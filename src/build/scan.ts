@@ -211,6 +211,26 @@ export function created(sql: string): { kind: "table" | "index" | "trigger" | "v
   return { kind, name: unquote(name.text) };
 }
 
+// The name, the event, and the table of a CREATE TRIGGER statement, else null.
+export function triggerTarget(sql: string): { name: string; event: "insert" | "update" | "delete"; table: string } | null {
+  const t = significant(tokenize(sql));
+  const c = created(sql);
+  if (!c || c.kind !== "trigger") return null;
+  let i = t.findIndex((tok) => tok.type === "ident" && unquote(tok.text) === c.name && tok.depth === 0) + 1;
+  if (i === 0) return null;
+  if (isKeyword(t[i], "before") || isKeyword(t[i], "after")) i++;
+  else if (isKeyword(t[i], "instead") && isKeyword(t[i + 1], "of")) i += 2;
+  const eventTok = t[i];
+  if (!eventTok) return null;
+  const event = eventTok.text.toLowerCase();
+  if (event !== "insert" && event !== "update" && event !== "delete") return null;
+  i++;
+  while (t[i] && !isKeyword(t[i], "on")) i++;
+  const table = t[i + 1];
+  if (!table || table.type !== "ident") return null;
+  return { name: c.name, event, table: unquote(table.text) };
+}
+
 // Split a token range at top-level commas (depth equal to the depth of the
 // first token). Returns the text of each item with its span.
 export function splitAtCommas(sql: string, tokens: Token[], from: number, to: number): { text: string; start: number; end: number }[] {

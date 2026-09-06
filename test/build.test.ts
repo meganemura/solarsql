@@ -77,16 +77,16 @@ describe("solarsql build", () => {
     const dir = copy();
     try {
       const schema = join(dir, "example/modules/orders/schema.ts");
-      writeFileSync(schema, readFileSync(schema, "utf8").replace("note text\n", "note text,\n    placed_at integer not null default 0\n"));
+      writeFileSync(schema, readFileSync(schema, "utf8").replace("updated_at text\n", "updated_at text,\n    placed_at integer not null default 0\n"));
       const first = await build(join(dir, "example/solarsql.config.ts"));
       assert.equal(first.migration.pending, true);
       assert.deepEqual(first.migration.statements, [`alter table "orders" add column placed_at integer not null default 0`]);
 
       const written = await migration(join(dir, "example/solarsql.config.ts"), "placed_at");
-      // The example already holds two files, so the next one is the third.
-      assert.equal(written.filename, "0003_placed_at.sql");
+      // The example already holds three files, so the next one is the fourth.
+      assert.equal(written.filename, "0004_placed_at.sql");
       const index = readFileSync(join(dir, "example/migrations/index.ts"), "utf8");
-      assert.match(index, /0003_placed_at\.sql/);
+      assert.match(index, /0004_placed_at\.sql/);
 
       const second = await build(join(dir, "example/solarsql.config.ts"));
       assert.equal(second.migration.pending, false);
@@ -101,6 +101,39 @@ describe("solarsql build", () => {
       const queries = join(dir, "example/modules/orders/queries.ts");
       writeFileSync(queries, readFileSync(queries, "utf8").replace("byCustomer: `", "names: `select name from customers`,\n  byCustomer: `"));
       await expectBuildError(dir, /module orders reads customers\.name\. Module customers owns customers/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a trigger body that writes another module's table is refused", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/orders/schema.ts");
+      writeFileSync(schema, readFileSync(schema, "utf8").replace("update orders set updated_at", "update customers set name = 'x' where id = new.customer_id;\n    update orders set updated_at"));
+      await expectBuildError(dir, /module orders: trigger orders_touch updates into customers\. Module customers owns customers/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a trigger on another module's table is refused", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/orders/schema.ts");
+      writeFileSync(schema, readFileSync(schema, "utf8").replace("after update on orders", "after update on customers"));
+      await expectBuildError(dir, /module orders: trigger orders_touch is on table customers, which module customers owns/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a view that reads another module's table needs readsAll", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/orders/schema.ts");
+      writeFileSync(schema, readFileSync(schema, "utf8").replace("import { index, table, trigger }", "import { index, table, trigger, view }") + `\nexport const names = view("create view customer_names as select id, name from customers");\n`);
+      await expectBuildError(dir, /module orders: view customer_names reads customers\.name\. Module customers owns customers/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
