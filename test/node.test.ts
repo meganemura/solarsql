@@ -56,5 +56,6 @@ describe("the example on node:sqlite", () => {
     assert.ok(outcomes.includes("command create unique"), outcomes.join("\n"));
     assert.ok(outcomes.includes("command confirm assert:was_draft"));
     assert.ok(outcomes.includes("query withLines ok"));
+    assert.ok(events.every((e) => !("meta" in e)), "node:sqlite reports no engine meta");
   });
 });

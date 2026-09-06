@@ -46,11 +46,16 @@ Retry, concurrency, and dependency injection stay in the calling code. A functio
 `options.observe` is a hook for a logger or a tracer, called once per call:
 
 ```ts
-const db = d1(env.DB, { observe: (e) => console.log(e.kind, e.name, e.outcome, `${e.ms.toFixed(1)}ms`) });
-// e: { kind: "query" | "batch" | "command"; name: string; ms: number; outcome: string }
+const db = d1(env.DB, { observe: (e) => console.log(e.kind, e.name, e.outcome, `${e.ms.toFixed(1)}ms`, e.meta?.rows_read) });
+// e: { kind: "query" | "batch" | "command"; name: string; ms: number; outcome: string; meta?: EngineMeta }
 // outcome: "ok", "assert:<name>", a constraint kind, or "error" when thrown
 // the name of a batch is the query names joined with "+"
+// meta, on D1 only: { rows_read, rows_written, duration, served_by_region?, served_by_primary? }
+//   under the names D1 uses; a batch and a command sum the rows and the duration of their statements;
+//   absent on a Durable Object, on node:sqlite, and when the call threw
 ```
+
+D1 bills on `rows_read` and `rows_written`, so a cost tracer reads `e.meta`.
 
 ## Ids
 

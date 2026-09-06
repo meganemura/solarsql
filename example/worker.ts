@@ -72,7 +72,7 @@ async function run(db: Database, s: Step): Promise<unknown> {
     case "customers":
       return db.all(customerQueries.all);
     case "observed":
-      return events.splice(0).map((e) => ({ kind: e.kind, name: e.name, outcome: e.outcome, timed: e.ms >= 0 }));
+      return events.splice(0).map((e) => ({ kind: e.kind, name: e.name, outcome: e.outcome, timed: e.ms >= 0, meta: e.meta ?? null }));
     case "reset": {
       // Both stores keep their rows between runs of the remote test.
       const cleared = await db.run(orderCommands.clear);

@@ -200,12 +200,20 @@ export type CommandResult<C> = C extends Command<infer G, infer P>
 
 // What the observe hook of an adapter receives after each query, batch of
 // queries, or command. A batch is named by its queries, joined with "+".
+// What D1 reports about a call, under the names D1 uses: the rows it read
+// and wrote (D1 bills on them), its own duration in milliseconds, and where
+// it ran. A command or a batch sums the rows and the duration of its
+// statements. A Durable Object and node:sqlite report none, and the field
+// is absent.
+export type EngineMeta = { rows_read: number; rows_written: number; duration: number; served_by_region?: string; served_by_primary?: boolean };
+
 export type Observed = {
   kind: "query" | "batch" | "command";
   name: string;
   ms: number;
   // "ok", "assert:<name>", a constraint kind, or "error" when thrown.
   outcome: string;
+  meta?: EngineMeta;
 };
 
 export type AdapterOptions = {

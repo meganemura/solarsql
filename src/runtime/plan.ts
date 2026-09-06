@@ -91,18 +91,50 @@ export function constraintFailure(error: unknown): ConstraintFailure | null {
   return null;
 }
 
-// Time one call and report it to the observe hook.
-export async function observed<T>(hook: ((event: { kind: "query" | "batch" | "command"; name: string; ms: number; outcome: string }) => void) | undefined, kind: "query" | "batch" | "command", name: string, body: () => Promise<T>, outcomeOf: (value: T) => string): Promise<T> {
-  if (!hook) return body();
+export type EngineMeta = { rows_read: number; rows_written: number; duration: number; served_by_region?: string; served_by_primary?: boolean };
+
+type Event = { kind: "query" | "batch" | "command"; name: string; ms: number; outcome: string; meta?: EngineMeta };
+
+// Time one call and report it to the observe hook. The body gets a
+// `report` for the engine's meta, when the engine gives one.
+export async function observed<T>(hook: ((event: Event) => void) | undefined, kind: "query" | "batch" | "command", name: string, body: (report: (meta: EngineMeta | undefined) => void) => Promise<T>, outcomeOf: (value: T) => string): Promise<T> {
+  let meta: EngineMeta | undefined;
+  const report = (m: EngineMeta | undefined) => {
+    meta = m;
+  };
+  if (!hook) return body(report);
   const start = performance.now();
+  const event = (outcome: string): Event => ({ kind, name, ms: performance.now() - start, outcome, ...(meta ? { meta } : {}) });
   try {
-    const value = await body();
-    hook({ kind, name, ms: performance.now() - start, outcome: outcomeOf(value) });
+    const value = await body(report);
+    hook(event(outcomeOf(value)));
     return value;
   } catch (e) {
-    hook({ kind, name, ms: performance.now() - start, outcome: "error" });
+    hook(event("error"));
     throw e;
   }
+}
+
+// The meta of one reply or of a batch of replies, as D1 reports it: the
+// rows and the duration summed, the region and the primary flag from the
+// first reply that names them. Undefined when no reply carries numbers.
+export function engineMeta(replies: readonly { meta?: unknown }[]): EngineMeta | undefined {
+  let out: EngineMeta | undefined;
+  for (const r of replies) {
+    const m = r.meta as Partial<Record<keyof EngineMeta, unknown>> | undefined;
+    if (!m || typeof m.rows_read !== "number" || typeof m.rows_written !== "number") continue;
+    const duration = typeof m.duration === "number" ? m.duration : 0;
+    if (!out) {
+      out = { rows_read: m.rows_read, rows_written: m.rows_written, duration };
+      if (typeof m.served_by_region === "string") out.served_by_region = m.served_by_region;
+      if (typeof m.served_by_primary === "boolean") out.served_by_primary = m.served_by_primary;
+    } else {
+      out.rows_read += m.rows_read;
+      out.rows_written += m.rows_written;
+      out.duration += duration;
+    }
+  }
+  return out;
 }
 
 export function outcomeOf(result: { ok: boolean; kind?: string; assert?: string }): string {
