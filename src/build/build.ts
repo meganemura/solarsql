@@ -8,7 +8,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { Command, Config, Index, ModuleConfig, PlanItem, Query, Table, Trigger, View } from "../index.ts";
+import type { Command, Config, Index, ModuleConfig, PlanItem, Query, Search, Table, Trigger, View } from "../index.ts";
 import { GUARD_DDL, GUARD_TABLE, assertStatement } from "../runtime/plan.ts";
 import { GENERATED_FILE, emitGenerated, emitMigrationsIndex, emitStub } from "./emit.ts";
 import { Engine } from "./facts.ts";
@@ -22,6 +22,7 @@ export type Module = {
   readsAll: boolean;
   tables: string[];
   indexes: string[];
+  searches: string[];
   views: string[];
   triggers: string[];
   // Every statement the module runs, keyed by what the generated map keys it
@@ -71,16 +72,18 @@ export async function load(configPath: string, write = true): Promise<Loaded> {
     }
     const tables: string[] = [];
     const indexes: string[] = [];
+    const searches: string[] = [];
     const views: string[] = [];
     const triggers: string[] = [];
     const statements = new Map<string, string>();
     const commands: Module["commands"] = [];
     // One file exports the schema, the queries, and the commands (ADR 0033).
     for (const value of Object.values(await importFresh(source))) {
-      const v = value as (Table | Index | View | Trigger | { kind: "queries"; entries: Record<string, Query<string, never>> } | { kind: "commands"; entries: Record<string, Command<never, never>> }) | null;
+      const v = value as (Table | Index | Search | View | Trigger | { kind: "queries"; entries: Record<string, Query<string, never>> } | { kind: "commands"; entries: Record<string, Command<never, never>> }) | null;
       if (!v || typeof v !== "object" || !("kind" in v)) continue;
       if (v.kind === "table") tables.push(v.sql);
       if (v.kind === "index") indexes.push(v.sql);
+      if (v.kind === "search") searches.push(v.sql);
       if (v.kind === "view") views.push(v.sql);
       if (v.kind === "trigger") triggers.push(v.sql);
       if (v.kind === "queries") {
@@ -97,7 +100,7 @@ export async function load(configPath: string, write = true): Promise<Loaded> {
         }
       }
     }
-    modules.push({ name, dir, readsAll: mc.readsAll ?? false, tables, indexes, views, triggers, statements, commands });
+    modules.push({ name, dir, readsAll: mc.readsAll ?? false, tables, indexes, searches, views, triggers, statements, commands });
   }
   return { config, configDir, modules };
 }
@@ -120,10 +123,17 @@ async function importFresh(path: string): Promise<Record<string, unknown>> {
 
 // The declared schema: every table and index of every module, plus the
 // guard table and its trigger.
-// Tables first, then indexes, views, and triggers, since a view reads
-// tables and a trigger body may read a view.
+// Tables first, then indexes, search tables, views, and triggers, since a
+// view reads tables and a trigger body may write a search table.
 export function declaredDdl(modules: readonly Module[]): string[] {
-  return [...modules.flatMap((m) => m.tables), ...modules.flatMap((m) => m.indexes), ...modules.flatMap((m) => m.views), ...modules.flatMap((m) => m.triggers), ...GUARD_DDL];
+  return [
+    ...modules.flatMap((m) => m.tables),
+    ...modules.flatMap((m) => m.indexes),
+    ...modules.flatMap((m) => m.searches),
+    ...modules.flatMap((m) => m.views),
+    ...modules.flatMap((m) => m.triggers),
+    ...GUARD_DDL,
+  ];
 }
 
 export async function build(configPath: string, options: BuildOptions = {}): Promise<BuildResult> {
@@ -146,6 +156,13 @@ export async function build(configPath: string, options: BuildOptions = {}): Pro
     for (const sql of m.indexes) {
       const c = created(sql);
       if (!c || c.kind !== "index") throw new BuildError(`module ${m.name}: index() needs one CREATE INDEX statement`, sql);
+    }
+    for (const sql of m.searches) {
+      const c = created(sql);
+      if (!c || c.kind !== "virtual" || !/\busing\s+fts5\s*\(/i.test(sql)) throw new BuildError(`module ${m.name}: search() needs one CREATE VIRTUAL TABLE ... USING fts5(...) statement`, sql);
+      const other = owner.get(c.name);
+      if (other) throw new BuildError(`table ${c.name} is declared by module ${other.name} and by module ${m.name}`);
+      owner.set(c.name, m);
     }
     for (const sql of m.views) {
       const c = created(sql);
@@ -175,7 +192,7 @@ export async function build(configPath: string, options: BuildOptions = {}): Pro
     for (const t of engine.tables()) {
       const pk = t.columns.filter((c) => c.pk > 0);
       const m = owner.get(t.name);
-      if (!m) continue;
+      if (!m || t.virtual) continue;
       if (pk.length === 0) throw new BuildError(`table ${t.name} has no primary key. Declare one: id text primary key not null.`);
       // A STRICT table makes its primary key NOT NULL by itself, so the id
       // brand is never nullable (ADR 0018, ADR 0029).

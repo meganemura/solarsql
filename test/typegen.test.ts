@@ -20,6 +20,7 @@ const ddl = [
   `create table order_lines (id text primary key not null, order_id text not null references orders(id), sku text not null, qty integer not null, price real)`,
   `create table files (id text primary key not null, size integer not null, flag integer not null check (flag in (0, 1)), total integer not null as (size * 2) stored, label text as (id || ':' || size) virtual) strict`,
   `create table tags (id text primary key not null, line_id text not null references order_lines(id), name text not null) strict`,
+  `create virtual table note_search using fts5(order_id unindexed, note)`,
   ...GUARD_DDL,
 ];
 
@@ -208,6 +209,15 @@ describe("Typer.analyze", () => {
     assert.deepEqual(a.params, [{ name: "flag", type: "0 | 1", encode: false }]);
     // The engine refuses a write to a generated column, with its own message.
     assert.throws(() => t.analyze("insert into files (id, size, flag, total) values (:id, :size, :flag, :total)", "files"), (e: unknown) => e instanceof BuildError && /generated column/.test(e.message));
+  });
+
+  test("a full-text search table: text columns, a numeric rank, and a string match parameter", () => {
+    const a = t.analyze("select order_id, note, rank, cast(bm25(note_search) as real) as score from note_search where note_search match :q order by rank", "orders");
+    assert.deepEqual(a.columns.map((c) => [c.name, c.type]), [["order_id", "string | null"], ["note", "string | null"], ["rank", "number"], ["score", "number | null"]]);
+    assert.deepEqual(a.params, [{ name: "q", type: "string", encode: false }]);
+    assert.deepEqual(a.scans, []);
+    const b = t.analyze("insert into note_search (order_id, note) values (:id, :note)", "orders");
+    assert.deepEqual(b.params.map((p) => [p.name, p.type]), [["id", "string | null"], ["note", "string | null"]]);
   });
 
   test("returning gives rows with brands", () => {

@@ -44,6 +44,7 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0031](adr/0031-some-casts-are-not-null.md) | A CAST over a shape that is never null is not null |
 | [0032](adr/0032-node-sqlite-adapter.md) | A node:sqlite adapter for tests and scripts |
 | [0033](adr/0033-one-source-file-per-module.md) | A module is three files: its source, its public file, and its generated file |
+| [0034](adr/0034-search-is-an-fts5-table.md) | Full-text search is an FTS5 table declared with search() |
 
 ## Measurements
 

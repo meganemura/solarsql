@@ -21,6 +21,7 @@ const ddl = [
   `create table tags (id text primary key not null, line_id text not null references order_lines(id), name text not null) strict`,
   `create table files (id text primary key not null, data blob not null, size integer not null, flag integer not null check (flag in (0, 1)), meta any, total integer not null as (size * 2) stored) strict`,
   `create view confirmed as select id, customer_id from orders where status = 'confirmed'`,
+  `create virtual table note_search using fts5(order_id unindexed, note)`,
   ...GUARD_DDL,
 ];
 
@@ -69,6 +70,7 @@ const shapes: [string, string, string, string][] = [
   ["exists with a cast is not null", "select cast(exists (select 1 from orders where id = :id) as integer) as found", "id: OrdersId", "found: number"],
   ["a generated column", "select id, total from files where id = :id", "id: FilesId", "id: FilesId; total: number"],
   ["a one-to-many inside a one-to-many", "select o.id, coalesce(json_group_array(json_object('id', l.id, 'tags', json((select json_group_array(g.name) from tags g where g.line_id = l.id)))) filter (where l.id is not null), '[]') as lines from orders o left join order_lines l on l.order_id = o.id where o.id = :id group by o.id", "id: OrdersId", "id: OrdersId; lines: Array<{ \"id\": OrderLinesId; \"tags\": Array<string> }> (json)"],
+  ["a full-text search joined back to its table", "select o.id, o.note from note_search join orders o on o.id = note_search.order_id where note_search match :q order by rank", "q: string", "id: OrdersId; note: string | null"],
   ["a count with a cast", "select cast(count(*) as integer) as n from orders where customer_id = :customer_id", "customer_id: CustomersId", "n: number"],
 ];
 

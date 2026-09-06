@@ -103,10 +103,10 @@ describe("solarsql build", () => {
       assert.deepEqual(first.migration.statements, [`alter table "orders" add column placed_at integer not null default 0`]);
 
       const written = await migration(join(dir, "example/solarsql.config.ts"), "placed_at");
-      // The example already holds three files, so the next one is the fourth.
-      assert.equal(written.filename, "0004_placed_at.sql");
+      // The example already holds four files, so the next one is the fifth.
+      assert.equal(written.filename, "0005_placed_at.sql");
       const index = readFileSync(join(dir, "example/migrations/index.ts"), "utf8");
-      assert.match(index, /0004_placed_at\.sql/);
+      assert.match(index, /0005_placed_at\.sql/);
 
       const second = await build(join(dir, "example/solarsql.config.ts"));
       assert.equal(second.migration.pending, false);
@@ -146,8 +146,8 @@ describe("solarsql build", () => {
       try {
         const schema = join(dir, "example/modules/orders/module.ts");
         const body = readFileSync(schema, "utf8").replace("after update on orders", head).replace("update orders set updated_at", "update customers set name = 'x' where id = new.customer_id;\n    update orders set updated_at");
-        // A DELETE trigger sees old, not new.
-        writeFileSync(schema, head.includes("delete") ? body.replace(/new\./g, "old.") : body);
+        // A DELETE trigger sees old, not new; only this trigger's body changes.
+        writeFileSync(schema, head.includes("delete") ? body.replace("id = new.customer_id", "id = old.customer_id").replace("where id = new.id", "where id = old.id") : body);
         await expectBuildError(dir, /module orders: trigger orders_touch updates customers\. Module customers owns customers/);
       } finally {
         rmSync(dir, { recursive: true, force: true });
@@ -161,6 +161,22 @@ describe("solarsql build", () => {
       const schema = join(dir, "example/modules/orders/module.ts");
       writeFileSync(schema, readFileSync(schema, "utf8").replace("after update on orders", "after delete on orders"));
       await expectBuildError(dir, /module orders: trigger orders_touch: no such column: new\.id\n  in: create trigger orders_touch after delete on orders/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("search() needs an FTS5 virtual table, and another module may not read it without readsAll", async () => {
+    const dir = copy();
+    try {
+      const module = join(dir, "example/modules/orders/module.ts");
+      const source = readFileSync(module, "utf8");
+      writeFileSync(module, source.replace("using fts5(order_id unindexed, note)", "using rtree(id, x0, x1)"));
+      await expectBuildError(dir, /module orders: search\(\) needs one CREATE VIRTUAL TABLE \.\.\. USING fts5/);
+      writeFileSync(module, source);
+      const customers = join(dir, "example/modules/customers/module.ts");
+      writeFileSync(customers, readFileSync(customers, "utf8").replace("byId: `", "notes: `select order_id from order_search where order_search match :q`,\n  byId: `"));
+      await expectBuildError(dir, /module customers reads order_search\.order_id\. Module orders owns order_search/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -182,7 +198,7 @@ describe("solarsql build", () => {
     try {
       const schema = join(dir, "example/modules/orders/module.ts");
       const own = `\nexport const notes = view("create view order_notes as select id, note from orders");\nexport const notesInsert = trigger("create trigger order_notes_insert instead of insert on order_notes begin update orders set note = new.note where id = new.id; end");\n`;
-      writeFileSync(schema, readFileSync(schema, "utf8").replace("import { assert, commands, index, queries, table, trigger }", "import { assert, commands, index, queries, table, trigger, view }") + own);
+      writeFileSync(schema, readFileSync(schema, "utf8").replace(/^import \{ /m, "import { view, ") + own);
       await build(join(dir, "example/solarsql.config.ts"));
       const reports = join(dir, "example/modules/reports/module.ts");
       writeFileSync(reports, readFileSync(reports, "utf8").replace("import { queries, view }", "import { queries, trigger, view }") + `\nexport const drop = trigger("create trigger confirmed_delete instead of delete on confirmed_orders begin delete from orders where id = old.id; end");\n`);
@@ -196,7 +212,7 @@ describe("solarsql build", () => {
     const dir = copy();
     try {
       const schema = join(dir, "example/modules/orders/module.ts");
-      writeFileSync(schema, readFileSync(schema, "utf8").replace("import { assert, commands, index, queries, table, trigger }", "import { assert, commands, index, queries, table, trigger, view }") + `\nexport const names = view("create view customer_names as select id, name from customers");\n`);
+      writeFileSync(schema, readFileSync(schema, "utf8").replace(/^import \{ /m, "import { view, ") + `\nexport const names = view("create view customer_names as select id, name from customers");\n`);
       await expectBuildError(dir, /module orders: view customer_names reads customers\.name\. Module customers owns customers/);
     } finally {
       rmSync(dir, { recursive: true, force: true });

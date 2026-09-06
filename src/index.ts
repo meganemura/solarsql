@@ -54,6 +54,7 @@ export type Table = { kind: "table"; sql: string };
 export type Index = { kind: "index"; sql: string };
 export type View = { kind: "view"; sql: string };
 export type Trigger = { kind: "trigger"; sql: string };
+export type Search = { kind: "search"; sql: string };
 
 // A table of this module. `sql` is one CREATE TABLE statement. The leading
 // `--` comment lines are the documentation of the table.
@@ -76,6 +77,14 @@ export function view<const S extends string>(sql: S): View & { sql: S } {
 // statement. Its body may touch the tables of this module only.
 export function trigger<const S extends string>(sql: S): Trigger & { sql: S } {
   return { kind: "trigger", sql };
+}
+
+// A full-text search table of this module: one CREATE VIRTUAL TABLE ...
+// USING fts5 statement. Its columns are text, `rank` is a number, and
+// `where <table> match :q` takes a string. Triggers keep it in step with
+// the table it indexes.
+export function search<const S extends string>(sql: S): Search & { sql: S } {
+  return { kind: "search", sql };
 }
 
 // --- queries ------------------------------------------------------------------

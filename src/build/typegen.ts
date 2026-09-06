@@ -84,6 +84,14 @@ export class Typer {
     const t = this.tables.get(table);
     const c = t?.columns.find((x) => x.name === column);
     if (!t || !c) throw new BuildError(`unknown column ${table}.${column}`, sql);
+    // A full-text search table: its columns hold text and may be null, its
+    // rank is a number, and the column named after the table is the match
+    // target, which takes the query string.
+    if (t.virtual) {
+      if (c.name === "rank") return { type: "number", nullable: false, brand: null };
+      if (c.name === t.name) return { type: "string", nullable: false, brand: null };
+      return { type: "string", nullable: true, brand: null };
+    }
     const brand = this.brandOf(t, c);
     if (brand) return { type: brand.typeName, nullable: !c.notnull, brand: brand.typeName };
     if (c.oneOf) return { type: c.oneOf.map((v) => JSON.stringify(v)).join(" | "), nullable: !c.notnull, brand: null };

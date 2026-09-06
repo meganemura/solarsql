@@ -5,7 +5,9 @@
 // cheap ALTER is enough: the candidate runs on a scratch database and is
 // kept only when the scratch shape equals the declared shape.
 // Boundary: no file system. build.ts reads and writes the files. Tables,
-// indexes, views, and triggers are diffed.
+// indexes, search tables, views, and triggers are diffed. A search table
+// (CREATE VIRTUAL TABLE) has no ALTER: a change drops it and creates it
+// again, and its shadow tables are the engine's own.
 import { DatabaseSync } from "node:sqlite";
 import { definitions, normalize, quoteIdent, splitStatements } from "./scan.ts";
 
@@ -15,7 +17,8 @@ export type Table = { name: string; sql: string; columns: Column[]; foreignKeys:
 export type Index = { name: string; table: string; sql: string };
 export type Trigger = { name: string; table: string; sql: string };
 export type View = { name: string; sql: string };
-export type Schema = { tables: Map<string, Table>; indexes: Map<string, Index>; triggers: Map<string, Trigger>; views: Map<string, View> };
+export type Virtual = { name: string; sql: string };
+export type Schema = { tables: Map<string, Table>; indexes: Map<string, Index>; triggers: Map<string, Trigger>; views: Map<string, View>; virtuals: Map<string, Virtual> };
 export type Rename = { table: string; from: string; to: string };
 export type Plan = { kind: "ok"; statements: string[] } | { kind: "blocked"; reason: string };
 
@@ -42,11 +45,18 @@ export function introspect(db: DatabaseSync): Schema {
   const indexes = new Map<string, Index>();
   const triggers = new Map<string, Trigger>();
   const views = new Map<string, View>();
+  const virtuals = new Map<string, Virtual>();
+  // pragma table_list tells a virtual table and its shadow tables apart
+  // from a plain table; sqlite_schema calls all three "table".
+  const kinds = new Map((db.prepare(`select name, type from pragma_table_list where schema = 'main'`).all() as { name: string; type: string }[]).map((r) => [r.name, r.type]));
   const rows = db
     .prepare(`select type, name, tbl_name, sql from sqlite_schema where sql is not null and name not like 'sqlite_%' order by name`)
     .all() as { type: string; name: string; tbl_name: string; sql: string }[];
   for (const row of rows) {
-    if (row.type === "table") {
+    if (row.type === "table" && kinds.get(row.name) === "shadow") continue;
+    if (row.type === "table" && kinds.get(row.name) === "virtual") {
+      virtuals.set(row.name, { name: row.name, sql: row.sql });
+    } else if (row.type === "table") {
       const defs = definitions(row.sql);
       // hidden 2 and 3 are generated columns; they take part in the shape
       // and are left out of a rebuild's copy.
@@ -82,7 +92,7 @@ export function introspect(db: DatabaseSync): Schema {
       views.set(row.name, { name: row.name, sql: row.sql });
     }
   }
-  return { tables, indexes, triggers, views };
+  return { tables, indexes, triggers, views, virtuals };
 }
 
 // A comparable value. Two schemas with equal shapes accept the same rows
@@ -94,6 +104,7 @@ export function shape(schema: Schema): unknown {
     indexes: [...schema.indexes.values()].sort(byName).map((i) => ({ name: i.name, table: i.table, sql: normalize(i.sql) })),
     triggers: [...schema.triggers.values()].sort(byName).map((t) => ({ name: t.name, table: t.table, sql: normalize(t.sql) })),
     views: [...schema.views.values()].sort(byName).map((v) => ({ name: v.name, sql: normalize(v.sql) })),
+    virtuals: [...schema.virtuals.values()].sort(byName).map((v) => ({ name: v.name, sql: normalize(v.sql) })),
   };
 }
 
@@ -227,6 +238,16 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
   for (const name of current.tables.keys()) {
     if (!target.tables.has(name)) dropTables.push(`drop table ${quoteIdent(name)}`);
   }
+  // A search table has no ALTER. A changed or removed one is dropped, and
+  // a changed or new one is created after the tables, before the triggers
+  // that write it.
+  const virtualSame = (name: string) => {
+    const c = current.virtuals.get(name);
+    const t = target.virtuals.get(name);
+    return c !== undefined && t !== undefined && normalize(c.sql) === normalize(t.sql);
+  };
+  for (const name of current.virtuals.keys()) if (!virtualSame(name)) dropTables.push(`drop table ${quoteIdent(name)}`);
+  const createVirtuals = [...target.virtuals.values()].filter((v) => !virtualSame(v.name)).map((v) => v.sql);
   for (const [name, target_] of target.tables) {
     const current_ = current.tables.get(name);
     if (!current_) {
@@ -261,7 +282,7 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
     const c = current.triggers.get(name);
     if (rebuilt.has(trigger.table) || !c || normalize(c.sql) !== normalize(trigger.sql)) createLast.push(trigger.sql);
   }
-  const statements = [...dropViews, ...dropFirst, ...dropTables, ...changeTables, ...createLast];
+  const statements = [...dropViews, ...dropFirst, ...dropTables, ...changeTables, ...createVirtuals, ...createLast];
   if (needsDefer) statements.unshift(`pragma defer_foreign_keys = on`);
   return { kind: "ok", statements };
 }

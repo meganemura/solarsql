@@ -1,4 +1,4 @@
-import { assert, commands, index, queries, table, trigger } from "../../../src/index.ts";
+import { assert, commands, index, queries, search, table, trigger } from "../../../src/index.ts";
 import { generated } from "./solarsql.generated.ts";
 
 export const orders = table(`
@@ -10,6 +10,25 @@ export const orders = table(`
     note text,
     updated_at text
   ) strict
+`);
+
+// Full-text search over the notes. The two triggers below keep it in step
+// with orders; a search joins back to orders by order_id.
+export const orderSearch = search(`create virtual table order_search using fts5(order_id unindexed, note)`);
+
+export const orderSearchInsert = trigger(`
+  create trigger order_search_insert after insert on orders
+  begin
+    insert into order_search (order_id, note) values (new.id, new.note);
+  end
+`);
+
+export const orderSearchUpdate = trigger(`
+  create trigger order_search_update after update of note on orders
+  begin
+    delete from order_search where order_id = new.id;
+    insert into order_search (order_id, note) values (new.id, new.note);
+  end
 `);
 
 // The engine stamps the time of the last change, so no command has to.
@@ -64,6 +83,12 @@ export const orderQueries = queries(generated, {
     -- Orders whose note matches a pattern. No index serves LIKE, so this
     -- reads the table in full, and the build reports it.
     select id, status, note from orders where note like :pattern order by id`,
+  searchNotes: `
+    -- Orders whose note matches a full-text query, best match first.
+    select o.id, o.status, o.note, cast(bm25(order_search) as real) as score
+    from order_search join orders o on o.id = order_search.order_id
+    where order_search match :query
+    order by rank`,
 });
 
 export const orderCommands = commands(generated, {
