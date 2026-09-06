@@ -30,6 +30,12 @@ export type Module = {
   commands: { name: string; plan: readonly PlanItem[]; returns: string | null }[];
 };
 
+export type BuildOptions = {
+  // false: write nothing, and report what a build would change. For CI
+  // and for a test hook, through `solarsql build --check`. Default true.
+  write?: boolean;
+};
+
 export type BuildResult = {
   // Per module: the statements this build added to and removed from the
   // generated file, so the CLI can say what changed.
@@ -42,8 +48,9 @@ export type BuildResult = {
 export type Loaded = { config: Config; configDir: string; modules: Module[] };
 
 // The module files, imported. The generated file gets a stub first, so the
-// import succeeds before the first build.
-export async function load(configPath: string): Promise<Loaded> {
+// import succeeds before the first build. A check that writes nothing
+// stops at a missing generated file instead.
+export async function load(configPath: string, write = true): Promise<Loaded> {
   const absolute = resolve(configPath);
   const configDir = dirname(absolute);
   const config = (await importFresh(absolute)).default as Config | undefined;
@@ -57,7 +64,10 @@ export async function load(configPath: string): Promise<Loaded> {
     const name = basename(dir);
     if (!existsSync(join(dir, "schema.ts"))) throw new BuildError(`module ${name}: ${join(dir, "schema.ts")} does not exist`);
     const generatedPath = join(dir, GENERATED_FILE);
-    if (!existsSync(generatedPath)) writeFileSync(generatedPath, emitStub(config.library ?? "solarsql"));
+    if (!existsSync(generatedPath)) {
+      if (!write) throw new BuildError(`module ${name}: ${generatedPath} is missing. Run: npx solarsql build`);
+      writeFileSync(generatedPath, emitStub(config.library ?? "solarsql"));
+    }
     const schema = await importFresh(join(dir, "schema.ts"));
     const tables: string[] = [];
     const indexes: string[] = [];
@@ -127,8 +137,9 @@ export function declaredDdl(modules: readonly Module[]): string[] {
   return [...modules.flatMap((m) => m.tables), ...modules.flatMap((m) => m.indexes), ...modules.flatMap((m) => m.views), ...modules.flatMap((m) => m.triggers), ...GUARD_DDL];
 }
 
-export async function build(configPath: string): Promise<BuildResult> {
-  const loaded = await load(configPath);
+export async function build(configPath: string, options: BuildOptions = {}): Promise<BuildResult> {
+  const write = options.write ?? true;
+  const loaded = await load(configPath, write);
   const { config, configDir, modules } = loaded;
   const library = config.library ?? "solarsql";
 
@@ -218,7 +229,7 @@ export async function build(configPath: string): Promise<BuildResult> {
       const before = Object.keys(((await importFresh(generatedPath)) as { generated?: Record<string, unknown> }).generated ?? {});
       const { added, removed } = keyDiff(before, entries.map((e) => e.key));
       const changed = readFileSync(generatedPath, "utf8") !== text;
-      if (changed) writeFileSync(generatedPath, text);
+      if (changed && write) writeFileSync(generatedPath, text);
       results.push({ name: m.name, generatedPath, entries: entries.length, changed, added, removed });
     }
 

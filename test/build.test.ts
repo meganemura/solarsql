@@ -56,6 +56,26 @@ describe("solarsql build", () => {
     }
   });
 
+  test("a check writes nothing, reports the stale file, and stops at a missing one", async () => {
+    const dir = copy();
+    try {
+      const commands = join(dir, "example/modules/orders/commands.ts");
+      writeFileSync(commands, readFileSync(commands, "utf8").replace("update orders set note = :note where id = :id", "update orders set note = :note where id = :id and status = 'draft'"));
+      const generated = join(dir, "example/modules/orders/solarsql.generated.ts");
+      const before = readFileSync(generated, "utf8");
+      const checked = await build(join(dir, "example/solarsql.config.ts"), { write: false });
+      assert.deepEqual(checked.modules.map((m) => [m.name, m.changed]), [["customers", false], ["orders", true], ["reports", false]]);
+      assert.equal(readFileSync(generated, "utf8"), before);
+      const written = await build(join(dir, "example/solarsql.config.ts"));
+      assert.equal(written.modules[1]!.changed, true);
+      assert.notEqual(readFileSync(generated, "utf8"), before);
+      rmSync(generated);
+      await assert.rejects(build(join(dir, "example/solarsql.config.ts"), { write: false }), /module orders: .*solarsql\.generated\.ts is missing\. Run: npx solarsql build/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a changed statement is reported as one removed and one added", async () => {
     const dir = copy();
     try {

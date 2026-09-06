@@ -213,6 +213,12 @@ It fails with one message when:
 The generated types are keyed by the SQL text.
 A query whose text changed has no entry, so `tsc` fails at the call site until the build runs again.
 
+```
+npx solarsql build --check
+```
+
+The same checks, with nothing written: the command exits 1 when a generated file or a migration is behind the source. It is for CI and for a test hook.
+
 ## Migrations
 
 ```

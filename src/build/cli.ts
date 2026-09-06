@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Responsibility: the command line of solarsql.
 //   solarsql build [config]             types, boundaries, migration check
+//   solarsql build --check [config]     the same, writing nothing; exit 1 when a file is stale
 //   solarsql migration <name> [config]  write the next migration file
 // Boundary: printing and exit codes only. build.ts does the work.
 import { build, migration } from "./build.ts";
@@ -8,6 +9,7 @@ import { BuildError } from "./typegen.ts";
 
 const usage = `usage:
   solarsql build [solarsql.config.ts]
+  solarsql build --check [solarsql.config.ts]   writes nothing; exit 1 when a generated file or a migration is stale
   solarsql migration <name> [solarsql.config.ts]`;
 
 // One line of SQL, enough to recognize the statement.
@@ -18,9 +20,11 @@ function oneLine(sql: string): string {
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
   if (command === "build") {
-    const result = await build(rest[0] ?? "solarsql.config.ts");
+    const check = rest.includes("--check");
+    const args = rest.filter((a) => a !== "--check");
+    const result = await build(args[0] ?? "solarsql.config.ts", { write: !check });
     for (const m of result.modules) {
-      console.log(`${m.changed ? "wrote  " : "current"} ${m.generatedPath} (${m.entries} statements)`);
+      console.log(`${m.changed ? (check ? "stale  " : "wrote  ") : "current"} ${m.generatedPath} (${m.entries} statements)`);
       for (const k of m.added) console.log(`  + ${oneLine(k)}`);
       for (const k of m.removed) console.log(`  - ${oneLine(k)}`);
     }
@@ -34,6 +38,10 @@ async function main(argv: string[]): Promise<number> {
     if (result.migration.pending) {
       console.error(`schema changed. Write the migration: solarsql migration <name>`);
       for (const s of result.migration.statements) console.error(`  ${s.replace(/\s+/g, " ").trim()}`);
+      return 1;
+    }
+    if (check && result.modules.some((m) => m.changed)) {
+      console.error("generated files are stale. Run: npx solarsql build");
       return 1;
     }
     console.log("migrations are current");
