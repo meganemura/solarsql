@@ -127,10 +127,10 @@ describe("solarsql build", () => {
       assert.deepEqual(first.migration.statements, [`alter table "orders" add column placed_at integer not null default 0`]);
 
       const written = await migration(join(dir, "example/solarsql.config.ts"), "placed_at");
-      // The example already holds four files, so the next one is the fifth.
-      assert.equal(written.filename, "0005_placed_at.sql");
+      // The example already holds five files, so the next one is the sixth.
+      assert.equal(written.filename, "0006_placed_at.sql");
       const index = readFileSync(join(dir, "example/migrations/index.ts"), "utf8");
-      assert.match(index, /0005_placed_at\.sql/);
+      assert.match(index, /0006_placed_at\.sql/);
 
       const second = await build(join(dir, "example/solarsql.config.ts"));
       assert.equal(second.migration.pending, false);

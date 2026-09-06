@@ -37,6 +37,9 @@ Measured on the remote database: `begin` and `Begin` fail, `BEGIN` passes, and t
 The migration writer now writes both keywords uppercase in every trigger, whatever the declaration wrote; the diff compares them case-insensitively, so nothing else changes.
 A Worker's own D1 binding takes one statement per call and is not affected.
 
+The second remote run applied a table rebuild: migration 0005 puts a CHECK on `customers.name`, and customers is referenced by orders, so the file opens with `pragma defer_foreign_keys = on`, drops the view, copies the rows, drops and renames the table, and creates the view again.
+D1's HTTP API ran the file as one unit, the rows survived, no scratch table was left, and the CHECK arrives as a value on both targets.
+
 ## Consequences
 
 - The remote test is opt-in, and one HTTPS round trip per step makes it slow. CI does not run it.

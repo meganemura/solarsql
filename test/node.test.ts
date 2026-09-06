@@ -19,7 +19,7 @@ describe("the example on node:sqlite", () => {
   const o1 = "o1" as OrdersId;
 
   test("the migration files apply once, in name order", () => {
-    assert.deepEqual(migrate(raw, migrations), ["0001_initial.sql", "0002_orders_customer_id.sql", "0003_views_and_triggers.sql", "0004_search.sql"]);
+    assert.deepEqual(migrate(raw, migrations), ["0001_initial.sql", "0002_orders_customer_id.sql", "0003_views_and_triggers.sql", "0004_search.sql", "0005_customer_name_not_empty.sql"]);
     assert.deepEqual(migrate(raw, migrations), []);
   });
 

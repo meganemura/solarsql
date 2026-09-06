@@ -5,7 +5,7 @@ export const customers = table(`
   -- A customer who places orders.
   create table customers (
     id text primary key not null,
-    name text not null,
+    name text not null check (length(name) > 0),
     email text not null unique
   ) strict
 `);
