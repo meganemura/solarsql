@@ -1,6 +1,6 @@
 # ADR 0017: An expression column carries a CAST
 
-Status: accepted (2026-09-06)
+Status: accepted (2026-09-06). ADR 0031 narrows the last consequence: a CAST over count, exists, a ranking function, or coalesce with a literal is not null.
 
 ## Context
 

@@ -51,7 +51,8 @@ export const orderLinesByOrder = index(`create index order_lines_order_id on ord
 
 The leading `--` lines are the documentation of the table.
 A primary key column must be `not null`.
-A `check (x in (...))` becomes a union type.
+A `check (x in (...))` becomes a union type, of strings or of numbers: `check (flag in (0, 1))` is `0 | 1`.
+A generated column is read like any other.
 Every table is `strict`, so the engine rejects a value that does not match the declared type, and the generated types hold for every stored value.
 
 ### queries.ts
@@ -80,6 +81,7 @@ Parameters are named, `:id`.
 The build finds their types from where they sit: `where id = :id` gives `:id` the type of the column.
 A JSON aggregation becomes an array type, and the adapter parses it.
 An expression column needs a `cast(... as integer | real | text)`, because the engine reports no type for an expression.
+The type of a cast is `T | null`, except over `count`, `total`, `exists`, a ranking window function, or `coalesce` with a literal, which are never null.
 
 Dynamic needs are static SQL with a typed parameter:
 

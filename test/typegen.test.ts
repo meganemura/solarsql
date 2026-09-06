@@ -18,6 +18,7 @@ const ddl = [
     note text
   )`,
   `create table order_lines (id text primary key not null, order_id text not null references orders(id), sku text not null, qty integer not null, price real)`,
+  `create table files (id text primary key not null, size integer not null, flag integer not null check (flag in (0, 1)), total integer not null as (size * 2) stored, label text as (id || ':' || size) virtual) strict`,
   ...GUARD_DDL,
 ];
 
@@ -93,7 +94,18 @@ describe("Typer.analyze", () => {
   test("an expression column needs a cast", () => {
     assert.throws(() => t.analyze("select count(*) as n from orders", "orders"), (e: unknown) => e instanceof BuildError && /cast\(\.\.\. as integer\)/.test(e.message));
     const a = t.analyze("select cast(count(*) as integer) as n from orders", "orders");
-    assert.deepEqual(a.columns, [{ name: "n", type: "number | null", json: false }]);
+    assert.deepEqual(a.columns, [{ name: "n", type: "number", json: false }]);
+  });
+
+  test("a cast over count, exists, a ranking function, or coalesce with a literal is not null; other expressions are", () => {
+    const types = (sql: string) => t.analyze(sql, "orders").columns.map((c) => c.type);
+    assert.deepEqual(types("select cast(count(id) as integer) as a, cast(total(qty) as real) as b, cast(exists (select 1 from orders) as integer) as c from order_lines"), ["number", "number", "number"]);
+    assert.deepEqual(types("select cast(row_number() over (order by id) as integer) as rn, cast(count(*) filter (where qty > 1) as integer) as big from order_lines"), ["number", "number"]);
+    assert.deepEqual(types("select cast(coalesce(sum(qty), 0) as integer) as a, cast(ifnull(note, 'none') as text) as b from orders o join order_lines l on l.order_id = o.id"), ["number", "string"]);
+    // sum can be null, a division can be null, and coalesce with a nullable column stays nullable.
+    assert.deepEqual(types("select cast(sum(qty) as integer) as a, cast(count(*) / nullif(qty, 0) as integer) as b, cast(coalesce(sku, note) as text) as c from order_lines l join orders o on o.id = l.order_id"), ["number | null", "number | null", "string | null"]);
+    // Inside json_object the same rule applies.
+    assert.deepEqual(types("select json_object('n', cast(count(*) as integer), 's', cast(sum(qty) as integer)) as o from order_lines"), ['{ "n": number; "s": number | null }']);
   });
 
   test("an anonymous parameter is refused", () => {
@@ -137,6 +149,14 @@ describe("Typer.analyze", () => {
     assert.deepEqual(a.params, [{ name: "status", type: '"draft" | "confirmed" | null', encode: false }]);
     assert.deepEqual(a.scans, ["orders"]);
     assert.deepEqual(t.analyze("select id from orders where id = :id", "orders").scans, []);
+  });
+
+  test("a generated column is read with its type, and an integer check list is a union of numbers", () => {
+    const a = t.analyze("select id, size, flag, total, label from files where flag = :flag", "files");
+    assert.deepEqual(a.columns.map((c) => [c.name, c.type]), [["id", "FilesId"], ["size", "number"], ["flag", "0 | 1"], ["total", "number"], ["label", "string | null"]]);
+    assert.deepEqual(a.params, [{ name: "flag", type: "0 | 1", encode: false }]);
+    // The engine refuses a write to a generated column, with its own message.
+    assert.throws(() => t.analyze("insert into files (id, size, flag, total) values (:id, :size, :flag, :total)", "files"), (e: unknown) => e instanceof BuildError && /generated column/.test(e.message));
   });
 
   test("returning gives rows with brands", () => {

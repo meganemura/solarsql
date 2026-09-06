@@ -10,7 +10,8 @@ import { diff, introspect, open, shape, render } from "../src/build/migration.ts
 import { splitStatements } from "../src/build/scan.ts";
 
 type ColumnType = "text" | "integer" | "real";
-type Column = { name: string; type: ColumnType; notnull: boolean; check: boolean };
+// A generated column computes a constant of its type, stored or virtual.
+type Column = { name: string; type: ColumnType; notnull: boolean; check: boolean; generated: "stored" | "virtual" | null };
 type Table = { name: "a" | "b"; columns: Column[]; fkToA: boolean };
 type IndexDef = { name: string; table: "a" | "b"; columns: string[] };
 type Schema = { tables: Table[]; indexes: IndexDef[] };
@@ -22,10 +23,18 @@ function defaultFor(type: ColumnType): string {
   return type === "text" ? "'d'" : type === "integer" ? "0" : "0.5";
 }
 
+// The constant a generated column computes. A value every STRICT type
+// accepts, because a retype copies the stored value into the new column.
+function constantFor(type: ColumnType): string {
+  return type === "text" ? "'7'" : type === "integer" ? "7" : "7.0";
+}
+
 function columnDdl(c: Column): string {
   let s = `${c.name} ${c.type}`;
-  if (c.notnull) s += ` not null default ${defaultFor(c.type)}`;
+  // A generated column takes no default; its expression is the value.
+  if (c.notnull) s += c.generated ? " not null" : ` not null default ${defaultFor(c.type)}`;
   if (c.check && c.type === "integer") s += ` check (${c.name} >= 0)`;
+  if (c.generated) s += ` as (${constantFor(c.type)}) ${c.generated}`;
   return s;
 }
 
@@ -48,10 +57,11 @@ function rowsFor(s: Schema): string[] {
   const out: string[] = [];
   for (const t of s.tables) {
     for (const i of [1, 2]) {
-      const cols = ["id", ...(t.name === "b" && t.fkToA ? ["a_id"] : []), ...t.columns.map((c) => c.name)];
+      const written = t.columns.filter((c) => !c.generated);
+      const cols = ["id", ...(t.name === "b" && t.fkToA ? ["a_id"] : []), ...written.map((c) => c.name)];
       // Values that every STRICT type accepts without loss, so a retype of a
       // column with rows rebuilds cleanly: '7' -> 7, 7.0 -> 7, 7 -> '7'.
-      const vals = [`'${t.name}${i}'`, ...(t.name === "b" && t.fkToA ? ["'a1'"] : []), ...t.columns.map((c) => (c.type === "text" ? `'${i}'` : c.type === "integer" ? `${i}` : `${i}.0`))];
+      const vals = [`'${t.name}${i}'`, ...(t.name === "b" && t.fkToA ? ["'a1'"] : []), ...written.map((c) => (c.type === "text" ? `'${i}'` : c.type === "integer" ? `${i}` : `${i}.0`))];
       out.push(`insert into ${t.name} (${cols.join(", ")}) values (${vals.join(", ")})`);
     }
   }
@@ -63,6 +73,7 @@ const columnGen = gs.composite((tc): Column => ({
   type: tc.draw(gs.sampledFrom(types)),
   notnull: tc.draw(gs.booleans()),
   check: tc.draw(gs.booleans()),
+  generated: tc.draw(gs.sampledFrom<"stored" | "virtual" | null>([null, null, null, "stored", "virtual"])),
 }));
 
 function distinct(columns: Column[]): Column[] {

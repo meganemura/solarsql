@@ -9,7 +9,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { definitions, normalize, quoteIdent, splitStatements } from "./scan.ts";
 
-export type Column = { name: string; type: string; notnull: boolean; dflt: string | null; pk: number; def: string };
+export type Column = { name: string; type: string; notnull: boolean; dflt: string | null; pk: number; def: string; generated: boolean };
 export type ForeignKey = { table: string; from: string; to: string; onUpdate: string; onDelete: string };
 export type Table = { name: string; sql: string; columns: Column[]; foreignKeys: ForeignKey[]; constraints: string[]; withoutRowid: boolean; strict: boolean };
 export type Index = { name: string; table: string; sql: string };
@@ -46,13 +46,16 @@ export function introspect(db: DatabaseSync): Schema {
   for (const row of rows) {
     if (row.type === "table") {
       const defs = definitions(row.sql);
-      const columns = (db.prepare(`select name, type, "notnull" as nn, dflt_value, pk from pragma_table_xinfo(?) where hidden = 0`).all(row.name) as {
+      // hidden 2 and 3 are generated columns; they take part in the shape
+      // and are left out of a rebuild's copy.
+      const columns = (db.prepare(`select name, type, "notnull" as nn, dflt_value, pk, hidden from pragma_table_xinfo(?) where hidden in (0, 2, 3)`).all(row.name) as {
         name: string;
         type: string;
         nn: number;
         dflt_value: string | null;
         pk: number;
-      }[]).map((c) => ({ name: c.name, type: c.type, notnull: c.nn === 1, dflt: c.dflt_value, pk: c.pk, def: defs?.columns.get(c.name) ?? "" }));
+        hidden: number;
+      }[]).map((c) => ({ name: c.name, type: c.type, notnull: c.nn === 1, dflt: c.dflt_value, pk: c.pk, def: defs?.columns.get(c.name) ?? "", generated: c.hidden !== 0 }));
       const foreignKeys = (db.prepare(`select "table", "from", "to", on_update, on_delete from pragma_foreign_key_list(?) order by id, seq`).all(row.name) as {
         table: string;
         from: string;
@@ -133,7 +136,7 @@ function tableStatements(current: Table, target: Table, renames: readonly Rename
   // NOT NULL column without a default has no value for those rows.
   for (const n of added) {
     const col = target.columns.find((c) => c.name === n)!;
-    if (col.notnull && col.dflt === null) {
+    if (col.notnull && col.dflt === null && !col.generated) {
       return {
         kind: "blocked",
         reason: `table ${current.name}: new column ${n} is NOT NULL without a default. Existing rows have no value for it. Add a default or allow null.`,
@@ -143,25 +146,34 @@ function tableStatements(current: Table, target: Table, renames: readonly Rename
 
   // Candidate: the cheap ALTERs. The engine judges them on a scratch copy
   // that carries the indexes the migration keeps, because DROP COLUMN fails
-  // on an indexed column there as it would in production.
-  const candidate = [...statements];
-  for (const n of removed) candidate.push(`alter table ${quoteIdent(current.name)} drop column ${quoteIdent(n)}`);
-  for (const n of added) candidate.push(`alter table ${quoteIdent(current.name)} add column ${target.columns.find((c) => c.name === n)!.def}`);
-  const scratch = open([current.sql, ...keptIndexes]);
-  try {
-    for (const s of candidate) scratch.exec(s);
-    const after = introspect(scratch).tables.get(current.name)!;
-    if (same(tableShape(after), tableShape(target))) return { kind: "ok", statements: candidate };
-  } catch {
-    // The engine refused the cheap path. Rebuild below.
-  } finally {
-    scratch.close();
+  // on an indexed column there as it would in production. The scratch has
+  // no rows, and ADD COLUMN of a STORED generated column fails only on a
+  // table with rows, so that case goes straight to the rebuild.
+  const addsStored = added.some((n) => {
+    const c = target.columns.find((x) => x.name === n)!;
+    return c.generated && /\bstored\b/i.test(c.def);
+  });
+  const candidate = addsStored ? null : [...statements];
+  if (candidate !== null) {
+    for (const n of removed) candidate.push(`alter table ${quoteIdent(current.name)} drop column ${quoteIdent(n)}`);
+    for (const n of added) candidate.push(`alter table ${quoteIdent(current.name)} add column ${target.columns.find((c) => c.name === n)!.def}`);
+    const scratch = open([current.sql, ...keptIndexes]);
+    try {
+      for (const s of candidate) scratch.exec(s);
+      const after = introspect(scratch).tables.get(current.name)!;
+      if (same(tableShape(after), tableShape(target))) return { kind: "ok", statements: candidate };
+    } catch {
+      // The engine refused the cheap path. Rebuild below.
+    } finally {
+      scratch.close();
+    }
   }
 
   // Rebuild. Only this order commits inside one transaction when the table
   // is a foreign-key parent: the rows must re-enter under the final name so
   // the deferred foreign-key counter returns to zero.
-  const common = target.columns.map((c) => c.name).filter((n) => currentColumns.has(n)).map(quoteIdent).join(", ");
+  // A generated column computes itself, so the copy leaves it out.
+  const common = target.columns.filter((c) => !c.generated).map((c) => c.name).filter((n) => currentColumns.has(n)).map(quoteIdent).join(", ");
   const name = quoteIdent(current.name);
   const fresh = quoteIdent(`_solarsql_new_${current.name}`);
   const copy = quoteIdent(`_solarsql_copy_${current.name}`);

@@ -166,7 +166,20 @@ export class Typer {
     if (scalar === null) {
       throw new BuildError(`column "${out.name}" is an expression with no type. Wrap it in cast(... as integer), cast(... as real), or cast(... as text).`, sql);
     }
-    return { name: out.name, type: `${scalar} | null`, json: false };
+    const notNull = item !== null && castNeverNull(item.expr, (ref) => this.refNullable(ref, aliases, nullableAliases, sql));
+    return { name: out.name, type: notNull ? scalar : `${scalar} | null`, json: false };
+  }
+
+  // Whether a column reference can be null here: its declaration, or the
+  // outer side of a join. Null when the reference does not resolve.
+  private refNullable(ref: { alias: string | null; column: string }, aliases: Map<string, string | null>, nullableAliases: Set<string>, sql: string): boolean | null {
+    const alias = ref.alias ?? this.aliasOfBareColumn(aliases, ref.column);
+    const table = alias === null ? null : aliases.get(alias) ?? null;
+    if (!table) return null;
+    const c = this.tables.get(table)?.columns.find((x) => x.name === ref.column);
+    if (!c) return null;
+    void sql;
+    return !c.notnull || (alias !== null && nullableAliases.has(alias));
   }
 
   private aliasOfBareColumn(aliases: Map<string, string | null>, column: string): string | null {
@@ -255,7 +268,7 @@ export class Typer {
       const m = /\bas\s+([A-Za-z]+)\s*$/i.exec(cast.args[0]!.text);
       if (m) {
         const scalar = scalarType(m[1]!);
-        if (scalar !== "unknown") return `${scalar} | null`;
+        if (scalar !== "unknown") return castNeverNull(expr, (r) => this.refNullable(r, aliases, nullableAliases, sql)) ? scalar : `${scalar} | null`;
       }
     }
     throw new BuildError(`value "${expr}" inside json has no type. Use a column reference or cast(... as integer | real | text).`, sql);
@@ -311,6 +324,46 @@ export class Typer {
     if (nullable && type !== "SqlValue" && !/\| null$/.test(type)) type = `${type} | null`;
     return { type, encode };
   }
+}
+
+// An expression column is `| null` unless its CAST wraps a shape the engine
+// never returns null for: count, total, a ranking window function, exists,
+// or coalesce/ifnull whose last argument is a literal or a NOT NULL column.
+// The call must be the whole expression, with only FILTER and OVER after
+// it, so `count(*) / nullif(x, 0)` stays nullable.
+const neverNullCalls = new Set(["count", "total", "row_number", "rank", "dense_rank", "ntile", "coalesce", "ifnull"]);
+
+export function castNeverNull(expr: string, columnNullable: (ref: { alias: string | null; column: string }) => boolean | null): boolean {
+  if (!/^\s*cast\s*\(/i.test(expr)) return false;
+  const cast = findCall(expr, "cast");
+  if (!cast || cast.args.length !== 1) return false;
+  const inner = cast.args[0]!.text.replace(/\s+as\s+[A-Za-z]+\s*$/i, "");
+  const t = significant(tokenize(inner));
+  const first = t[0];
+  if (!first) return false;
+  if (isKeyword(first, "exists") || (isKeyword(first, "not") && isKeyword(t[1], "exists"))) return true;
+  if (first.type !== "ident" || t[1]?.text !== "(") return false;
+  const fn = first.text.toLowerCase();
+  if (!neverNullCalls.has(fn)) return false;
+  // The call spans the expression: after its ")" only FILTER (...) and OVER (...).
+  let i = 2;
+  while (t[i] && !(t[i]!.text === ")" && t[i]!.depth === t[1]!.depth)) i++;
+  i++;
+  while (t[i]) {
+    if ((isKeyword(t[i], "filter") || isKeyword(t[i], "over")) && t[i + 1]?.text === "(") {
+      const d = t[i + 1]!.depth;
+      i += 2;
+      while (t[i] && !(t[i]!.text === ")" && t[i]!.depth === d)) i++;
+      i++;
+    } else return false;
+  }
+  if (fn !== "coalesce" && fn !== "ifnull") return true;
+  const call = findCall(inner, fn)!;
+  const last = call.args[call.args.length - 1]!.text;
+  const lt = significant(tokenize(last));
+  if (lt.length === 1 && (lt[0]!.type === "number" || lt[0]!.type === "string")) return true;
+  const ref = columnRef(last);
+  return ref !== null && columnNullable(ref) === false;
 }
 
 // The table an UPDATE changes, or the table an INSERT ... ON CONFLICT DO
