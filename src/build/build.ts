@@ -6,7 +6,7 @@
 // facts come from facts.ts, the types from typegen.ts, the file text from
 // emit.ts, and the migration statements from migration.ts.
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Command, Config, Index, ModuleConfig, PlanItem, Query, Table, Trigger, View } from "../index.ts";
 import { GUARD_DDL, GUARD_TABLE, assertStatement } from "../runtime/plan.ts";
@@ -142,6 +142,7 @@ export async function build(configPath: string, options: BuildOptions = {}): Pro
   const loaded = await load(configPath, write);
   const { config, configDir, modules } = loaded;
   const library = config.library ?? "solarsql";
+  checkImports(modules);
 
   // Ownership: one module per table.
   const owner = new Map<string, Module>();
@@ -237,6 +238,27 @@ export async function build(configPath: string, options: BuildOptions = {}): Pro
     return { modules: results, migration, scans };
   } finally {
     engine.close();
+  }
+}
+
+// A module imports another module through its public.ts only (ADR 0008).
+// The check reads the import and export specifiers of the module's own
+// files. The generated file is the build's, and it imports the id types of
+// other modules from their generated files by design (ADR 0025).
+function checkImports(modules: readonly Module[]): void {
+  for (const m of modules) {
+    for (const file of readdirSync(m.dir).filter((f) => f.endsWith(".ts") && f !== GENERATED_FILE).sort()) {
+      const text = readFileSync(join(m.dir, file), "utf8");
+      for (const match of text.matchAll(/\b(?:from|import)\s*["']([^"']+)["']/g)) {
+        const specifier = match[1]!;
+        if (!specifier.startsWith(".")) continue;
+        const target = resolve(m.dir, specifier);
+        const other = modules.find((o) => o !== m && (target === o.dir || target.startsWith(o.dir + sep)));
+        if (other && basename(target) !== "public.ts") {
+          throw new BuildError(`module ${m.name}: ${file} imports ${specifier}. Module ${other.name} shows public.ts; import from there.`);
+        }
+      }
+    }
   }
 }
 
