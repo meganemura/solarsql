@@ -1,6 +1,7 @@
 # solarsql
 
 A typed SQL layer for SQLite on Cloudflare, for D1 and Durable Objects.
+Version 0.1.0 is the first release; before 1.0 a minor version may change the API, and the [changelog](CHANGELOG.md) says what changed.
 It is written for a coding agent that reads one module at a time, and for the human who reviews the agent's work.
 
 You write SQL. The build step asks the real engine what the SQL returns, and writes the types down.

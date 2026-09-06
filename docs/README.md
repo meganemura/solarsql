@@ -1,5 +1,7 @@
 # Design records
 
+How a version is released: [releasing.md](releasing.md).
+
 This directory holds the design decisions of solarsql as Architecture Decision Records (ADRs).
 Read the ADRs before you change the shape of the library.
 
