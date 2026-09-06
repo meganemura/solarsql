@@ -153,6 +153,18 @@ describe("solarsql build", () => {
     }
   });
 
+  test("an index on another module's table is refused", async () => {
+    const dir = copy();
+    try {
+      const module = join(dir, "example/modules/customers/module.ts");
+      const text = readFileSync(module, "utf8").replace("import { commands, queries, table }", "import { commands, index, queries, table }");
+      writeFileSync(module, text.replace("export const customerQueries", "export const ordersNote = index(`create index orders_note on orders (note)`);\nexport const customerQueries"));
+      await expectBuildError(dir, /module customers: index orders_note is on orders, which module orders owns/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a delete from a parent table passes, and a read of the child beyond its foreign key does not", async () => {
     // The engine checks a delete from customers by reading orders.customer_id;
     // the example's clear command is that delete, and the build passes it.
