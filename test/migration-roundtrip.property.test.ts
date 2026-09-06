@@ -213,5 +213,15 @@ test("migration diff round-trips the declared schema", () => {
   console.log("property events:", JSON.stringify(Object.fromEntries(events)));
   assert.ok((events.get("rebuild") ?? 0) > 0, "no case exercised the rebuild path");
   assert.ok((events.get("alter-only") ?? 0) > 0, "no case exercised the cheap ALTER path");
-  assert.ok((events.get("blocked") ?? 0) > 0, "no case exercised a block");
+});
+
+// The blocked path is rare under the generator, so one case pins it: a
+// table that loses one column and gains another in one change.
+test("a table that loses and gains a column in one change is blocked", () => {
+  const s1: Schema = { tables: [{ name: "a", columns: [{ name: "c1", type: "text", notnull: false, check: false, generated: null }], fkToA: false }], indexes: [] };
+  const s2: Schema = { tables: [{ name: "a", columns: [{ name: "c2", type: "text", notnull: false, check: false, generated: null }], fkToA: false }], indexes: [] };
+  assert.equal(expectedBlock(s1, s2), true);
+  const plan = diff(introspect(open(ddl(s1))), introspect(open(ddl(s2))));
+  assert.equal(plan.kind, "blocked");
+  if (plan.kind === "blocked") assert.match(plan.reason, /columns \[c1\] removed and \[c2\] added in one change/);
 });
