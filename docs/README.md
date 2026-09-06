@@ -42,6 +42,7 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0029](adr/0029-tables-are-strict.md) | Tables are STRICT, so stored values match the generated types |
 | [0030](adr/0030-program-model-stays-with-the-caller.md) | The program model stays with the caller, and failures are values |
 | [0031](adr/0031-some-casts-are-not-null.md) | A CAST over a shape that is never null is not null |
+| [0032](adr/0032-node-sqlite-adapter.md) | A node:sqlite adapter for tests and scripts |
 
 ## Measurements
 
