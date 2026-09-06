@@ -18,6 +18,9 @@ export type ColumnFact = {
   oneOf: (string | number)[] | null;
   // A generated column (`as (...) stored` or `virtual`) is read, never written.
   generated: boolean;
+  // A hidden column of a virtual table: the match target named after the
+  // table, and `rank`.
+  hidden: boolean;
 };
 
 export type ForeignKeyFact = { table: string; from: string; to: string };
@@ -25,6 +28,9 @@ export type ForeignKeyFact = { table: string; from: string; to: string };
 export type TableFact = {
   name: string;
   sql: string;
+  // A CREATE VIRTUAL TABLE (a full-text search table). No STRICT, no
+  // primary key, every column untyped.
+  virtual: boolean;
   columns: ColumnFact[];
   foreignKeys: ForeignKeyFact[];
   withoutRowid: boolean;
@@ -68,9 +74,14 @@ export class Engine {
     this.db.close();
   }
 
+  // The tables and the virtual tables. The shadow tables a virtual table
+  // keeps for itself are left out.
   tables(): TableFact[] {
     const rows = this.db
-      .prepare(`select name, sql from sqlite_schema where type = 'table' and sql is not null and name not like 'sqlite_%' order by name`)
+      .prepare(
+        `select s.name, s.sql from sqlite_schema s join pragma_table_list l on l.name = s.name and l.schema = 'main'
+         where s.type = 'table' and s.sql is not null and s.name not like 'sqlite_%' and l.type <> 'shadow' order by s.name`,
+      )
       .all() as { name: string; sql: string }[];
     return rows.map((r) => this.table(r.name, r.sql));
   }
@@ -79,9 +90,10 @@ export class Engine {
     const ddl = sql ?? (this.db.prepare(`select sql from sqlite_schema where type = 'table' and name = ?`).get(name) as { sql: string } | undefined)?.sql;
     if (!ddl) throw new Error(`no table named ${name}`);
     const defs = definitions(ddl);
+    const virtual = /^\s*create\s+virtual\s+table\b/i.test(ddl);
     // hidden: 0 is a plain column, 2 a virtual generated column, 3 a stored
-    // one. 1 is the hidden column of a virtual table.
-    const columns = (this.db.prepare(`select name, type, "notnull" as nn, dflt_value, pk, hidden from pragma_table_xinfo(?) where hidden in (0, 2, 3)`).all(name) as {
+    // one. 1 is a hidden column of a virtual table, which a query may read.
+    const columns = (this.db.prepare(`select name, type, "notnull" as nn, dflt_value, pk, hidden from pragma_table_xinfo(?) where hidden in (0, 2, 3) or (hidden = 1 and ?)`).all(name, virtual ? 1 : 0) as {
       name: string;
       type: string;
       nn: number;
@@ -95,7 +107,8 @@ export class Engine {
       dflt: c.dflt_value,
       pk: c.pk,
       oneOf: oneOfLiterals(defs?.columns.get(c.name) ?? "", c.name),
-      generated: c.hidden !== 0,
+      generated: c.hidden === 2 || c.hidden === 3,
+      hidden: c.hidden === 1,
     }));
     const foreignKeys = (this.db.prepare(`select "table", "from", "to" from pragma_foreign_key_list(?) order by id, seq`).all(name) as { table: string; from: string; to: string }[]).map((f) => ({
       table: f.table,
@@ -103,7 +116,7 @@ export class Engine {
       to: f.to,
     }));
     const tail = ddl.slice(ddl.lastIndexOf(")"));
-    return { name, sql: ddl, columns, foreignKeys, withoutRowid: /\bwithout\s+rowid\b/i.test(tail), strict: /\bstrict\b/i.test(tail) };
+    return { name, sql: ddl, virtual, columns, foreignKeys, withoutRowid: /\bwithout\s+rowid\b/i.test(tail), strict: /\bstrict\b/i.test(tail) };
   }
 
   // The first column of a table or a view that a statement may set. A

@@ -148,6 +148,15 @@ for (const target of ["d1", "do"] as const) {
       await value({ step: "annotate", id: "o2", note: null });
     });
 
+    test("a full-text search over the notes, kept in step by triggers", async () => {
+      await value({ step: "annotate", id: "o1", note: "gift wrap, ship fast" });
+      const hits = (await value({ step: "searchNotes", query: "gift" })) as { id: string; note: string | null; score: number }[];
+      assert.deepEqual(hits.map((h) => [h.id, h.note, typeof h.score]), [["o1", "gift wrap, ship fast", "number"]]);
+      assert.deepEqual(await value({ step: "searchNotes", query: "rush" }), []);
+      await value({ step: "annotate", id: "o1", note: null });
+      assert.deepEqual(await value({ step: "searchNotes", query: "gift" }), []);
+    });
+
     test("a query without parameters", async () => {
       assert.deepEqual(await value({ step: "customers" }), [{ id: "c1", name: "Ann", email: "ann@example.com" }]);
     });

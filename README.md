@@ -13,7 +13,7 @@ A module owns its tables, and the build step refuses a statement that reaches in
 solarsql.config.ts
 modules/
   orders/
-    module.ts               the schema, the queries, and the commands, as SQL strings
+    module.ts               the schema (tables, indexes, search tables, views, triggers), the queries, and the commands, as SQL strings
     public.ts               what other modules may import
     solarsql.generated.ts   written by `solarsql build`, committed
 migrations/
@@ -37,7 +37,7 @@ The three parts are shown one at a time below, each with the imports it needs; i
 #### The schema
 
 ```ts
-import { index, table, trigger, view } from "solarsql";
+import { index, search, table, trigger, view } from "solarsql";
 
 export const orders = table(`
   -- An order placed by one customer.
@@ -60,6 +60,8 @@ export const ordersTouch = trigger(`
 `);
 
 export const openOrders = view(`create view open_orders as select id, customer_id from orders where status = 'draft'`);
+
+export const orderSearch = search(`create virtual table order_search using fts5(order_id unindexed, note)`);
 ```
 
 The leading `--` lines are the documentation of the table.
@@ -68,6 +70,7 @@ A `check (x in (...))` becomes a union type, of strings or of numbers: `check (f
 A generated column is read like any other.
 Every table is `strict`, so the engine rejects a value that does not match the declared type, and the generated types hold for every stored value.
 A trigger sits on a table or a view of its module, and its body may touch the tables of that module only.
+A search table is FTS5: its columns are text, `rank` is a number, and `where order_search match :query` takes a string. Two triggers keep it in step with the table it indexes, one after insert and one after update of the column.
 A view is read by the queries of its module like a table; a report module with `readsAll` may declare a view over every table.
 
 #### The queries
@@ -235,6 +238,7 @@ npx solarsql migration <name>
 This writes `migrations/NNNN_<name>.sql` with the difference between the migration files and the schema, in the format wrangler applies.
 A table rebuild, for a constraint change, runs inside one transaction and keeps the rows and the foreign keys.
 A changed view or trigger is dropped and created again; a rebuild drops every view first, because a rename under a view fails.
+A changed search table is dropped and created again, and starts empty: the table it indexes keeps its rows, and the search rows must be inserted again.
 The generator stops and asks when a table both loses and gains a column, or when a new column is `not null` without a default.
 
 On D1, wrangler applies the files.

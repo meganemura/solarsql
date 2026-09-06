@@ -196,19 +196,23 @@ export function normalize(text: string): string {
     .trim();
 }
 
-// The name a CREATE statement creates, and what kind of object it is.
-export function created(sql: string): { kind: "table" | "index" | "trigger" | "view"; name: string } | null {
+// The name a CREATE statement creates, and what kind of object it is. A
+// CREATE VIRTUAL TABLE is "virtual".
+export function created(sql: string): { kind: "table" | "index" | "trigger" | "view" | "virtual"; name: string } | null {
   const t = significant(tokenize(sql));
   if (!isKeyword(t[0], "create")) return null;
   let i = 1;
   if (isKeyword(t[i], "unique") || isKeyword(t[i], "temp") || isKeyword(t[i], "temporary")) i++;
-  const kind = t[i]?.text.toLowerCase();
-  if (kind !== "table" && kind !== "index" && kind !== "trigger" && kind !== "view") return null;
+  let kind = t[i]?.text.toLowerCase();
+  if (kind === "virtual" && isKeyword(t[i + 1], "table")) {
+    i++;
+  } else if (kind !== "table" && kind !== "index" && kind !== "trigger" && kind !== "view") return null;
+  if (kind === "virtual") kind = "virtual";
   i++;
   if (isKeyword(t[i], "if") && isKeyword(t[i + 1], "not") && isKeyword(t[i + 2], "exists")) i += 3;
   const name = t[i];
   if (!name || name.type !== "ident") return null;
-  return { kind, name: unquote(name.text) };
+  return { kind: kind as "table" | "index" | "trigger" | "view" | "virtual", name: unquote(name.text) };
 }
 
 // The name, the event, the columns of `update of c1, c2`, and the table of a
@@ -411,7 +415,7 @@ export type ParamSite =
   | { kind: "nullable" }
   | { kind: "other" };
 
-const compareOps = new Set(["=", "==", "<>", "!=", "<", ">", "<=", ">=", "like", "glob", "is"]);
+const compareOps = new Set(["=", "==", "<>", "!=", "<", ">", "<=", ">=", "like", "glob", "is", "match"]);
 
 export function paramSites(sql: string): Map<string, ParamSite[]> {
   const t = significant(tokenize(sql));

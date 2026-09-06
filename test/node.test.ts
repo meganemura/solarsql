@@ -19,7 +19,7 @@ describe("the example on node:sqlite", () => {
   const o1 = "o1" as OrdersId;
 
   test("the migration files apply once, in name order", () => {
-    assert.deepEqual(migrate(raw, migrations), ["0001_initial.sql", "0002_orders_customer_id.sql", "0003_views_and_triggers.sql"]);
+    assert.deepEqual(migrate(raw, migrations), ["0001_initial.sql", "0002_orders_customer_id.sql", "0003_views_and_triggers.sql", "0004_search.sql"]);
     assert.deepEqual(migrate(raw, migrations), []);
   });
 
@@ -43,6 +43,8 @@ describe("the example on node:sqlite", () => {
     assert.equal(noted.ok, true);
     if (noted.ok) assert.match(noted.rows[0]!.updated_at ?? "", /^\d{4}-\d{2}-\d{2}T/);
     assert.deepEqual(await db.all(reportQueries.confirmedOrders), [{ id: "o1", customer_id: "c1", customer_name: "Ann" }]);
+    const hits = await db.all(orderQueries.searchNotes, { query: "rush" });
+    assert.deepEqual(hits.map((h) => [h.id, h.note]), [["o1", "rush"]]);
     assert.deepEqual(await db.all(reportQueries.revenueByCustomer), [{ customer_id: "c1", name: "Ann", revenue: 8, orders: 1 }]);
   });
 

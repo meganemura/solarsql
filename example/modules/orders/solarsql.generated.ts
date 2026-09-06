@@ -80,6 +80,11 @@ export type Generated = {
     params: { pattern: string | null };
     row: { id: OrdersId; status: "draft" | "confirmed"; note: string | null };
   };
+  /** Orders whose note matches a full-text query, best match first. */
+  "\n    -- Orders whose note matches a full-text query, best match first.\n    select o.id, o.status, o.note, cast(bm25(order_search) as real) as score\n    from order_search join orders o on o.id = order_search.order_id\n    where order_search match :query\n    order by rank": {
+    params: { query: string };
+    row: { id: OrdersId; status: "draft" | "confirmed"; note: string | null; score: number | null };
+  };
 };
 
 export const generated: Meta<Generated> = {
@@ -99,4 +104,5 @@ export const generated: Meta<Generated> = {
   "\n    -- The orders with the given ids. One parameter carries the whole list,\n    -- so the list can be longer than the 100 bound values D1 allows.\n    select id, status from orders where id in (select value from json_each(:ids)) order by id": { params: ["ids"], encode: ["ids"], json: [] },
   "\n    -- Orders of one customer, with an optional status and a chosen order.\n    select id, status, note from orders\n    where customer_id = :customer_id and (:status is null or status = :status)\n    order by case :sort when 'id' then id when 'status' then status end\n    limit :limit offset :offset": { params: ["customer_id", "status", "sort", "limit", "offset"], encode: [], json: [] },
   "\n    -- Orders whose note matches a pattern. No index serves LIKE, so this\n    -- reads the table in full, and the build reports it.\n    select id, status, note from orders where note like :pattern order by id": { params: ["pattern"], encode: [], json: [] },
+  "\n    -- Orders whose note matches a full-text query, best match first.\n    select o.id, o.status, o.note, cast(bm25(order_search) as real) as score\n    from order_search join orders o on o.id = order_search.order_id\n    where order_search match :query\n    order by rank": { params: ["query"], encode: [], json: [] },
 };
