@@ -50,6 +50,18 @@ export type Generated = {
     params: { lines: readonly { "price": number; "id": OrderLinesId }[] };
     row: {};
   };
+  "delete from order_lines": {
+    params: {};
+    row: {};
+  };
+  "delete from orders": {
+    params: {};
+    row: {};
+  };
+  "delete from order_search": {
+    params: {};
+    row: {};
+  };
   /** One order, or none. */
   "\n    -- One order, or none.\n    select id, customer_id, status, note from orders where id = :id": {
     params: { id: OrdersId };
@@ -98,6 +110,9 @@ export const generated: Meta<Generated> = {
   "select id, note, updated_at from orders where id = :id": { params: ["id"], encode: [], json: [] },
   "update order_lines\n       set price = (select value ->> 'price' from json_each(:lines) where value ->> 'id' = order_lines.id)\n       where order_id = :id and id in (select value ->> 'id' from json_each(:lines))": { params: ["lines", "id"], encode: ["lines"], json: [] },
   "changes() = json_array_length(:lines)": { params: ["lines"], encode: ["lines"], json: [] },
+  "delete from order_lines": { params: [], encode: [], json: [] },
+  "delete from orders": { params: [], encode: [], json: [] },
+  "delete from order_search": { params: [], encode: [], json: [] },
   "\n    -- One order, or none.\n    select id, customer_id, status, note from orders where id = :id": { params: ["id"], encode: [], json: [] },
   "\n    -- One order with its lines as an array. Empty when it has none.\n    select o.id, o.status,\n      coalesce(json_group_array(json_object('id', l.id, 'sku', l.sku, 'qty', l.qty, 'price', l.price))\n        filter (where l.id is not null), '[]') as lines\n    from orders o\n    left join order_lines l on l.order_id = o.id\n    where o.id = :id\n    group by o.id": { params: ["id"], encode: [], json: ["lines"] },
   "\n    -- The orders of one customer, newest id first.\n    select id, status from orders where customer_id = :customer_id order by id desc": { params: ["customer_id"], encode: [], json: [] },

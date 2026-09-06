@@ -1,0 +1,36 @@
+# ADR 0036: The example deploys with wrangler, and a remote test runs its steps
+
+Status: accepted (2026-09-06)
+
+## Context
+
+The tests run the example on Miniflare's D1 and Durable Object, and on node:sqlite.
+Production D1 is a service behind an HTTP API, with limits of its own, and a deployed Worker is the only way to reach it.
+Nothing in the repository had run there.
+
+## Decision
+
+wrangler is a devDependency, pinned.
+`example/wrangler.example.jsonc` is the template of the Worker's config: the D1 binding with its migrations directory, and the Durable Object binding with its SQLite class.
+The copy, `example/wrangler.jsonc`, is gitignored, because it names one account's database.
+
+`wrangler d1 migrations apply` takes the files of `example/migrations` as they are, in name order.
+The Durable Object applies the same files with `migrate()` on its first request.
+
+The Worker refuses a request without its `TOKEN` secret once the secret is set.
+A `reset` step empties both stores through a `clear` command of each module.
+
+`test/remote.test.ts` runs the steps of `test/example-steps.ts` against the Worker that `SOLARSQL_REMOTE_URL` names, on D1 and on the Durable Object.
+Without the variable it is skipped, so `npm test` needs no account.
+
+## Why
+
+The steps are the ones the Miniflare test runs, from one shared file, so a difference between remote D1 and Miniflare shows as a failed assertion that names the step.
+A deployed Worker answers anyone, and every step writes, so the Worker takes a token.
+The ids of the steps are fixed, and the stores keep their rows between runs, so a run starts with a reset.
+
+## Consequences
+
+- The remote test is opt-in, and one HTTPS round trip per step makes it slow. CI does not run it.
+- The observe test is skipped on remote D1: the hook's events live in one isolate, and a deployed Worker runs several. A Durable Object is one instance, so the test runs there.
+- A delete from a parent table reads the foreign key columns of its children, so the boundary check allows a module to read the foreign key columns of the tables that reference its own (ADR 0027, extended).

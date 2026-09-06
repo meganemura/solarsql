@@ -27,7 +27,8 @@ type Step =
   | { step: "revenue" }
   | { step: "confirmedOrders" }
   | { step: "customers" }
-  | { step: "observed" };
+  | { step: "observed" }
+  | { step: "reset" };
 
 // What the observe hook saw, per isolate, so a test can read it back.
 const events: Observed[] = [];
@@ -72,6 +73,11 @@ async function run(db: Database, s: Step): Promise<unknown> {
       return db.all(customerQueries.all);
     case "observed":
       return events.splice(0).map((e) => ({ kind: e.kind, name: e.name, outcome: e.outcome, timed: e.ms >= 0 }));
+    case "reset": {
+      // Both stores keep their rows between runs of the remote test.
+      const cleared = await db.run(orderCommands.clear);
+      return cleared.ok ? db.run(customerCommands.clear) : cleared;
+    }
   }
 }
 
@@ -96,10 +102,13 @@ export class Store extends DurableObject {
   }
 }
 
-type Env = { DB: Parameters<typeof d1>[0]; STORE: { idFromName(name: string): unknown; get(id: unknown): { fetch(request: Request): Promise<Response> } } };
+type Env = { DB: Parameters<typeof d1>[0]; STORE: { idFromName(name: string): unknown; get(id: unknown): { fetch(request: Request): Promise<Response> } }; TOKEN?: string };
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    // A deployed Worker answers anyone, and every step writes. With the
+    // TOKEN secret set, a request has to carry it. The Miniflare tests set none.
+    if (env.TOKEN !== undefined && request.headers.get("authorization") !== `Bearer ${env.TOKEN}`) return new Response("unauthorized", { status: 401 });
     const url = new URL(request.url);
     if (url.pathname === "/do") {
       const id = env.STORE.idFromName("example");

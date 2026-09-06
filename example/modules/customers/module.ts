@@ -24,4 +24,9 @@ export const customerCommands = commands(generated, {
     plan: ["insert into customers (id, name, email) values (:id, :name, :email)"],
     returns: "select id, name, email from customers where id = :id",
   },
+  // Every customer, gone. The orders that reference them go first, through
+  // the orders module's own clear.
+  clear: {
+    plan: ["delete from customers"],
+  },
 });
