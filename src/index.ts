@@ -8,12 +8,21 @@
 // ./durable.ts execute queries and commands. Nothing here reads SQL text;
 // the build step does that.
 
+import { uuidV7 } from "./runtime/id.ts";
+
 export type SqlValue = string | number | bigint | null | Uint8Array;
 
 declare const idBrand: unique symbol;
 
 // The id of a row of table T. A value of another table's id does not fit.
 export type Id<T extends string> = string & { readonly [idBrand]: T };
+
+// A new id for a row: a UUID version 7, so ids made later sort later
+// (ADR 0016). `newId<OrdersId>()` is the id of an order that does not exist
+// yet, ready for the first statement of a plan.
+export function newId<I extends Id<string>>(): I {
+  return uuidV7() as unknown as I;
+}
 
 // One entry of the generated map: the parameters a statement takes and the
 // row it returns. A statement that returns no rows has an empty row type.

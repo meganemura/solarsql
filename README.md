@@ -137,11 +137,13 @@ When it yields 0, the whole plan rolls back, and the result names the assert.
 ### Running
 
 ```ts
+import { newId } from "solarsql";
 import { d1 } from "solarsql/d1";
 // or: import { durable } from "solarsql/durable";
 
 const db = d1(env.DB);
 
+const id = newId<OrdersId>(); // a UUID v7, made before the first statement runs
 const order = await db.first(orderQueries.byId, { id });
 // { id: OrdersId; customer_id: CustomersId; status: "draft" | "confirmed"; note: string | null } | null
 
