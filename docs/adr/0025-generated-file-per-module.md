@@ -1,6 +1,6 @@
 # ADR 0025: One generated file per module, committed
 
-Status: accepted (2026-09-06)
+Status: accepted (2026-09-06). ADR 0033 keeps this file as one of the three files of a module.
 
 ## Context
 

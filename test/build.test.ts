@@ -59,7 +59,7 @@ describe("solarsql build", () => {
   test("a check writes nothing, reports the stale file, and stops at a missing one", async () => {
     const dir = copy();
     try {
-      const commands = join(dir, "example/modules/orders/commands.ts");
+      const commands = join(dir, "example/modules/orders/module.ts");
       writeFileSync(commands, readFileSync(commands, "utf8").replace("update orders set note = :note where id = :id", "update orders set note = :note where id = :id and status = 'draft'"));
       const generated = join(dir, "example/modules/orders/solarsql.generated.ts");
       const before = readFileSync(generated, "utf8");
@@ -79,7 +79,7 @@ describe("solarsql build", () => {
   test("a changed statement is reported as one removed and one added", async () => {
     const dir = copy();
     try {
-      const commands = join(dir, "example/modules/orders/commands.ts");
+      const commands = join(dir, "example/modules/orders/module.ts");
       writeFileSync(commands, readFileSync(commands, "utf8").replace("update orders set note = :note where id = :id", "update orders set note = :note where id = :id and status = 'draft'"));
       const result = await build(join(dir, "example/solarsql.config.ts"));
       const orders = result.modules.find((m) => m.name === "orders")!;
@@ -96,7 +96,7 @@ describe("solarsql build", () => {
   test("a schema change is reported, and `migration` writes the next file", async () => {
     const dir = copy();
     try {
-      const schema = join(dir, "example/modules/orders/schema.ts");
+      const schema = join(dir, "example/modules/orders/module.ts");
       writeFileSync(schema, readFileSync(schema, "utf8").replace("updated_at text\n", "updated_at text,\n    placed_at integer not null default 0\n"));
       const first = await build(join(dir, "example/solarsql.config.ts"));
       assert.equal(first.migration.pending, true);
@@ -118,12 +118,12 @@ describe("solarsql build", () => {
   test("a module imports another module through public.ts only", async () => {
     const dir = copy();
     try {
-      const queries = join(dir, "example/modules/orders/queries.ts");
+      const queries = join(dir, "example/modules/orders/module.ts");
       const original = readFileSync(queries, "utf8");
       writeFileSync(queries, `import type { CustomersId } from "../customers/public.ts";\n${original}`);
       await build(join(dir, "example/solarsql.config.ts"));
-      writeFileSync(queries, `import { customerQueries } from "../customers/queries.ts";\n${original}`);
-      await expectBuildError(dir, /module orders: queries\.ts imports \.\.\/customers\/queries\.ts\. Module customers shows public\.ts; import from there/);
+      writeFileSync(queries, `import { customerQueries } from "../customers/module.ts";\n${original}`);
+      await expectBuildError(dir, /module orders: module\.ts imports \.\.\/customers\/module\.ts\. Module customers shows public\.ts; import from there/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -132,7 +132,7 @@ describe("solarsql build", () => {
   test("a module that reads another module's table without readsAll is refused", async () => {
     const dir = copy();
     try {
-      const queries = join(dir, "example/modules/orders/queries.ts");
+      const queries = join(dir, "example/modules/orders/module.ts");
       writeFileSync(queries, readFileSync(queries, "utf8").replace("byCustomer: `", "names: `select name from customers`,\n  byCustomer: `"));
       await expectBuildError(dir, /module orders reads customers\.name\. Module customers owns customers/);
     } finally {
@@ -144,7 +144,7 @@ describe("solarsql build", () => {
     for (const head of ["after update on orders", "after update of note on orders", "before delete on orders", "after insert on orders"]) {
       const dir = copy();
       try {
-        const schema = join(dir, "example/modules/orders/schema.ts");
+        const schema = join(dir, "example/modules/orders/module.ts");
         const body = readFileSync(schema, "utf8").replace("after update on orders", head).replace("update orders set updated_at", "update customers set name = 'x' where id = new.customer_id;\n    update orders set updated_at");
         // A DELETE trigger sees old, not new.
         writeFileSync(schema, head.includes("delete") ? body.replace(/new\./g, "old.") : body);
@@ -158,7 +158,7 @@ describe("solarsql build", () => {
   test("a trigger body the engine refuses is reported with its text", async () => {
     const dir = copy();
     try {
-      const schema = join(dir, "example/modules/orders/schema.ts");
+      const schema = join(dir, "example/modules/orders/module.ts");
       writeFileSync(schema, readFileSync(schema, "utf8").replace("after update on orders", "after delete on orders"));
       await expectBuildError(dir, /module orders: trigger orders_touch: no such column: new\.id\n  in: create trigger orders_touch after delete on orders/);
     } finally {
@@ -169,7 +169,7 @@ describe("solarsql build", () => {
   test("a trigger on another module's table is refused", async () => {
     const dir = copy();
     try {
-      const schema = join(dir, "example/modules/orders/schema.ts");
+      const schema = join(dir, "example/modules/orders/module.ts");
       writeFileSync(schema, readFileSync(schema, "utf8").replace("after update on orders", "after update on customers"));
       await expectBuildError(dir, /module orders: trigger orders_touch is on customers, which module customers owns/);
     } finally {
@@ -180,12 +180,12 @@ describe("solarsql build", () => {
   test("an INSTEAD OF trigger on a view of the module is checked like a table trigger", async () => {
     const dir = copy();
     try {
-      const schema = join(dir, "example/modules/orders/schema.ts");
+      const schema = join(dir, "example/modules/orders/module.ts");
       const own = `\nexport const notes = view("create view order_notes as select id, note from orders");\nexport const notesInsert = trigger("create trigger order_notes_insert instead of insert on order_notes begin update orders set note = new.note where id = new.id; end");\n`;
-      writeFileSync(schema, readFileSync(schema, "utf8").replace("import { index, table, trigger }", "import { index, table, trigger, view }") + own);
+      writeFileSync(schema, readFileSync(schema, "utf8").replace("import { assert, commands, index, queries, table, trigger }", "import { assert, commands, index, queries, table, trigger, view }") + own);
       await build(join(dir, "example/solarsql.config.ts"));
-      const reports = join(dir, "example/modules/reports/schema.ts");
-      writeFileSync(reports, readFileSync(reports, "utf8").replace('import { view }', 'import { trigger, view }') + `\nexport const drop = trigger("create trigger confirmed_delete instead of delete on confirmed_orders begin delete from orders where id = old.id; end");\n`);
+      const reports = join(dir, "example/modules/reports/module.ts");
+      writeFileSync(reports, readFileSync(reports, "utf8").replace("import { queries, view }", "import { queries, trigger, view }") + `\nexport const drop = trigger("create trigger confirmed_delete instead of delete on confirmed_orders begin delete from orders where id = old.id; end");\n`);
       await expectBuildError(dir, /module reports: trigger confirmed_delete deletes from orders\. Module orders owns orders/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -195,8 +195,8 @@ describe("solarsql build", () => {
   test("a view that reads another module's table needs readsAll", async () => {
     const dir = copy();
     try {
-      const schema = join(dir, "example/modules/orders/schema.ts");
-      writeFileSync(schema, readFileSync(schema, "utf8").replace("import { index, table, trigger }", "import { index, table, trigger, view }") + `\nexport const names = view("create view customer_names as select id, name from customers");\n`);
+      const schema = join(dir, "example/modules/orders/module.ts");
+      writeFileSync(schema, readFileSync(schema, "utf8").replace("import { assert, commands, index, queries, table, trigger }", "import { assert, commands, index, queries, table, trigger, view }") + `\nexport const names = view("create view customer_names as select id, name from customers");\n`);
       await expectBuildError(dir, /module orders: view customer_names reads customers\.name\. Module customers owns customers/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -206,7 +206,7 @@ describe("solarsql build", () => {
   test("changes() in an assert that does not follow a statement is refused", async () => {
     const dir = copy();
     try {
-      const commands = join(dir, "example/modules/orders/commands.ts");
+      const commands = join(dir, "example/modules/orders/module.ts");
       writeFileSync(commands, readFileSync(commands, "utf8").replace(`assert("has_lines", "exists (select 1 from order_lines where order_id = :id)"),`, `assert("has_lines", "exists (select 1 from order_lines where order_id = :id)"),\n      assert("nothing_changed", "changes() = 0"),`));
       await expectBuildError(dir, /assert nothing_changed uses changes\(\)/);
     } finally {
@@ -217,7 +217,7 @@ describe("solarsql build", () => {
   test("a table that is not STRICT is refused with the fix in the message", async () => {
     const dir = copy();
     try {
-      const schema = join(dir, "example/modules/customers/schema.ts");
+      const schema = join(dir, "example/modules/customers/module.ts");
       writeFileSync(schema, readFileSync(schema, "utf8").replace(") strict\n", ")\n"));
       await expectBuildError(dir, /table customers is not STRICT\. Add `strict`/);
     } finally {
@@ -228,7 +228,7 @@ describe("solarsql build", () => {
   test("an expression column without a cast is refused with the fix in the message", async () => {
     const dir = copy();
     try {
-      const queries = join(dir, "example/modules/reports/queries.ts");
+      const queries = join(dir, "example/modules/reports/module.ts");
       writeFileSync(queries, readFileSync(queries, "utf8").replace("cast(count(distinct o.id) as integer) as orders", "count(distinct o.id) as orders"));
       await expectBuildError(dir, /column "orders" is an expression with no type/);
     } finally {

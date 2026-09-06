@@ -7,7 +7,7 @@ import type { Database, Observed } from "../src/index.ts";
 import { migrations } from "./migrations/index.ts";
 import { customerCommands, customerQueries } from "./modules/customers/public.ts";
 import { orderCommands, orderQueries } from "./modules/orders/public.ts";
-import { reportQueries } from "./modules/reports/queries.ts";
+import { reportQueries } from "./modules/reports/public.ts";
 import type { CustomersId } from "./modules/customers/public.ts";
 import type { OrderLinesId, OrdersId } from "./modules/orders/public.ts";
 

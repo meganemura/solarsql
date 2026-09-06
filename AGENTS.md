@@ -16,7 +16,7 @@ Rows are plain values with no methods and no callbacks.
 Types come from the real engine at build time, and a stale type fails to compile.
 
 The library is in `src/`: `index.ts` (the API), `d1.ts`, `durable.ts`, and `node.ts` (the adapters; the third is for tests and scripts), `build/` (the CLI, the scanner, the engine facts, the type generator, the migration diff), `runtime/plan.ts` (what the build and the adapters share), and `runtime/id.ts` (UUID v7).
-A module's `schema.ts` may export tables, indexes, views, and triggers.
+A module is three files: `module.ts` (its tables, indexes, views, triggers, queries, and commands), `public.ts` (what other modules may import), and `solarsql.generated.ts` (written by the build).
 The example project in `example/` is the one the tests run.
 
 The design records live in `docs/` as ADRs.

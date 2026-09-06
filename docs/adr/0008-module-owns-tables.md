@@ -1,6 +1,6 @@
 # ADR 0008: A module owns its tables and shows one public file
 
-Status: accepted (2026-09-06)
+Status: accepted (2026-09-06). ADR 0033 keeps `public.ts` as the one file other modules import, and folds the rest of the source into `module.ts`.
 
 ## Context
 
