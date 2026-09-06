@@ -5,15 +5,16 @@ Usage: python3 metrics.py <work dir with runs/> <transcripts dir>
 One JSON object per run:
 - tool_calls, by_tool
 - files_read: distinct files whose contents the agent read, through the
-  Read tool or through cat, sed, head, tail, grep in Bash. A shell loop of
+  Read tool or through cat, sed, head, tail, grep, diff, and
+  `git diff --no-index` in Bash. A shell loop of
   the form `for f in $(find <dir> ...)` or `for f in <glob>` counts every
   file it names.
 - files_read_in_node_modules: the part of files_read under node_modules
 - cli_help_runs, build_runs: `solarsql --help` and `solarsql build`
 - generated_reads_after_build: shell reads of solarsql.generated.ts after the
   first build, the agent checking that its statement landed
-- test_runs, typecheck_runs: from the log the npm scripts write, plus any
-  direct `node --test` or `tsc` in Bash
+- test_runs, typecheck_runs: the larger of the transcript count (npm test,
+  node --test, tsc, npm run typecheck) and the log the npm scripts write
 - errors: Bash results the harness flagged as errors
 - output_tokens: the sum of the assistant's output tokens in the transcript
 - wall_seconds: first to last event (runs were concurrent, so not comparable)
@@ -27,7 +28,7 @@ work, tdir = sys.argv[1], sys.argv[2]
 runs_dir = os.path.realpath(os.path.join(work, "runs"))
 runs = sorted(d for d in os.listdir(runs_dir) if os.path.isdir(os.path.join(runs_dir, d)))
 
-READERS = ("cat", "sed", "head", "tail", "grep", "less", "more")
+READERS = ("cat", "sed", "head", "tail", "grep", "less", "more", "diff")
 
 
 def load(path):
@@ -78,6 +79,9 @@ def files_in_bash(cmd, rd):
         words = part.strip().split()
         if not words:
             continue
+        # `git diff --no-index /dev/null <file>` prints the whole file.
+        if words[:2] == ["git", "diff"] and "--no-index" in words:
+            words = ["diff"] + [w for w in words[2:] if w != "--no-index"]
         # skip a leading cd, echo, or env prefix
         if words[0] not in READERS:
             continue
@@ -157,25 +161,29 @@ for run in runs:
                 for p in re.findall(r"(?:cat|sed|head|grep) [^&|;]*?(/(?:Users|private|home)/\S+)", cmd):
                     if not p.startswith(rd):
                         outside.add(p)
-                if re.search(r"solarsql(?:\.js)?\s+--help", cmd):
+                # The CLI runs as `solarsql`, as the .bin link, or as dist/build/cli.js.
+                if re.search(r"(?:solarsql|cli\.js)\s+--help", cmd):
                     help_runs += 1
-                if re.search(r"solarsql(?:\.js)?\s+build", cmd):
+                if re.search(r"(?:solarsql|cli\.js)\s+build", cmd):
                     build_runs += 1
-                elif build_runs > 0 and "solarsql.generated.ts" in cmd and re.search(r"\b(?:cat|sed|head|grep)\b", cmd):
+                elif build_runs > 0 and "solarsql.generated.ts" in cmd and re.search(r"\b(?:cat|sed|head|grep|diff)\b", cmd):
                     generated_reads_after_build += 1
-                if re.search(r"node --test", cmd):
+                if re.search(r"node --test|npm (?:run )?test\b", cmd):
                     tests += 1
-                if re.search(r"\btsc\b", cmd):
+                if re.search(r"\btsc\b|npm run typecheck", cmd):
                     typechecks += 1
                 if results.get(c.get("id")):
                     errors += 1
+    # The npm scripts log each run; an agent may delete the log, so the
+    # transcript count and the log count are two readings, and the larger
+    # one stands.
     for log, key in ((".runs-test.log", "npm_test"), (".runs-typecheck.log", "npm_typecheck")):
         p = os.path.join(rd, log)
         count = sum(1 for _ in open(p)) if os.path.exists(p) else 0
         if key == "npm_test":
-            tests += count
+            tests = max(tests, count)
         else:
-            typechecks += count
+            typechecks = max(typechecks, count)
     row.update(
         {
             "tool_calls": sum(tools.values()),

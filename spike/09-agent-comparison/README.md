@@ -20,6 +20,11 @@ inserted after its read of the order's status, and
 `power-check-solarsql-1-with-50ms-pause.race.txt` is the same pause in a
 copy of the solarsql-1 run, before its one `db.run`.
 
+`results/2026-09-06-exp1-rerun/` is experiment 1 run again on the library
+after the changes it prompted (the build prints what it added and removed,
+the generated file names the build command, the README opens with a
+recipe), with the starter's project files unchanged.
+
 ## Files
 
 - `build-starters.sh [work dir] [runs per arm]` builds both starters in a

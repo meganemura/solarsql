@@ -1,0 +1,59 @@
+diff -r -u --exclude=node_modules --exclude=.runs-*.log --exclude=package-lock.json <starters>/drizzle/test/visible.test.ts <runs>/drizzle-2/test/visible.test.ts
+--- <starters>/drizzle/test/visible.test.ts	2026-09-06 09:12:52
++++ <runs>/drizzle-2/test/visible.test.ts	2026-09-06 09:15:37
+@@ -91,4 +91,26 @@
+   test("an unknown order reads as null", async () => {
+     assert.equal(await value({ step: "order", id: "nope" }), null);
+   });
++
++  test("cancel a draft order is refused", async () => {
++    assert.deepEqual(await value({ step: "cancel", id: "o2" }), { refused: "not_confirmed" });
++    assert.deepEqual(await value({ step: "order", id: "o2" }), { id: "o2", status: "draft", lines: [] });
++  });
++
++  test("cancel an unknown order is refused", async () => {
++    assert.deepEqual(await value({ step: "cancel", id: "nope" }), { refused: "not_confirmed" });
++  });
++
++  test("cancel the confirmed order, then cancel it again", async () => {
++    assert.deepEqual(await value({ step: "cancel", id: "o1" }), { id: "o1", customer_id: "c1", status: "cancelled", note: null });
++    assert.deepEqual(await value({ step: "cancel", id: "o1" }), { refused: "not_confirmed" });
++    assert.deepEqual(await value({ step: "order", id: "o1" }), {
++      id: "o1",
++      status: "cancelled",
++      lines: [
++        { id: "l1", sku: "A", qty: 2, price: 1.5 },
++        { id: "l2", sku: "B", qty: 1, price: 4 },
++      ],
++    });
++  });
+ });
+diff -r -u --exclude=node_modules --exclude=.runs-*.log --exclude=package-lock.json <starters>/drizzle/worker.ts <runs>/drizzle-2/worker.ts
+--- <starters>/drizzle/worker.ts	2026-09-06 09:12:52
++++ <runs>/drizzle-2/worker.ts	2026-09-06 09:15:00
+@@ -8,6 +8,7 @@
+   | { step: "createCustomer"; id: string; name: string; email: string }
+   | { step: "placeOrder"; id: string; customer_id: string; lines: { id: string; sku: string; qty: number; price: number }[] }
+   | { step: "confirm"; id: string }
++  | { step: "cancel"; id: string }
+   | { step: "annotate"; id: string; note: string | null }
+   | { step: "order"; id: string }
+   | { step: "ordersOf"; customer_id: string }
+@@ -52,6 +53,17 @@
+       if (row) return row;
+       const current = await db.select({ status: orders.status }).from(orders).where(eq(orders.id, s.id)).get();
+       return { refused: current?.status === "draft" ? "has_lines" : "was_draft" };
++    }
++    case "cancel": {
++      // Same shape as confirm: the WHERE clause admits only a confirmed
++      // order, so draft, already-cancelled, and missing orders all fall
++      // through to the same refusal.
++      const [row] = await db
++        .update(orders)
++        .set({ status: "cancelled" })
++        .where(and(eq(orders.id, s.id), eq(orders.status, "confirmed")))
++        .returning(orderColumns);
++      return row ?? { refused: "not_confirmed" };
+     }
+     case "annotate": {
+       const [row] = await db.update(orders).set({ note: s.note }).where(eq(orders.id, s.id)).returning(orderColumns);

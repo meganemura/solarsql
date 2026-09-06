@@ -57,7 +57,9 @@ A="$WORK/starters/solarsql"
 common "$A" solarsql "solarsql (typed SQL for D1 and Durable Objects)" "modules/ holds one directory per module: schema.ts, queries.ts, commands.ts, public.ts, and the generated types."
 cp -R "$REPO/example/modules" "$A/modules"
 find "$A/modules" -name "*.ts" -exec sed -i '' -e 's#from "\(\.\./\)*src/index\.ts"#from "solarsql"#' {} +
-sed -i '' "s/check (status in ('draft', 'confirmed'))/check (status in ('draft', 'confirmed', 'cancelled'))/" "$A/modules/orders/schema.ts"
+# The orders module of the starter is fixed here, so a later change to the
+# example of the repository leaves the experiment's project as it was.
+cp "$KIT/solarsql-arm/modules/orders/schema.ts" "$A/modules/orders/schema.ts"
 cp "$KIT/solarsql-arm/modules/orders/queries.ts" "$A/modules/orders/queries.ts"
 cp "$KIT/solarsql-arm/modules/orders/commands.ts" "$A/modules/orders/commands.ts"
 cp "$KIT/solarsql-arm/worker.ts" "$KIT/solarsql-arm/solarsql.config.ts" "$A/"
