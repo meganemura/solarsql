@@ -32,6 +32,10 @@ export async function init(module: string, dir = "."): Promise<InitResult> {
   for (const [path] of files) {
     if (existsSync(path)) throw new BuildError(`${relative(root, path) || path} exists. init is for a project without one; add a module by hand, as the README shows.`);
   }
+  // The first migration is the first file of its directory. A directory that
+  // exists holds another project's history, wrangler's or an earlier one.
+  const migrations = join(root, "migrations");
+  if (existsSync(migrations)) throw new BuildError(`migrations/ exists. init writes the first migration; a project with a history adds a module by hand, as the README shows.`);
   mkdirSync(moduleDir, { recursive: true });
   for (const [path, text] of files) writeFileSync(path, text);
   await build(config);

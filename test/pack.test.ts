@@ -80,7 +80,8 @@ test("npm pack, install, and run the CLI from node_modules", { timeout: 180_000 
     // Under `node --test`, a child node inherits NODE_TEST_CONTEXT and would
     // report to this runner instead of its stdout.
     const { NODE_TEST_CONTEXT: _, ...env } = process.env;
-    const tested = spawnSync(process.execPath, ["--test", "modules/order_lines/module.test.ts"], { cwd: consumer, encoding: "utf8", env });
+    // Bare, as the README says: the default pattern finds the .ts test.
+    const tested = spawnSync(process.execPath, ["--test"], { cwd: consumer, encoding: "utf8", env });
     assert.equal(tested.status, 0, tested.stdout + tested.stderr);
     assert.match(tested.stdout, /^ℹ pass 1$/m);
     // tsc and @types/node from this repository, so the check needs no network.
