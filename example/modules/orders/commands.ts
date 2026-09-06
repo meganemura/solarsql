@@ -20,6 +20,7 @@ export const orderCommands = commands(generated, {
   },
   annotate: {
     plan: ["update orders set note = :note where id = :id"],
+    returns: "select id, note, updated_at from orders where id = :id",
   },
   reprice: {
     // The price of several lines of one order from one JSON array. Every id

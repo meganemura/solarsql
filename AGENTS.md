@@ -16,6 +16,7 @@ Rows are plain values with no methods and no callbacks.
 Types come from the real engine at build time, and a stale type fails to compile.
 
 The library is in `src/`: `index.ts` (the API), `d1.ts` and `durable.ts` (the adapters), `build/` (the CLI, the scanner, the engine facts, the type generator, the migration diff), and `runtime/plan.ts` (what the build and the adapters share).
+A module's `schema.ts` may export tables, indexes, views, and triggers.
 The example project in `example/` is the one the tests run.
 
 The design records live in `docs/` as ADRs.

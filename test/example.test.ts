@@ -3,13 +3,14 @@
 // the Worker in example/worker.ts.
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { splitStatements } from "../src/build/scan.ts";
 import { workerMiniflare } from "./worker.ts";
 
 const root = resolve(import.meta.dirname, "..");
-const migration = readFileSync(resolve(root, "example/migrations/0001_initial.sql"), "utf8");
+const migrationsDir = resolve(root, "example/migrations");
+const migrations = readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).sort().map((f) => readFileSync(join(migrationsDir, f), "utf8"));
 
 type Reply = { ok: true; value: unknown } | { ok: false; message: string; cause: string | null };
 
@@ -28,9 +29,9 @@ for (const target of ["d1", "do"] as const) {
 
     before(async () => {
       if (target === "d1") {
-        // wrangler applies a migration file as one batch. The test does the same.
+        // wrangler applies each migration file as one batch, in name order.
         const db = await mf.getD1Database("DB");
-        await db.batch(splitStatements(migration).map((s) => db.prepare(s)));
+        for (const file of migrations) await db.batch(splitStatements(file).map((s) => db.prepare(s)));
       }
     });
     after(async () => {
@@ -102,9 +103,16 @@ for (const target of ["d1", "do"] as const) {
       assert.deepEqual(order, { id: "o2", status: "draft", lines: [] });
     });
 
-    test("a nullable parameter accepts null", async () => {
-      assert.deepEqual(await value({ step: "annotate", id: "o1", note: "rush" }), { ok: true, rows: [] });
-      assert.deepEqual(await value({ step: "annotate", id: "o1", note: null }), { ok: true, rows: [] });
+    test("a nullable parameter accepts null, and the trigger stamps the update", async () => {
+      const noted = (await value({ step: "annotate", id: "o1", note: "rush" })) as { ok: true; rows: { id: string; note: string | null; updated_at: string | null }[] };
+      assert.equal(noted.rows[0]!.note, "rush");
+      assert.match(noted.rows[0]!.updated_at ?? "", /^\d{4}-\d{2}-\d{2}T/);
+      const cleared = (await value({ step: "annotate", id: "o1", note: null })) as { ok: true; rows: { note: string | null }[] };
+      assert.equal(cleared.rows[0]!.note, null);
+    });
+
+    test("a report reads through a view of its own", async () => {
+      assert.deepEqual(await value({ step: "confirmedOrders" }), [{ id: "o1", customer_id: "c1", customer_name: "Ann" }]);
     });
 
     test("a failed plan leaves no partial writes, and the failure is a value", async () => {

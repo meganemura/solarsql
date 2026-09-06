@@ -13,7 +13,7 @@ A module owns its tables, and the build step refuses a statement that reaches in
 solarsql.config.ts
 modules/
   orders/
-    schema.ts               CREATE TABLE and CREATE INDEX, as strings
+    schema.ts               CREATE TABLE, INDEX, VIEW, and TRIGGER, as strings
     queries.ts              named SQL that returns rows
     commands.ts             verbs: a plan of statements and asserts
     public.ts               what other modules may import
@@ -34,7 +34,7 @@ migrations/
 ### schema.ts
 
 ```ts
-import { index, table } from "solarsql";
+import { index, table, trigger, view } from "solarsql";
 
 export const orders = table(`
   -- An order placed by one customer.
@@ -42,11 +42,21 @@ export const orders = table(`
     id text primary key not null,
     customer_id text not null references customers(id),
     status text not null check (status in ('draft', 'confirmed')),
-    note text
+    note text,
+    updated_at text
   ) strict
 `);
 
 export const orderLinesByOrder = index(`create index order_lines_order_id on order_lines (order_id)`);
+
+export const ordersTouch = trigger(`
+  create trigger orders_touch after update on orders
+  begin
+    update orders set updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = new.id;
+  end
+`);
+
+export const openOrders = view(`create view open_orders as select id, customer_id from orders where status = 'draft'`);
 ```
 
 The leading `--` lines are the documentation of the table.
@@ -54,6 +64,8 @@ A primary key column must be `not null`.
 A `check (x in (...))` becomes a union type, of strings or of numbers: `check (flag in (0, 1))` is `0 | 1`.
 A generated column is read like any other.
 Every table is `strict`, so the engine rejects a value that does not match the declared type, and the generated types hold for every stored value.
+A trigger sits on a table of its module, and its body may touch the tables of that module only.
+A view is read by the queries of its module like a table; a report module with `readsAll` may declare a view over every table.
 
 ### queries.ts
 
@@ -178,7 +190,7 @@ It fails with one message when:
 - an expression column has no `cast`;
 - a `json_group_array` over an outer join has no `filter`;
 - a parameter has two different types in one command;
-- a statement touches a table that another module owns;
+- a statement, a view, or a trigger body touches a table that another module owns;
 - a primary key allows NULL;
 - a table is not `strict`;
 - the migration files do not match the schema.
@@ -194,6 +206,7 @@ npx solarsql migration <name>
 
 This writes `migrations/NNNN_<name>.sql` with the difference between the migration files and the schema, in the format wrangler applies.
 A table rebuild, for a constraint change, runs inside one transaction and keeps the rows and the foreign keys.
+A changed view or trigger is dropped and created again; a rebuild drops every view first, because a rename under a view fails.
 The generator stops and asks when a table both loses and gains a column, or when a new column is `not null` without a default.
 
 On D1, wrangler applies the files.

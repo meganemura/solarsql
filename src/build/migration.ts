@@ -4,8 +4,8 @@
 // guard table. Both live in node:sqlite, and the engine decides whether a
 // cheap ALTER is enough: the candidate runs on a scratch database and is
 // kept only when the scratch shape equals the declared shape.
-// Boundary: no file system. build.ts reads and writes the files. Views are
-// out of scope; tables, indexes, and triggers are diffed.
+// Boundary: no file system. build.ts reads and writes the files. Tables,
+// indexes, views, and triggers are diffed.
 import { DatabaseSync } from "node:sqlite";
 import { definitions, normalize, quoteIdent, splitStatements } from "./scan.ts";
 
@@ -14,7 +14,8 @@ export type ForeignKey = { table: string; from: string; to: string; onUpdate: st
 export type Table = { name: string; sql: string; columns: Column[]; foreignKeys: ForeignKey[]; constraints: string[]; withoutRowid: boolean; strict: boolean };
 export type Index = { name: string; table: string; sql: string };
 export type Trigger = { name: string; table: string; sql: string };
-export type Schema = { tables: Map<string, Table>; indexes: Map<string, Index>; triggers: Map<string, Trigger> };
+export type View = { name: string; sql: string };
+export type Schema = { tables: Map<string, Table>; indexes: Map<string, Index>; triggers: Map<string, Trigger>; views: Map<string, View> };
 export type Rename = { table: string; from: string; to: string };
 export type Plan = { kind: "ok"; statements: string[] } | { kind: "blocked"; reason: string };
 
@@ -40,6 +41,7 @@ export function introspect(db: DatabaseSync): Schema {
   const tables = new Map<string, Table>();
   const indexes = new Map<string, Index>();
   const triggers = new Map<string, Trigger>();
+  const views = new Map<string, View>();
   const rows = db
     .prepare(`select type, name, tbl_name, sql from sqlite_schema where sql is not null and name not like 'sqlite_%' order by name`)
     .all() as { type: string; name: string; tbl_name: string; sql: string }[];
@@ -76,9 +78,11 @@ export function introspect(db: DatabaseSync): Schema {
       indexes.set(row.name, { name: row.name, table: row.tbl_name, sql: row.sql });
     } else if (row.type === "trigger") {
       triggers.set(row.name, { name: row.name, table: row.tbl_name, sql: row.sql });
+    } else if (row.type === "view") {
+      views.set(row.name, { name: row.name, sql: row.sql });
     }
   }
-  return { tables, indexes, triggers };
+  return { tables, indexes, triggers, views };
 }
 
 // A comparable value. Two schemas with equal shapes accept the same rows
@@ -89,6 +93,7 @@ export function shape(schema: Schema): unknown {
     tables: [...schema.tables.values()].sort(byName).map(tableShape),
     indexes: [...schema.indexes.values()].sort(byName).map((i) => ({ name: i.name, table: i.table, sql: normalize(i.sql) })),
     triggers: [...schema.triggers.values()].sort(byName).map((t) => ({ name: t.name, table: t.table, sql: normalize(t.sql) })),
+    views: [...schema.views.values()].sort(byName).map((v) => ({ name: v.name, sql: normalize(v.sql) })),
   };
 }
 
@@ -193,9 +198,13 @@ function tableStatements(current: Table, target: Table, renames: readonly Rename
 }
 
 export function diff(current: Schema, target: Schema, renames: readonly Rename[] = []): Plan {
-  // Order: drop triggers and indexes, drop tables, change tables, create
-  // indexes and triggers. An index that names a column must go before the
-  // column does. An index or trigger on a rebuilt table disappears with it.
+  // Order: drop views, drop triggers and indexes, drop tables, change
+  // tables, create indexes, views, and triggers. An index that names a
+  // column must go before the column does. An index or trigger on a rebuilt
+  // table disappears with it. A rebuild renames a table under the views,
+  // and RENAME fails while a view names a table that is gone, so every view
+  // is dropped before a rebuild and created again after it.
+  const dropViews: string[] = [];
   const dropFirst: string[] = [];
   const dropTables: string[] = [];
   const changeTables: string[] = [];
@@ -233,6 +242,13 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
     }
     changeTables.push(...plan.statements);
   }
+  const viewSame = (name: string) => {
+    const c = current.views.get(name);
+    const t = target.views.get(name);
+    return c !== undefined && t !== undefined && normalize(c.sql) === normalize(t.sql);
+  };
+  const allViews = rebuilt.size > 0;
+  for (const name of current.views.keys()) if (allViews || !viewSame(name)) dropViews.push(`drop view ${quoteIdent(name)}`);
   const gone = (table: string) => rebuilt.has(table) || !target.tables.has(table);
   for (const [name, table] of dropTriggerOf) if (!gone(table)) dropFirst.push(`drop trigger ${quoteIdent(name)}`);
   for (const [name, table] of dropIndexOf) if (!gone(table)) dropFirst.push(`drop index ${quoteIdent(name)}`);
@@ -240,11 +256,12 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
     const c = current.indexes.get(name);
     if (rebuilt.has(index.table) || !c || normalize(c.sql) !== normalize(index.sql)) createLast.push(index.sql);
   }
+  for (const [name, view] of target.views) if (allViews || !viewSame(name)) createLast.push(view.sql);
   for (const [name, trigger] of target.triggers) {
     const c = current.triggers.get(name);
     if (rebuilt.has(trigger.table) || !c || normalize(c.sql) !== normalize(trigger.sql)) createLast.push(trigger.sql);
   }
-  const statements = [...dropFirst, ...dropTables, ...changeTables, ...createLast];
+  const statements = [...dropViews, ...dropFirst, ...dropTables, ...changeTables, ...createLast];
   if (needsDefer) statements.unshift(`pragma defer_foreign_keys = on`);
   return { kind: "ok", statements };
 }
