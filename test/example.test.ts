@@ -37,6 +37,6 @@ for (const target of ["d1", "do"] as const) {
       await mf.dispose();
     });
 
-    exampleSteps(value);
+    exampleSteps(value, { oneIsolate: true, engineMeta: target === "d1" });
   });
 }

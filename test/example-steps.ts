@@ -12,7 +12,8 @@ export type Value = (body: Record<string, unknown>) => Promise<unknown>;
 
 // `oneIsolate` is false when the Worker may run in several isolates, as a
 // deployed one does: then the observe hook's events are not all in one place.
-export function exampleSteps(value: Value, options: { oneIsolate: boolean } = { oneIsolate: true }): void {
+// `engineMeta` is true on D1, which reports the rows read and written.
+export function exampleSteps(value: Value, options: { oneIsolate: boolean; engineMeta: boolean }): void {
   test("a command with returns gives typed rows", async () => {
     const created = await value({ step: "createCustomer", id: "c1", name: "Ann", email: "ann@example.com" });
     assert.deepEqual(created, { ok: true, rows: [{ id: "c1", name: "Ann", email: "ann@example.com" }] });
@@ -146,8 +147,18 @@ export function exampleSteps(value: Value, options: { oneIsolate: boolean } = { 
   });
 
   test("the observe hook saw every call with its name and outcome", { skip: options.oneIsolate ? false : "the events of the hook live in one isolate, and a deployed Worker runs several" }, async () => {
-    const seen = (await value({ step: "observed" })) as { kind: string; name: string; outcome: string; timed: boolean }[];
+    const seen = (await value({ step: "observed" })) as { kind: string; name: string; outcome: string; timed: boolean; meta: { rows_read: number; rows_written: number; duration: number } | null }[];
     assert.ok(seen.every((e) => e.timed));
+    // D1 reports its meta on every reply that arrived; a failed plan threw
+    // before one did. The other engines report none.
+    assert.ok(seen.filter((e) => e.outcome === "ok").every((e) => (e.meta !== null) === options.engineMeta), JSON.stringify(seen.slice(0, 3)));
+    assert.ok(seen.filter((e) => e.outcome !== "ok").every((e) => e.meta === null), JSON.stringify(seen.filter((e) => e.outcome !== "ok")));
+    if (options.engineMeta) {
+      const confirm = seen.find((e) => e.kind === "command" && e.name === "confirm" && e.outcome === "ok")!;
+      assert.ok(confirm.meta!.rows_written >= 1, JSON.stringify(confirm));
+      const batch = seen.find((e) => e.kind === "batch")!;
+      assert.ok(batch.meta!.rows_read >= 1, JSON.stringify(batch));
+    }
     const outcomes = seen.map((e) => `${e.kind} ${e.name} ${e.outcome}`);
     assert.ok(outcomes.includes("command confirm ok"), outcomes.join("\n"));
     assert.ok(outcomes.includes("command confirm assert:was_draft"));

@@ -49,6 +49,7 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0036](adr/0036-the-example-deploys-with-wrangler.md) | The example deploys with wrangler, and a remote test runs its steps |
 | [0037](adr/0037-init-writes-the-first-module.md) | init writes the first module and runs the first build |
 | [0038](adr/0038-the-skill-is-the-usage-documentation.md) | The skill is the usage documentation, and the README is the door |
+| [0039](adr/0039-observe-carries-the-engine-meta.md) | The observe hook carries D1's meta |
 
 ## Measurements
 
