@@ -1,6 +1,6 @@
 # ADR 0027: What the boundary check sees
 
-Status: accepted (2026-09-06)
+Status: accepted (2026-09-06). Extended the same day: a module may also read the foreign key columns of the tables that reference its own tables, because a delete from a parent table reads them (found by the `clear` commands of ADR 0036).
 
 ## Context
 
