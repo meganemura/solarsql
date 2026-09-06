@@ -31,6 +31,7 @@
     "dist",
     "skills",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "exports": {
