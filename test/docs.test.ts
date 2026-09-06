@@ -29,9 +29,5 @@ test("every message fragment in build.md appears in the source of the build", ()
   const table = readFileSync(join(skill, "references/build.md"), "utf8").split("## Messages")[1]!.split("\n## ")[0]!;
   const fragments = [...table.matchAll(/^\| `([^`]+)`/gm)].map((m) => m[1]!);
   assert.ok(fragments.length >= 20, `only ${fragments.length} fragments`);
-  for (const fragment of fragments) {
-    // A placeholder in the table (x, t, c, m, o, p, a, v) stands for a `${...}` in the source; the fixed words must appear.
-    const words = fragment.split(/\s+/).filter((w) => w.length > 3 && /^[a-z_()]+[.:,]?$/i.test(w) && !["with", "which", "into", "from"].includes(w));
-    for (const word of words) assert.ok(source.includes(word.replace(/[.:,]$/, "")), `build.md: "${fragment}": "${word}" is not in src/build`);
-  }
+  for (const fragment of fragments) assert.ok(source.includes(fragment), `build.md: "${fragment}" is not in src/build`);
 });

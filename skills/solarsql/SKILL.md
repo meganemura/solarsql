@@ -33,6 +33,7 @@ After any change to SQL text, run `npx solarsql build`; a statement whose text c
 
 - Every table is `strict` and has a primary key that is `not null`.
 - A statement, a view, or a trigger body of a module touches the tables of that module, the primary keys its foreign keys reference, and the foreign key columns of tables that reference its own. A module with `readsAll` may read every table. A write into another module's table is always refused.
+- An index sits on a table of its module, and a trigger on a table or a view of its module.
 - A file of a module imports another module only through that module's `public.ts`.
 - An expression column has a `cast(... as integer | real | text)`.
 - A `json_group_array` over an outer join has a `filter (where ... is not null)`.
@@ -41,4 +42,4 @@ After any change to SQL text, run `npx solarsql build`; a statement whose text c
 
 ## Where the reasoning is
 
-The design records are ADRs in `docs/adr/` of the repository, with the measurements they rest on. The references above say what holds; the ADRs say why.
+A reference states a rule. The ADR that decided the rule, in `docs/adr/` of the repository, holds the reasoning and the measurement behind it.
