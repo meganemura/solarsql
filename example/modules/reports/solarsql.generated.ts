@@ -8,7 +8,7 @@ export type Generated = {
   /** Confirmed revenue per customer, largest first. */
   "\n    -- Confirmed revenue per customer, largest first.\n    select c.id as customer_id, c.name,\n      cast(sum(l.qty * l.price) as real) as revenue,\n      cast(count(distinct o.id) as integer) as orders\n    from customers c\n    join orders o on o.customer_id = c.id and o.status = 'confirmed'\n    join order_lines l on l.order_id = o.id\n    group by c.id\n    order by revenue desc": {
     params: {};
-    row: { customer_id: CustomersId; name: string; revenue: number | null; orders: number | null };
+    row: { customer_id: CustomersId; name: string; revenue: number | null; orders: number };
   };
 };
 

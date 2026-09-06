@@ -15,7 +15,9 @@ export type ColumnFact = {
   dflt: string | null;
   pk: number;
   // Literals of `check (<column> in (...))`, when the column has one.
-  oneOf: string[] | null;
+  oneOf: (string | number)[] | null;
+  // A generated column (`as (...) stored` or `virtual`) is read, never written.
+  generated: boolean;
 };
 
 export type ForeignKeyFact = { table: string; from: string; to: string };
@@ -69,12 +71,15 @@ export class Engine {
     const ddl = sql ?? (this.db.prepare(`select sql from sqlite_schema where type = 'table' and name = ?`).get(name) as { sql: string } | undefined)?.sql;
     if (!ddl) throw new Error(`no table named ${name}`);
     const defs = definitions(ddl);
-    const columns = (this.db.prepare(`select name, type, "notnull" as nn, dflt_value, pk from pragma_table_xinfo(?) where hidden = 0`).all(name) as {
+    // hidden: 0 is a plain column, 2 a virtual generated column, 3 a stored
+    // one. 1 is the hidden column of a virtual table.
+    const columns = (this.db.prepare(`select name, type, "notnull" as nn, dflt_value, pk, hidden from pragma_table_xinfo(?) where hidden in (0, 2, 3)`).all(name) as {
       name: string;
       type: string;
       nn: number;
       dflt_value: string | null;
       pk: number;
+      hidden: number;
     }[]).map((c) => ({
       name: c.name,
       type: c.type,
@@ -82,6 +87,7 @@ export class Engine {
       dflt: c.dflt_value,
       pk: c.pk,
       oneOf: oneOfLiterals(defs?.columns.get(c.name) ?? "", c.name),
+      generated: c.hidden !== 0,
     }));
     const foreignKeys = (this.db.prepare(`select "table", "from", "to" from pragma_foreign_key_list(?) order by id, seq`).all(name) as { table: string; from: string; to: string }[]).map((f) => ({
       table: f.table,
@@ -177,9 +183,10 @@ export class Engine {
   }
 }
 
-// The literals of `check (<column> in ('a', 'b'))` inside one column
-// definition. The definition text is normalized by scan.ts.
-function oneOfLiterals(definition: string, column: string): string[] | null {
+// The literals of `check (<column> in ('a', 'b'))` or `check (<column> in
+// (0, 1))` inside one column definition. The definition text is normalized
+// by scan.ts.
+function oneOfLiterals(definition: string, column: string): (string | number)[] | null {
   const lower = normalize(definition);
   const key = `check(${column.toLowerCase()} in(`;
   const at = lower.indexOf(key);
@@ -187,9 +194,10 @@ function oneOfLiterals(definition: string, column: string): string[] | null {
   const rest = lower.slice(at + key.length);
   const close = rest.indexOf(")");
   if (close === -1) return null;
-  const literals: string[] = [];
+  const literals: (string | number)[] = [];
   for (const t of tokenize(rest.slice(0, close))) {
     if (t.type === "string") literals.push(t.text.slice(1, -1).replace(/''/g, "'"));
+    else if (t.type === "number") literals.push(Number(t.text));
     else if (t.type !== "ws" && t.text !== ",") return null;
   }
   return literals.length > 0 ? literals : null;
