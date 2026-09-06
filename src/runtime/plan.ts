@@ -92,7 +92,7 @@ export function constraintFailure(error: unknown): ConstraintFailure | null {
 }
 
 // Time one call and report it to the observe hook.
-export async function observed<T>(hook: ((event: { kind: "query" | "command"; name: string; ms: number; outcome: string }) => void) | undefined, kind: "query" | "command", name: string, body: () => Promise<T>, outcomeOf: (value: T) => string): Promise<T> {
+export async function observed<T>(hook: ((event: { kind: "query" | "batch" | "command"; name: string; ms: number; outcome: string }) => void) | undefined, kind: "query" | "batch" | "command", name: string, body: () => Promise<T>, outcomeOf: (value: T) => string): Promise<T> {
   if (!hook) return body();
   const start = performance.now();
   try {

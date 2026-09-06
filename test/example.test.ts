@@ -82,6 +82,15 @@ for (const target of ["d1", "do"] as const) {
       await value({ step: "reprice", id: "o1", lines: [{ id: "l1", price: 1.5 }, { id: "l2", price: 4 }] });
     });
 
+    test("three reads in one batch, typed by position", async () => {
+      const overview = await value({ step: "overview", id: "o1" });
+      assert.deepEqual(overview, {
+        order: { id: "o1", customer_id: "c1", status: "draft", note: null },
+        lines: [{ id: "l1", sku: "A", qty: 2, price: 1.5 }, { id: "l2", sku: "B", qty: 1, price: 4 }],
+        customers: [{ id: "c1", name: "Ann", email: "ann@example.com" }],
+      });
+    });
+
     test("asserts pass, then the second run names the failed assert", async () => {
       const first = await value({ step: "confirm", id: "o1" });
       assert.deepEqual(first, { ok: true, rows: [{ id: "o1", customer_id: "c1", status: "confirmed", note: null }] });
@@ -169,6 +178,7 @@ for (const target of ["d1", "do"] as const) {
       assert.ok(outcomes.includes("command confirm assert:was_draft"));
       assert.ok(outcomes.includes("command create unique"));
       assert.ok(outcomes.includes("query withLines ok"));
+      assert.ok(outcomes.includes("batch byId+withLines+all ok"));
     });
   });
 }

@@ -45,6 +45,7 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0032](adr/0032-node-sqlite-adapter.md) | A node:sqlite adapter for tests and scripts |
 | [0033](adr/0033-one-source-file-per-module.md) | A module is three files: its source, its public file, and its generated file |
 | [0034](adr/0034-search-is-an-fts5-table.md) | Full-text search is an FTS5 table declared with search() |
+| [0035](adr/0035-several-reads-in-one-round-trip.md) | Several reads go in one D1 round trip through db.batch |
 
 ## Measurements
 
