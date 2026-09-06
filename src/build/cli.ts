@@ -10,15 +10,22 @@ const usage = `usage:
   solarsql build [solarsql.config.ts]
   solarsql migration <name> [solarsql.config.ts]`;
 
+// One line of SQL, enough to recognize the statement.
+function oneLine(sql: string): string {
+  return sql.replace(/\s+/g, " ").trim().slice(0, 100);
+}
+
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
   if (command === "build") {
     const result = await build(rest[0] ?? "solarsql.config.ts");
     for (const m of result.modules) {
       console.log(`${m.changed ? "wrote  " : "current"} ${m.generatedPath} (${m.entries} statements)`);
+      for (const k of m.added) console.log(`  + ${oneLine(k)}`);
+      for (const k of m.removed) console.log(`  - ${oneLine(k)}`);
     }
     for (const s of result.scans) {
-      console.log(`scan    ${s.module}: ${s.tables.join(", ")} read in full by: ${s.sql.replace(/\s+/g, " ").trim().slice(0, 100)}`);
+      console.log(`scan    ${s.module}: ${s.tables.join(", ")} read in full by: ${oneLine(s.sql)}`);
     }
     if (result.migration.reason) {
       console.error(`migration blocked: ${result.migration.reason}`);

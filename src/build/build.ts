@@ -29,7 +29,9 @@ export type Module = {
 };
 
 export type BuildResult = {
-  modules: { name: string; generatedPath: string; entries: number; changed: boolean }[];
+  // Per module: the statements this build added to and removed from the
+  // generated file, so the CLI can say what changed.
+  modules: { name: string; generatedPath: string; entries: number; changed: boolean; added: string[]; removed: string[] }[];
   migration: { pending: boolean; statements: string[]; reason: string | null };
   // Statements whose plan scans a table in full despite a WHERE clause.
   scans: { module: string; sql: string; tables: string[] }[];
@@ -92,6 +94,15 @@ export async function load(configPath: string): Promise<Loaded> {
     modules.push({ name, dir, readsAll: mc.readsAll ?? false, tables, indexes, statements, commands });
   }
   return { config, configDir, modules };
+}
+
+// The statements of `after` that `before` lacks, and the other way round,
+// in their own order. A reader of the CLI output sees the change without a
+// second look at the generated file.
+export function keyDiff(before: readonly string[], after: readonly string[]): { added: string[]; removed: string[] } {
+  const b = new Set(before);
+  const a = new Set(after);
+  return { added: after.filter((k) => !b.has(k)), removed: before.filter((k) => !a.has(k)) };
 }
 
 async function importFresh(path: string): Promise<Record<string, unknown>> {
@@ -176,9 +187,13 @@ export async function build(configPath: string): Promise<BuildResult> {
         entries,
       });
       const generatedPath = join(m.dir, GENERATED_FILE);
-      const changed = !existsSync(generatedPath) || readFileSync(generatedPath, "utf8") !== text;
+      // The keys of the file as it is now come from importing it: load()
+      // wrote a stub when it was missing, so the import always succeeds.
+      const before = Object.keys(((await importFresh(generatedPath)) as { generated?: Record<string, unknown> }).generated ?? {});
+      const { added, removed } = keyDiff(before, entries.map((e) => e.key));
+      const changed = readFileSync(generatedPath, "utf8") !== text;
       if (changed) writeFileSync(generatedPath, text);
-      results.push({ name: m.name, generatedPath, entries: entries.length, changed });
+      results.push({ name: m.name, generatedPath, entries: entries.length, changed, added, removed });
     }
 
     const migration = migrationStatus(configDir, config, modules);

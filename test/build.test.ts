@@ -31,7 +31,7 @@ describe("solarsql build", () => {
     const dir = copy();
     try {
       const result = await build(join(dir, "example/solarsql.config.ts"));
-      assert.deepEqual(result.modules.map((m) => [m.name, m.changed]), [["customers", false], ["orders", false], ["reports", false]]);
+      assert.deepEqual(result.modules.map((m) => [m.name, m.changed, m.added, m.removed]), [["customers", false, [], []], ["orders", false, [], []], ["reports", false, [], []]]);
       assert.deepEqual(result.migration, { pending: false, statements: [], reason: null });
       // orderQueries.byNote filters with LIKE on a column without an index, and the build says so.
       assert.deepEqual(result.scans.map((s) => [s.module, s.tables, /note like/.test(s.sql)]), [["orders", ["orders"], true]]);
@@ -46,9 +46,28 @@ describe("solarsql build", () => {
       for (const m of ["customers", "orders", "reports"]) rmSync(join(dir, `example/modules/${m}/solarsql.generated.ts`));
       const result = await build(join(dir, "example/solarsql.config.ts"));
       assert.deepEqual(result.modules.map((m) => m.changed), [true, true, true]);
+      // From a stub, every statement is an addition.
+      assert.deepEqual(result.modules.map((m) => [m.added.length === m.entries, m.removed]), [[true, []], [true, []], [true, []]]);
       for (const m of ["customers", "orders", "reports"]) {
         assert.equal(readFileSync(join(dir, `example/modules/${m}/solarsql.generated.ts`), "utf8"), readFileSync(join(root, `example/modules/${m}/solarsql.generated.ts`), "utf8"));
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a changed statement is reported as one removed and one added", async () => {
+    const dir = copy();
+    try {
+      const commands = join(dir, "example/modules/orders/commands.ts");
+      writeFileSync(commands, readFileSync(commands, "utf8").replace("update orders set note = :note where id = :id", "update orders set note = :note where id = :id and status = 'draft'"));
+      const result = await build(join(dir, "example/solarsql.config.ts"));
+      const orders = result.modules.find((m) => m.name === "orders")!;
+      assert.equal(orders.changed, true);
+      assert.deepEqual(orders.removed, ["update orders set note = :note where id = :id"]);
+      assert.deepEqual(orders.added, ["update orders set note = :note where id = :id and status = 'draft'"]);
+      const again = await build(join(dir, "example/solarsql.config.ts"));
+      assert.deepEqual(again.modules.map((m) => [m.changed, m.added, m.removed]), [[false, [], []], [false, [], []], [false, [], []]]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
