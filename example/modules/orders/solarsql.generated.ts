@@ -68,6 +68,14 @@ export type Generated = {
     params: { note: string | null; id: OrdersId };
     row: {};
   };
+  "update order_lines\n       set price = (select value ->> 'price' from json_each(:lines) where value ->> 'id' = order_lines.id)\n       where order_id = :id and id in (select value ->> 'id' from json_each(:lines))": {
+    params: { lines: readonly { "price": number; "id": OrderLinesId }[]; id: OrdersId };
+    row: {};
+  };
+  "changes() = json_array_length(:lines)": {
+    params: { lines: readonly { "price": number; "id": OrderLinesId }[] };
+    row: {};
+  };
 };
 
 export const generated: Meta<Generated> = {
@@ -84,4 +92,6 @@ export const generated: Meta<Generated> = {
   "update orders set status = 'confirmed' where id = :id and status = 'draft'": { params: ["id"], encode: [], json: [] },
   "changes() = 1": { params: [], encode: [], json: [] },
   "update orders set note = :note where id = :id": { params: ["note", "id"], encode: [], json: [] },
+  "update order_lines\n       set price = (select value ->> 'price' from json_each(:lines) where value ->> 'id' = order_lines.id)\n       where order_id = :id and id in (select value ->> 'id' from json_each(:lines))": { params: ["lines", "id"], encode: ["lines"], json: [] },
+  "changes() = json_array_length(:lines)": { params: ["lines"], encode: ["lines"], json: [] },
 };

@@ -336,9 +336,10 @@ export function aliasMap(sql: string): Map<string, string | null> {
     if (isKeyword(tok, "from")) {
       openFrom.add(tok.depth);
       entry(i + 1);
-    } else if (isKeyword(tok, "update") || (isKeyword(tok, "into") && isKeyword(t[i - 1], "insert"))) {
-      // The target of UPDATE [OR ...] t [AS a] and INSERT INTO t is a table
-      // that bare column names in the statement refer to.
+    } else if (isKeyword(tok, "update") || (isKeyword(tok, "into") && (isKeyword(t[i - 1], "insert") || isKeyword(t[i - 1], "replace") || isKeyword(t[i - 3], "insert")))) {
+      // The target of UPDATE [OR ...] t [AS a], INSERT [OR ...] INTO t, and
+      // REPLACE INTO t is a table that bare column names in the statement
+      // refer to.
       let j = i + 1;
       if (isKeyword(t[j], "or")) j += 2;
       entry(j);
@@ -362,6 +363,10 @@ export function aliasMap(sql: string): Map<string, string | null> {
 //   other:   anything else
 //   in_json: `<column> in (select value from json_each(:p))`, an array
 //   rows_json: `insert into t (c1, c2) select value ->> 'k1', value ->> 'k2' from json_each(:p)`, an array of objects
+//   json_each: `json_each(:p)` anywhere else, an array. Each `value ->> 'key'`
+//            in the same scope names a key, typed by the column it is compared
+//            with or set into. A bare `value` in an INSERT ... SELECT names the
+//            column its position gets.
 //   one_of:  `case :p when 'a' ... when 'b'`, a union of the literals
 //   number:  `limit :p`, `offset :p`
 export type ParamSite =
@@ -370,6 +375,7 @@ export type ParamSite =
   | { kind: "insert"; table: string; column: string }
   | { kind: "in_json"; alias: string | null; column: string }
   | { kind: "rows_json"; table: string; keys: { key: string; column: string }[] }
+  | { kind: "json_each"; keys: { key: string; ref: { alias: string | null; column: string } | null }[]; scalar: { table: string; column: string } | null }
   | { kind: "one_of"; literals: string[] }
   | { kind: "number" }
   // `:p is null`: the optional-filter idiom, so the parameter allows null.
@@ -396,9 +402,10 @@ export function paramSites(sql: string): Map<string, ParamSite[]> {
   let valueIndex = 0;
   for (let i = 0; i < t.length; i++) {
     const tok = t[i]!;
-    if (isKeyword(tok, "insert") && isKeyword(t[i + 1], "into") && t[i + 2]?.type === "ident") {
-      insertTable = unquote(t[i + 2]!.text);
-      let j = i + 3;
+    const target = insertTarget(t, i);
+    if (target !== null) {
+      insertTable = unquote(t[target]!.text);
+      let j = target + 1;
       if (t[j]?.text === "(") {
         const d = t[j]!.depth;
         const cols: string[] = [];
@@ -423,6 +430,7 @@ export function paramSites(sql: string): Map<string, ParamSite[]> {
       let itemStart = i + 1;
       // `value ->> 'key'` items, for a json_each source below.
       const keys: { key: string; column: string }[] = [];
+      let scalar: string | null = null;
       let k = i + 1;
       for (; k <= t.length; k++) {
         const cur = t[k];
@@ -437,14 +445,20 @@ export function paramSites(sql: string): Map<string, ParamSite[]> {
         if (k - itemStart === 3 && isKeyword(t[itemStart], "value") && t[itemStart + 1]!.text === "->>" && t[itemStart + 2]!.type === "string" && column) {
           keys.push({ key: t[itemStart + 2]!.text.slice(1, -1).replace(/''/g, "'"), column });
         }
+        if (k - itemStart === 1 && isKeyword(t[itemStart], "value") && column) scalar = column;
         index++;
         itemStart = k + 1;
         if (!cur || cur.text !== ",") break;
       }
       // ... from json_each(:rows)
-      if (isKeyword(t[k], "from") && isKeyword(t[k + 1], "json_each") && t[k + 2]?.text === "(" && t[k + 3]?.type === "param" && t[k + 4]?.text === ")" && keys.length > 0) {
-        add(t[k + 3]!.text.slice(1), { kind: "rows_json", table: insertTable, keys });
-        (t[k + 3] as { handled?: boolean }).handled = true;
+      if (isKeyword(t[k], "from") && isKeyword(t[k + 1], "json_each") && t[k + 2]?.text === "(" && t[k + 3]?.type === "param" && t[k + 4]?.text === ")") {
+        if (keys.length > 0) {
+          add(t[k + 3]!.text.slice(1), { kind: "rows_json", table: insertTable, keys });
+          (t[k + 3] as { handled?: boolean }).handled = true;
+        } else if (scalar !== null) {
+          add(t[k + 3]!.text.slice(1), { kind: "json_each", keys: [], scalar: { table: insertTable, column: scalar } });
+          (t[k + 3] as { handled?: boolean }).handled = true;
+        }
       }
       continue;
     }
@@ -468,6 +482,11 @@ export function paramSites(sql: string): Map<string, ParamSite[]> {
         add(name, { kind: "in_json", alias: ref.alias, column: ref.column });
         continue;
       }
+    }
+    // json_each(:p) or json_tree(:p) anywhere else.
+    if (prev?.text === "(" && (isKeyword(t[i - 2], "json_each") || isKeyword(t[i - 2], "json_tree")) && next?.text === ")") {
+      add(name, { kind: "json_each", keys: jsonKeys(t, i), scalar: null });
+      continue;
     }
     // case :p when 'a' then ... when 'b' then ... end
     if (isKeyword(prev, "case")) {
@@ -512,6 +531,55 @@ export function paramSites(sql: string): Map<string, ParamSite[]> {
     add(name, { kind: "other" });
   }
   return sites;
+}
+
+// The index of the table name in `insert [or <action>] into t` or
+// `replace into t` when the tokens at i start one, else null.
+function insertTarget(t: readonly Token[], i: number): number | null {
+  if (isKeyword(t[i], "insert")) {
+    const j = isKeyword(t[i + 1], "or") ? i + 3 : i + 1;
+    return isKeyword(t[j], "into") && t[j + 1]?.type === "ident" ? j + 1 : null;
+  }
+  if (isKeyword(t[i], "replace") && !isKeyword(t[i - 1], "or") && isKeyword(t[i + 1], "into") && t[i + 2]?.type === "ident") return i + 2;
+  return null;
+}
+
+// The `value ->> 'key'` uses in the scope of the json_each whose parameter
+// sits at index p: the parenthesized region around the json_each call, or
+// the whole statement. Each key carries the column it is compared with
+// (`<ref> = value ->> 'k'`), set into (`set c = (select value ->> 'k' ...`),
+// or listed for (`c in (select value ->> 'k' ...`), when one is written.
+function jsonKeys(t: readonly Token[], p: number): { key: string; ref: { alias: string | null; column: string } | null }[] {
+  const scope = t[p - 2]!.depth;
+  let from = p;
+  while (from > 0 && !(t[from]!.text === "(" && t[from]!.depth === scope - 1)) from--;
+  let to = p;
+  while (to < t.length && !(t[to]!.text === ")" && t[to]!.depth === scope - 1)) to++;
+  const refAt = (i: number, dir: -1 | 1): { alias: string | null; column: string } | null => {
+    const a = t[i];
+    if (!a || a.type !== "ident") return null;
+    if (dir === -1 && t[i - 1]?.text === "." && t[i - 2]?.type === "ident") return { alias: unquote(t[i - 2]!.text), column: unquote(a.text) };
+    if (dir === 1 && t[i + 1]?.text === "." && t[i + 2]?.type === "ident") return { alias: unquote(a.text), column: unquote(t[i + 2]!.text) };
+    return { alias: null, column: unquote(a.text) };
+  };
+  const keys = new Map<string, { alias: string | null; column: string } | null>();
+  for (let k = from; k < to; k++) {
+    if (!isKeyword(t[k], "value") || t[k + 1]?.text !== "->>" || t[k + 2]?.type !== "string") continue;
+    const key = t[k + 2]!.text.slice(1, -1).replace(/''/g, "'");
+    let ref: { alias: string | null; column: string } | null = null;
+    const before = t[k - 1];
+    const after = t[k + 3];
+    if (before && compareOps.has(before.text.toLowerCase())) {
+      const r = refAt(k - 2, -1);
+      ref = r ?? (t[k - 2]?.text === "." ? refAt(k - 2, -1) : null);
+    } else if (after && compareOps.has(after.text.toLowerCase())) {
+      ref = refAt(k + 4, 1);
+    } else if (isKeyword(before, "select") && t[k - 2]?.text === "(" && (t[k - 3]?.text === "=" || isKeyword(t[k - 3], "in"))) {
+      ref = refAt(k - 4, -1);
+    }
+    if (!keys.has(key) || (keys.get(key) === null && ref !== null)) keys.set(key, ref);
+  }
+  return [...keys].map(([key, ref]) => ({ key, ref }));
 }
 
 // --- CREATE TABLE text ---------------------------------------------------------

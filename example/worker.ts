@@ -19,6 +19,7 @@ type Step =
   | { step: "byNote"; pattern: string }
   | { step: "confirm"; id: string }
   | { step: "annotate"; id: string; note: string | null }
+  | { step: "reprice"; id: string; lines: { id: string; price: number }[] }
   | { step: "order"; id: string }
   | { step: "ordersOf"; customer_id: string }
   | { step: "revenue" }
@@ -41,6 +42,8 @@ async function run(db: Database, s: Step): Promise<unknown> {
       return db.run(orderCommands.confirm, { id: s.id as OrdersId });
     case "annotate":
       return db.run(orderCommands.annotate, { id: s.id as OrdersId, note: s.note });
+    case "reprice":
+      return db.run(orderCommands.reprice, { id: s.id as OrdersId, lines: s.lines.map((l) => ({ id: l.id as OrderLinesId, price: l.price })) });
     case "order":
       return db.first(orderQueries.withLines, { id: s.id as OrdersId });
     case "ordersOf":

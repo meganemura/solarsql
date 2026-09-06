@@ -108,6 +108,37 @@ describe("Typer.analyze", () => {
     assert.deepEqual(types("select json_object('n', cast(count(*) as integer), 's', cast(sum(qty) as integer)) as o from order_lines"), ['{ "n": number; "s": number | null }']);
   });
 
+  test("one parameter at two sites: null only when every site allows it, and CASE lists union", () => {
+    const a = t.analyze("select id from orders where id = :id or parent_id = :id", "orders");
+    assert.deepEqual(a.params, [{ name: "id", type: "OrdersId", encode: false }]);
+    const b = t.analyze("select id from orders where note = :n or note = :n", "orders");
+    assert.deepEqual(b.params, [{ name: "n", type: "string | null", encode: false }]);
+    const c = t.analyze("select id from orders order by case :dir when 'asc' then id end asc, case :dir when 'desc' then id end desc", "orders");
+    assert.deepEqual(c.params, [{ name: "dir", type: '"asc" | "desc"', encode: false }]);
+  });
+
+  test("insert or ignore, insert or replace, and replace into type their parameters", () => {
+    for (const head of ["insert or ignore into", "insert or replace into", "replace into"]) {
+      const a = t.analyze(`${head} customers (id, name) values (:id, :name)`, "customers");
+      assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["id", "CustomersId"], ["name", "string"]], head);
+    }
+  });
+
+  test("json_each anywhere: a bulk update from JSON rows is an encoded array of typed objects", () => {
+    const a = t.analyze("update order_lines set qty = (select value ->> 'qty' from json_each(:lines) where value ->> 'id' = order_lines.id) where order_id = :order_id and id in (select value ->> 'id' from json_each(:lines))", "orders");
+    assert.deepEqual(a.params, [
+      { name: "lines", type: 'readonly { "qty": number; "id": OrderLinesId }[]', encode: true },
+      { name: "order_id", type: "OrdersId", encode: false },
+    ]);
+    // A key with no column context is SqlValue; a bare use is an array of SqlValue.
+    const b = t.analyze("select cast(value ->> 'x' as text) as x from json_each(:rows)", "orders");
+    assert.deepEqual(b.params, [{ name: "rows", type: 'readonly { "x": SqlValue }[]', encode: true }]);
+    const c = t.analyze("delete from order_lines where id in (select value from json_each(:ids)) and :ids is not null", "orders");
+    assert.deepEqual(c.params, [{ name: "ids", type: "readonly OrderLinesId[] | null", encode: true }]);
+    const d = t.analyze("insert into customers (id, name) select value, 'anon' from json_each(:ids)", "customers");
+    assert.deepEqual(d.params, [{ name: "ids", type: "readonly CustomersId[]", encode: true }]);
+  });
+
   test("an anonymous parameter is refused", () => {
     assert.throws(() => t.analyze("select id from orders where id = ?", "orders"), (e: unknown) => e instanceof BuildError && /named parameter/.test(e.message));
   });

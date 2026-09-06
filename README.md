@@ -90,6 +90,9 @@ Dynamic needs are static SQL with a typed parameter:
 select id from orders where id in (select value from json_each(:ids))
 -- many rows: pass an array of objects
 insert into order_lines (id, order_id, qty) select value ->> 'id', :order_id, value ->> 'qty' from json_each(:lines)
+-- many updates: the same array, and each value ->> 'key' takes the type of the column it meets
+update order_lines set qty = (select value ->> 'qty' from json_each(:lines) where value ->> 'id' = order_lines.id)
+  where id in (select value ->> 'id' from json_each(:lines))
 -- an optional filter: pass null to skip it (the build reports the full scan)
 select id from orders where customer_id = :customer_id and (:status is null or status = :status)
 -- a sort column and paging
