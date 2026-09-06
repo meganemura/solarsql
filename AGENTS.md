@@ -40,7 +40,7 @@ If you want to cite an internal document, write its substance in place instead.
 
 ## Commands
 
-- `npm test` runs every test with the Node test runner. Miniflare, `tsc` in a child process, and `npm pack` take part, and the run takes about three seconds.
+- `npm test` runs every test with the Node test runner. Miniflare, `tsc` in a child process, and `npm pack` take part, and the run takes about four seconds.
 - `npm run typecheck` runs `tsc --noEmit` over `src/`, `test/`, `example/`, and `spike/`.
 - `npm run build` emits `dist/` from `src/`. Only the pack test needs it.
 - `node src/build/cli.ts build example/solarsql.config.ts` builds the example from the source.
