@@ -307,7 +307,7 @@ SOLARSQL_REMOTE_URL=https://solarsql-example.<your subdomain>.workers.dev SOLARS
 ## Requirements
 
 Node 24.10 or later runs the build, because it needs `DatabaseSync.setAuthorizer()` of node:sqlite. The tests of this repository run on Node 24 and 26.
-TypeScript 5.7 or later reads the imports with a `.ts` extension that Node's type stripping needs: `allowImportingTsExtensions` under `noEmit`, as the tsconfig `init` writes, or `rewriteRelativeImportExtensions` when tsc emits.
+TypeScript 5.8 or later: the tsconfig `init` writes sets `erasableSyntaxOnly`, which is the syntax Node's type stripping runs, and reads the imports with a `.ts` extension that the stripping needs (`allowImportingTsExtensions` under `noEmit`, or `rewriteRelativeImportExtensions` when tsc emits).
 
 ## Design
 

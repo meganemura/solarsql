@@ -15,7 +15,7 @@ Then it runs the build and writes `migrations/0001_initial.sql` with the index, 
 The module name is the table name and the directory name, as typed, and must match `[a-z][a-z0-9_]*`.
 The placeholder is the README's shape: a STRICT table with a primary key and a CHECK that becomes a type, a query catalog, a command with `returns`, and a command with an `assert`.
 The test runs the module on node:sqlite through the migration files.
-init never writes over a file, and refuses when any file it would write exists.
+init never writes over a file: it refuses when any file it would write exists, and when `migrations/` exists, because its history is another project's.
 It writes no Worker, no wrangler configuration, and no package.json.
 
 ## Why

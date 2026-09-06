@@ -32,6 +32,12 @@ test("an existing file is never written over", async () => {
     writeFileSync(join(dir, "modules/orders/module.ts"), "// mine\n");
     await assert.rejects(init("orders", dir), (e: unknown) => e instanceof BuildError && /modules\/orders\/module\.ts exists/.test(e.message));
     assert.equal(existsSync(join(dir, "solarsql.config.ts")), false);
+    rmSync(join(dir, "modules"), { recursive: true });
+    // A migrations directory is a history, wrangler's or an earlier project's.
+    mkdirSync(join(dir, "migrations"));
+    writeFileSync(join(dir, "migrations/0001_theirs.sql"), "create table theirs (id integer primary key);\n");
+    await assert.rejects(init("orders", dir), (e: unknown) => e instanceof BuildError && /migrations\/ exists/.test(e.message));
+    assert.deepEqual(readdirSync(dir), ["migrations"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
