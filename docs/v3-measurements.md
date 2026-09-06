@@ -117,3 +117,43 @@ Three runs per arm give a direction. The task exercised the plan abort and left 
 ### Conclusion
 
 When one command writes two tables under a business rule, fresh agents on solarsql express the rule inside the atomic unit every time, and fresh agents on Drizzle over D1 express it in a read before the write every time, with a window that the sequential tests cannot open and a 50 millisecond pause opens on every round. The reading cost of solarsql stays at about 1.5 times the tool calls and about 1.2 times the tokens. The next measurement that would change a decision is the width of the window on a remote D1.
+
+## 3. Experiment 1 again, after the changes it prompted
+
+Date: 2026-09-06. Results: `spike/09-agent-comparison/results/2026-09-06-exp1-rerun/`.
+
+### Question
+
+Section 1 attributed the extra reading of a solarsql run to four causes: the README read in full, the discovery of the CLI, a search of the generated file after the build, and the five files of a module. Three changes to the library followed, written down before the rerun: the build prints a `+` line per statement it added and a `-` line per statement it removed; the second line of the generated file names the command that rewrites it; the README opens with a five-step recipe for adding a command and says what an assert may contain. Does the reading of a fresh agent go down?
+
+### Setup
+
+The kit of section 1, the same task text, the same model, three runs per arm at once. The project files of both starters are byte-identical to section 1; the solarsql starter holds the changed library from the packed tarball, with a README of 217 lines (was 210). `metrics.py` gained a count of the reads of the generated file after the first build.
+
+### Results
+
+| run | tool calls, before and after | files read | of which under node_modules | `solarsql --help` | generated file read after the build | hidden tests | total tokens, before and after |
+|---|---|---|---|---|---|---|---|
+| drizzle-1 | 12, 11 | 8, 8 | 0, 0 | | | 6 of 6 | 64,236, 65,922 |
+| drizzle-2 | 9, 13 | 6, 6 | 0, 0 | | | 6 of 6 | 61,897, 74,448 |
+| drizzle-3 | 12, 11 | 8, 4 | 0, 0 | | | 6 of 6 | 62,127, 65,925 |
+| solarsql-1 | 25, 26 | 15, 17 | 2, 4 | 0, 0 | 1, 1 | 6 of 6 | 76,294, 86,197 |
+| solarsql-2 | 23, 22 | 13, 16 | 2, 2 | 1, 0 | 1, 1 | 6 of 6 | 73,063, 77,244 |
+| solarsql-3 | 23, 17 | 15, 13 | 2, 2 | 1, 0 | 1, 1 | 6 of 6 | 78,318, 76,119 |
+
+Every run passed the hidden tests, put the rule inside the UPDATE, and passed its checks the first time. Every run stayed inside its directory and used no web.
+
+### Reading
+
+The reading of a solarsql run stayed where it was. Tool calls went from 25, 23, 23 to 26, 22, 17; files read from 15, 13, 15 to 17, 16, 13; total tokens from 73 to 78 thousand to 76 to 86 thousand. The Drizzle runs moved by similar amounts in both directions, which is the noise of three runs.
+
+One cause moved to other files, and three stayed:
+
+- `--help` went from two runs to none. Two runs found the CLI by reading the package's `package.json` and the listing of `dist/`, and one read `dist/build/cli.js` itself, so the discovery moved to other files.
+- All three runs read the README in full (two did before); the recipe added seven lines to it.
+- All three runs opened the generated file after the build, with the `+` line for their statement on the screen. The agents verify by opening the file the build wrote, whatever the build prints.
+- All three runs read the five files of the orders module, as before.
+
+### Conclusion
+
+The three changes cost little, and the metrics stayed where they were. The reading of a solarsql run is set by the number of files a module has and by the habit of an agent to verify a generated file by opening it. A change to the number of files per module is a design decision that touches ADRs 0005, 0006, 0008, and 0025, and this kit measures it once it is made.
