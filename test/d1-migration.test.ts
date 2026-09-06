@@ -75,9 +75,7 @@ describe("D1 applies generated migrations", () => {
   });
 
   test("the second file rebuilds orders inside one batch", async () => {
-    console.log("migration file 2:\n" + file2);
     const reply = await d1.batch(splitStatements(file2).map((sql) => ({ sql })));
-    console.log("apply reply ok:", reply.ok, reply.ok ? "" : JSON.stringify(reply));
     assert.equal(reply.ok, true, JSON.stringify(reply));
   });
 
@@ -85,14 +83,12 @@ describe("D1 applies generated migrations", () => {
     const orders = await d1.all("pragma table_info(orders)");
     assert.equal(orders.ok, true, JSON.stringify(orders));
     const names = rows(orders as WorkerOk).map((r) => r.name);
-    console.log("orders columns on D1:", JSON.stringify(names));
     assert.deepEqual(names, ["id", "customer_id", "status", "note"]);
 
     const lines = await d1.all("pragma table_info(order_lines)");
     assert.deepEqual(rows(lines as WorkerOk).map((r) => r.name), ["id", "order_id", "sku", "qty", "price"]);
 
     const indexes = await d1.all("pragma index_list(order_lines)");
-    console.log("index_list on D1:", JSON.stringify(indexes));
     if (indexes.ok) {
       assert.deepEqual(rows(indexes).filter((r) => r.origin === "c").map((r) => [r.name, r.unique]), [["order_lines_order_id_sku", 1]]);
     }

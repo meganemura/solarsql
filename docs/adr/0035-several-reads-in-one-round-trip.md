@@ -19,7 +19,7 @@ The observe hook sees one event of kind `batch`, named by the queries joined wit
 
 ## Why
 
-The number of round trips is a property of the data layer, not of the application's program model.
+The number of round trips is a property of the data layer, and ADR 0030 leaves the application's program model with the caller.
 A batch of reads is the same shape on every adapter, so a module written against `Database` runs on all three.
 
 ## Consequences

@@ -1,8 +1,8 @@
 # solarsql
 
 A typed SQL layer for SQLite on Cloudflare, for D1 and Durable Objects.
-Version 0.1.0 is the first release; before 1.0 a minor version may change the API, and the [changelog](CHANGELOG.md) says what changed.
 It is written for a coding agent that reads one module at a time, and for the human who reviews the agent's work.
+Before 1.0 a minor version may change the API; the [changelog](CHANGELOG.md) says what changed.
 
 You write SQL. The build step asks the real engine what the SQL returns, and writes the types down.
 A command is a list of statements and asserts that runs as one transaction on both targets, and a failure comes back as a value.
