@@ -10,6 +10,8 @@ One JSON object per run:
   file it names.
 - files_read_in_node_modules: the part of files_read under node_modules
 - cli_help_runs, build_runs: `solarsql --help` and `solarsql build`
+- generated_reads_after_build: shell reads of solarsql.generated.ts after the
+  first build, the agent checking that its statement landed
 - test_runs, typecheck_runs: from the log the npm scripts write, plus any
   direct `node --test` or `tsc` in Bash
 - errors: Bash results the harness flagged as errors
@@ -124,6 +126,7 @@ for run in runs:
                     results[x["tool_use_id"]] = bool(x.get("is_error"))
     tools, reads, outside, edits = {}, set(), set(), set()
     web = help_runs = build_runs = tests = typechecks = errors = out_tokens = 0
+    generated_reads_after_build = 0
     times = []
     for e in events:
         if e.get("timestamp"):
@@ -158,6 +161,8 @@ for run in runs:
                     help_runs += 1
                 if re.search(r"solarsql(?:\.js)?\s+build", cmd):
                     build_runs += 1
+                elif build_runs > 0 and "solarsql.generated.ts" in cmd and re.search(r"\b(?:cat|sed|head|grep)\b", cmd):
+                    generated_reads_after_build += 1
                 if re.search(r"node --test", cmd):
                     tests += 1
                 if re.search(r"\btsc\b", cmd):
@@ -182,6 +187,7 @@ for run in runs:
             "web_calls": web,
             "cli_help_runs": help_runs,
             "build_runs": build_runs,
+            "generated_reads_after_build": generated_reads_after_build,
             "test_runs": tests,
             "typecheck_runs": typechecks,
             "bash_errors": errors,
