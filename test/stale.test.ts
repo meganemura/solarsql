@@ -51,7 +51,7 @@ test("a changed SQL string fails tsc at the call site until the build runs again
     const control = tsc(dir);
     assert.equal(control.status, 0, control.output);
 
-    const file = join(dir, "example/modules/orders/queries.ts");
+    const file = join(dir, "example/modules/orders/module.ts");
     const source = readFileSync(file, "utf8");
     const edited = source.replace("select id, customer_id, status, note from orders where id = :id", "select id, customer_id, status from orders where id = :id");
     assert.notEqual(edited, source);
@@ -59,7 +59,7 @@ test("a changed SQL string fails tsc at the call site until the build runs again
 
     const stale = tsc(dir);
     assert.notEqual(stale.status, 0);
-    assert.match(stale.output, /orders\/queries\.ts/);
+    assert.match(stale.output, /orders\/module\.ts/);
     assert.match(stale.output, /select id, customer_id, status from orders where id = :id/);
   } finally {
     rmSync(dir, { recursive: true, force: true });

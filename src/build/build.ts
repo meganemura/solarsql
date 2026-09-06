@@ -62,49 +62,38 @@ export async function load(configPath: string, write = true): Promise<Loaded> {
     const mc: ModuleConfig = typeof entry === "string" ? { dir: entry } : entry;
     const dir = resolve(configDir, mc.dir);
     const name = basename(dir);
-    if (!existsSync(join(dir, "schema.ts"))) throw new BuildError(`module ${name}: ${join(dir, "schema.ts")} does not exist`);
+    const source = join(dir, "module.ts");
+    if (!existsSync(source)) throw new BuildError(`module ${name}: ${source} does not exist`);
     const generatedPath = join(dir, GENERATED_FILE);
     if (!existsSync(generatedPath)) {
       if (!write) throw new BuildError(`module ${name}: ${generatedPath} is missing. Run: npx solarsql build`);
       writeFileSync(generatedPath, emitStub(config.library ?? "solarsql"));
     }
-    const schema = await importFresh(join(dir, "schema.ts"));
     const tables: string[] = [];
     const indexes: string[] = [];
     const views: string[] = [];
     const triggers: string[] = [];
-    for (const value of Object.values(schema)) {
-      const v = value as Table | Index | View | Trigger;
-      if (!v || typeof v !== "object") continue;
+    const statements = new Map<string, string>();
+    const commands: Module["commands"] = [];
+    // One file exports the schema, the queries, and the commands (ADR 0033).
+    for (const value of Object.values(await importFresh(source))) {
+      const v = value as (Table | Index | View | Trigger | { kind: "queries"; entries: Record<string, Query<string, never>> } | { kind: "commands"; entries: Record<string, Command<never, never>> }) | null;
+      if (!v || typeof v !== "object" || !("kind" in v)) continue;
       if (v.kind === "table") tables.push(v.sql);
       if (v.kind === "index") indexes.push(v.sql);
       if (v.kind === "view") views.push(v.sql);
       if (v.kind === "trigger") triggers.push(v.sql);
-    }
-    const statements = new Map<string, string>();
-    const commands: Module["commands"] = [];
-    if (existsSync(join(dir, "queries.ts"))) {
-      const queries = await importFresh(join(dir, "queries.ts"));
-      for (const value of Object.values(queries)) {
-        const v = value as { kind?: string; entries?: Record<string, Query<string, never>> };
-        if (v && typeof v === "object" && v.kind === "queries" && v.entries) {
-          for (const q of Object.values(v.entries)) statements.set(q.sql, q.sql);
-        }
+      if (v.kind === "queries") {
+        for (const q of Object.values(v.entries)) statements.set(q.sql, q.sql);
       }
-    }
-    if (existsSync(join(dir, "commands.ts"))) {
-      const cmds = await importFresh(join(dir, "commands.ts"));
-      for (const value of Object.values(cmds)) {
-        const v = value as { kind?: string; entries?: Record<string, Command<never, never>> };
-        if (v && typeof v === "object" && v.kind === "commands" && v.entries) {
-          for (const [cname, c] of Object.entries(v.entries)) {
-            commands.push({ name: cname, plan: c.plan, returns: c.returns });
-            for (const item of c.plan) {
-              if (typeof item === "string") statements.set(item, item);
-              else statements.set(item.predicate, assertStatement(item.name, item.predicate));
-            }
-            if (c.returns !== null) statements.set(c.returns, c.returns);
+      if (v.kind === "commands") {
+        for (const [cname, c] of Object.entries(v.entries)) {
+          commands.push({ name: cname, plan: c.plan, returns: c.returns });
+          for (const item of c.plan) {
+            if (typeof item === "string") statements.set(item, item);
+            else statements.set(item.predicate, assertStatement(item.name, item.predicate));
           }
+          if (c.returns !== null) statements.set(c.returns, c.returns);
         }
       }
     }

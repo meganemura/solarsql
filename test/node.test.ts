@@ -9,7 +9,7 @@ import type { Observed } from "../src/index.ts";
 import { migrations } from "../example/migrations/index.ts";
 import { customerCommands, type CustomersId } from "../example/modules/customers/public.ts";
 import { orderCommands, orderQueries, type OrderLinesId, type OrdersId } from "../example/modules/orders/public.ts";
-import { reportQueries } from "../example/modules/reports/queries.ts";
+import { reportQueries } from "../example/modules/reports/public.ts";
 
 describe("the example on node:sqlite", () => {
   const raw = new DatabaseSync(":memory:");

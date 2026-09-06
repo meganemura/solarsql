@@ -1,6 +1,6 @@
 # ADR 0005: Queries live in a named catalog
 
-Status: accepted (2026-09-06)
+Status: accepted (2026-09-06). Since ADR 0033 the catalog lives in the module's one source file, `module.ts`.
 
 ## Context
 

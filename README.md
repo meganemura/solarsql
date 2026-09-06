@@ -13,9 +13,7 @@ A module owns its tables, and the build step refuses a statement that reaches in
 solarsql.config.ts
 modules/
   orders/
-    schema.ts               CREATE TABLE, INDEX, VIEW, and TRIGGER, as strings
-    queries.ts              named SQL that returns rows
-    commands.ts             verbs: a plan of statements and asserts
+    module.ts               the schema, the queries, and the commands, as SQL strings
     public.ts               what other modules may import
     solarsql.generated.ts   written by `solarsql build`, committed
 migrations/
@@ -25,13 +23,18 @@ migrations/
 
 ## Add a command
 
-1. Write the plan in `commands.ts`: statements and asserts, with `:name` parameters.
+1. Write the plan in `module.ts`, in `commands(...)`: statements and asserts, with `:name` parameters.
 2. Run `npx solarsql build`. It prints a `+` line for each statement it added and a `-` line for each it removed, and rewrites `solarsql.generated.ts`.
 3. Export the command through `public.ts` when the Worker or another module calls it.
 4. Call `db.run(orderCommands.confirm, { id })` and read the result by its `kind`.
 5. Run `tsc` and the tests. A statement whose text changed has no type until the build runs again, and `tsc` names the call site.
 
-### schema.ts
+### module.ts
+
+One file holds the schema, the queries, and the commands of the module, in that order.
+The three parts are shown one at a time below, each with the imports it needs; in the file they share one import line.
+
+#### The schema
 
 ```ts
 import { index, table, trigger, view } from "solarsql";
@@ -67,7 +70,7 @@ Every table is `strict`, so the engine rejects a value that does not match the d
 A trigger sits on a table or a view of its module, and its body may touch the tables of that module only.
 A view is read by the queries of its module like a table; a report module with `readsAll` may declare a view over every table.
 
-### queries.ts
+#### The queries
 
 ```ts
 import { queries } from "solarsql";
@@ -112,7 +115,7 @@ select id from orders where customer_id = :customer_id and (:status is null or s
 order by case :sort when 'id' then id when 'status' then status end limit :limit offset :offset
 ```
 
-### commands.ts
+#### The commands
 
 ```ts
 import { assert, commands } from "solarsql";

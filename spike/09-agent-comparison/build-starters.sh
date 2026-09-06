@@ -54,14 +54,12 @@ EOF
 
 # --- solarsql arm ---------------------------------------------------------
 A="$WORK/starters/solarsql"
-common "$A" solarsql "solarsql (typed SQL for D1 and Durable Objects)" "modules/ holds one directory per module: schema.ts, queries.ts, commands.ts, public.ts, and the generated types."
+common "$A" solarsql "solarsql (typed SQL for D1 and Durable Objects)" "modules/ holds one directory per module: module.ts (the schema, the queries, and the commands), public.ts, and the generated types."
 cp -R "$REPO/example/modules" "$A/modules"
 find "$A/modules" -name "*.ts" -exec sed -i '' -e 's#from "\(\.\./\)*src/index\.ts"#from "solarsql"#' {} +
 # The orders module of the starter is fixed here, so a later change to the
 # example of the repository leaves the experiment's project as it was.
-cp "$KIT/solarsql-arm/modules/orders/schema.ts" "$A/modules/orders/schema.ts"
-cp "$KIT/solarsql-arm/modules/orders/queries.ts" "$A/modules/orders/queries.ts"
-cp "$KIT/solarsql-arm/modules/orders/commands.ts" "$A/modules/orders/commands.ts"
+cp "$KIT/solarsql-arm/modules/orders/module.ts" "$A/modules/orders/module.ts"
 cp "$KIT/solarsql-arm/worker.ts" "$KIT/solarsql-arm/solarsql.config.ts" "$A/"
 if [[ $EXPNO == 2 ]]; then
   cp "$KIT/exp2/solarsql-arm/modules/orders/"*.ts "$A/modules/orders/"

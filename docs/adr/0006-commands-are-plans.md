@@ -1,6 +1,6 @@
 # ADR 0006: A command is a verb on a noun, and its body is a plan
 
-Status: accepted (2026-09-06)
+Status: accepted (2026-09-06). Since ADR 0033 the commands live in the module's one source file, `module.ts`, next to the queries.
 
 ## Context
 

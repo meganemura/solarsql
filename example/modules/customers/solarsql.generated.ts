@@ -7,6 +7,14 @@ import type { Id, Meta } from "../../../src/index.ts";
 export type CustomersId = Id<"customers">;
 
 export type Generated = {
+  "insert into customers (id, name, email) values (:id, :name, :email)": {
+    params: { id: CustomersId; name: string; email: string };
+    row: {};
+  };
+  "select id, name, email from customers where id = :id": {
+    params: { id: CustomersId };
+    row: { id: CustomersId; name: string; email: string };
+  };
   /** One customer, or none. */
   "\n    -- One customer, or none.\n    select id, name, email from customers where id = :id": {
     params: { id: CustomersId };
@@ -17,19 +25,11 @@ export type Generated = {
     params: {};
     row: { id: CustomersId; name: string; email: string };
   };
-  "insert into customers (id, name, email) values (:id, :name, :email)": {
-    params: { id: CustomersId; name: string; email: string };
-    row: {};
-  };
-  "select id, name, email from customers where id = :id": {
-    params: { id: CustomersId };
-    row: { id: CustomersId; name: string; email: string };
-  };
 };
 
 export const generated: Meta<Generated> = {
-  "\n    -- One customer, or none.\n    select id, name, email from customers where id = :id": { params: ["id"], encode: [], json: [] },
-  "\n    -- Every customer, by name.\n    select id, name, email from customers order by name": { params: [], encode: [], json: [] },
   "insert into customers (id, name, email) values (:id, :name, :email)": { params: ["id", "name", "email"], encode: [], json: [] },
   "select id, name, email from customers where id = :id": { params: ["id"], encode: [], json: [] },
+  "\n    -- One customer, or none.\n    select id, name, email from customers where id = :id": { params: ["id"], encode: [], json: [] },
+  "\n    -- Every customer, by name.\n    select id, name, email from customers order by name": { params: [], encode: [], json: [] },
 };
