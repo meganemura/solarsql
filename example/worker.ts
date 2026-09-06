@@ -3,7 +3,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { d1 } from "../src/d1.ts";
 import { durable, migrate } from "../src/durable.ts";
-import type { Database, Observed } from "../src/index.ts";
+import { read, type Database, type Observed } from "../src/index.ts";
 import { migrations } from "./migrations/index.ts";
 import { customerCommands, customerQueries } from "./modules/customers/public.ts";
 import { orderCommands, orderQueries } from "./modules/orders/public.ts";
@@ -22,6 +22,7 @@ type Step =
   | { step: "annotate"; id: string; note: string | null }
   | { step: "reprice"; id: string; lines: { id: string; price: number }[] }
   | { step: "order"; id: string }
+  | { step: "overview"; id: string }
   | { step: "ordersOf"; customer_id: string }
   | { step: "revenue" }
   | { step: "confirmedOrders" }
@@ -48,6 +49,11 @@ async function run(db: Database, s: Step): Promise<unknown> {
       return db.run(orderCommands.reprice, { id: s.id as OrdersId, lines: s.lines.map((l) => ({ id: l.id as OrderLinesId, price: l.price })) });
     case "order":
       return db.first(orderQueries.withLines, { id: s.id as OrdersId });
+    case "overview": {
+      // Three queries, one round trip on D1.
+      const [orders, lines, customers] = await db.batch([read(orderQueries.byId, { id: s.id as OrdersId }), read(orderQueries.withLines, { id: s.id as OrdersId }), read(customerQueries.all)]);
+      return { order: orders[0] ?? null, lines: lines[0]?.lines ?? [], customers };
+    }
     case "ordersOf":
       return db.all(orderQueries.byCustomer, { customer_id: s.customer_id as CustomersId });
     case "ordersByIds":

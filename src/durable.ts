@@ -6,7 +6,7 @@
 // promises like the D1 adapter, so a module runs on both without a change.
 // Boundary: no SQL is composed here beyond the assert statement that
 // runtime/plan.ts defines.
-import type { AdapterOptions, Command, CommandResult, Database, Entry, GeneratedMap, ParamsArg, PlanShape, Query, Row, SqlValue, StatementMeta } from "./index.ts";
+import type { AdapterOptions, BatchRows, Command, CommandResult, Database, Entry, GeneratedMap, ParamsArg, PlanShape, Query, Read, Row, SqlValue, StatementMeta } from "./index.ts";
 import { assertFailure, assertStatement, bindValues, constraintFailure, observed, outcomeOf, parseJson } from "./runtime/plan.ts";
 import { splitStatements } from "./build/scan.ts";
 
@@ -30,6 +30,9 @@ export function durable(storage: StorageLike, options: AdapterOptions = {}): Dat
       const out = await all(query, ...args);
       return out[0] ?? null;
     },
+    // The storage is local, so a batch of reads is the reads in order.
+    batch: <const R extends readonly Read<Query<string, Entry>>[]>(reads: R): Promise<BatchRows<R>> =>
+      observed(options.observe, "batch", reads.map((r) => r.query.name).join("+"), async () => reads.map((r) => rows(r.query.sql, r.query.meta, r.params)) as unknown as BatchRows<R>, () => "ok"),
     run: <C extends Command<GeneratedMap, PlanShape<GeneratedMap>>>(command: C, ...args: ParamsArg<C>): Promise<CommandResult<C>> =>
       observed(options.observe, "command", command.name, async () => {
         const params = (args[0] ?? {}) as Record<string, SqlValue>;

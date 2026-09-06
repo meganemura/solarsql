@@ -5,7 +5,7 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { migrate, node } from "../src/node.ts";
-import type { Observed } from "../src/index.ts";
+import { read, type Observed } from "../src/index.ts";
 import { migrations } from "../example/migrations/index.ts";
 import { customerCommands, type CustomersId } from "../example/modules/customers/public.ts";
 import { orderCommands, orderQueries, type OrderLinesId, type OrdersId } from "../example/modules/orders/public.ts";
@@ -45,6 +45,9 @@ describe("the example on node:sqlite", () => {
     assert.deepEqual(await db.all(reportQueries.confirmedOrders), [{ id: "o1", customer_id: "c1", customer_name: "Ann" }]);
     const hits = await db.all(orderQueries.searchNotes, { query: "rush" });
     assert.deepEqual(hits.map((h) => [h.id, h.note]), [["o1", "rush"]]);
+    const [orders, lines] = await db.batch([read(orderQueries.byId, { id: o1 }), read(orderQueries.withLines, { id: o1 })]);
+    assert.deepEqual(orders.map((o) => o.status), ["confirmed"]);
+    assert.deepEqual(lines[0]!.lines.map((l) => l.id), ["l1", "l2"]);
     assert.deepEqual(await db.all(reportQueries.revenueByCustomer), [{ customer_id: "c1", name: "Ann", revenue: 8, orders: 1 }]);
   });
 

@@ -198,9 +198,10 @@ export type CommandResult<C> = C extends Command<infer G, infer P>
   ? { ok: true; rows: PlanRows<G, P>[] } | { ok: false; kind: "assert"; assert: PlanAsserts<P> } | ({ ok: false } & ConstraintFailure)
   : never;
 
-// What the observe hook of an adapter receives after each query or command.
+// What the observe hook of an adapter receives after each query, batch of
+// queries, or command. A batch is named by its queries, joined with "+".
 export type Observed = {
-  kind: "query" | "command";
+  kind: "query" | "batch" | "command";
   name: string;
   ms: number;
   // "ok", "assert:<name>", a constraint kind, or "error" when thrown.
@@ -217,11 +218,25 @@ export type Params<Q> = Q extends Query<string, infer E> ? E["params"] : Q exten
 // A parameter object is optional when the statement takes no parameters.
 export type ParamsArg<Q> = {} extends Params<Q> ? [params?: Params<Q>] : [params: Params<Q>];
 
-// What an adapter offers. The same three verbs run on D1 and on a Durable
-// Object, so a module written for one runs on the other.
+// One query with its parameters, for a batch. `read()` checks the
+// parameters against the query, so the batch itself needs no such check.
+export type Read<Q extends Query<string, Entry>> = { kind: "read"; query: Q; params: Record<string, unknown> };
+
+export function read<Q extends Query<string, Entry>>(query: Q, ...params: ParamsArg<Q>): Read<Q> {
+  return { kind: "read", query, params: (params[0] ?? {}) as Record<string, unknown> };
+}
+
+// The rows of each read of a batch, in the same order.
+export type BatchRows<R extends readonly Read<Query<string, Entry>>[]> = { [K in keyof R]: R[K] extends Read<infer Q> ? Row<Q>[] : never };
+
+// What an adapter offers. The same verbs run on D1, on a Durable Object,
+// and on node:sqlite, so a module written for one runs on the others.
+// `batch` runs several queries in one D1 round trip; the other adapters
+// run them in order.
 export type Database = {
   all<Q extends Query<string, Entry>>(query: Q, ...params: ParamsArg<Q>): Promise<Row<Q>[]>;
   first<Q extends Query<string, Entry>>(query: Q, ...params: ParamsArg<Q>): Promise<Row<Q> | null>;
+  batch<const R extends readonly Read<Query<string, Entry>>[]>(reads: R): Promise<BatchRows<R>>;
   run<C extends Command<GeneratedMap, PlanShape<GeneratedMap>>>(command: C, ...params: ParamsArg<C>): Promise<CommandResult<C>>;
 };
 

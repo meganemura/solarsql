@@ -144,7 +144,7 @@ When it yields 0, the whole plan rolls back, and the result names the assert.
 ### Running
 
 ```ts
-import { newId } from "solarsql";
+import { newId, read } from "solarsql";
 import { d1 } from "solarsql/d1";
 // or: import { durable } from "solarsql/durable";
 // or, in a test or a script: import { node } from "solarsql/node";
@@ -164,8 +164,15 @@ const result = await db.run(orderCommands.confirm, { id });
 // | { ok: false; kind: "check" | "not_null" | "foreign_key" | "datatype"; ... }
 ```
 
-The same module code runs on both adapters.
+The same module code runs on every adapter.
 `db.all` returns every row, `db.first` returns one row or null, and `db.run` runs a command.
+`db.batch` runs several queries in one D1 round trip and returns their rows by position:
+
+```ts
+const [orders, customers] = await db.batch([read(orderQueries.byId, { id }), read(customerQueries.all)]);
+// orders: Row<typeof orderQueries.byId>[]; customers: Row<typeof customerQueries.all>[]
+```
+
 A failed assert and a rejected row are values with one `kind`. Every other engine error is thrown.
 
 An adapter takes an `observe` hook for a logger or a tracer:
