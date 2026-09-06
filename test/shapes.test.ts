@@ -68,6 +68,7 @@ const shapes: [string, string, string, string][] = [
   ["coalesce with a literal is not null", "select cast(coalesce(sum(qty), 0) as integer) as total from order_lines where order_id = :order_id", "order_id: OrdersId", "total: number"],
   ["exists with a cast is not null", "select cast(exists (select 1 from orders where id = :id) as integer) as found", "id: OrdersId", "found: number"],
   ["a generated column", "select id, total from files where id = :id", "id: FilesId", "id: FilesId; total: number"],
+  ["a one-to-many inside a one-to-many", "select o.id, coalesce(json_group_array(json_object('id', l.id, 'tags', json((select json_group_array(g.name) from tags g where g.line_id = l.id)))) filter (where l.id is not null), '[]') as lines from orders o left join order_lines l on l.order_id = o.id where o.id = :id group by o.id", "id: OrdersId", "id: OrdersId; lines: Array<{ \"id\": OrderLinesId; \"tags\": Array<string> }> (json)"],
   ["a count with a cast", "select cast(count(*) as integer) as n from orders where customer_id = :customer_id", "customer_id: CustomersId", "n: number"],
 ];
 
