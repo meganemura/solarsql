@@ -9,7 +9,7 @@
 // (CREATE VIRTUAL TABLE) has no ALTER: a change drops it and creates it
 // again, and its shadow tables are the engine's own.
 import { DatabaseSync } from "node:sqlite";
-import { definitions, normalize, quoteIdent, splitStatements } from "./scan.ts";
+import { definitions, normalize, quoteIdent, splitStatements, tokenize, type Token } from "./scan.ts";
 
 export type Column = { name: string; type: string; notnull: boolean; dflt: string | null; pk: number; def: string; generated: boolean };
 export type ForeignKey = { table: string; from: string; to: string; onUpdate: string; onDelete: string };
@@ -280,11 +280,29 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
   for (const [name, view] of target.views) if (allViews || !viewSame(name)) createLast.push(view.sql);
   for (const [name, trigger] of target.triggers) {
     const c = current.triggers.get(name);
-    if (rebuilt.has(trigger.table) || !c || normalize(c.sql) !== normalize(trigger.sql)) createLast.push(trigger.sql);
+    if (rebuilt.has(trigger.table) || !c || normalize(c.sql) !== normalize(trigger.sql)) createLast.push(triggerForD1(trigger.sql));
   }
   const statements = [...dropViews, ...dropFirst, ...dropTables, ...changeTables, ...createVirtuals, ...createLast];
   if (needsDefer) statements.unshift(`pragma defer_foreign_keys = on`);
   return { kind: "ok", statements };
+}
+
+// D1's HTTP API splits a request into statements on its own, and it keeps a
+// trigger body whole only when the BEGIN that opens it is uppercase
+// (workers-sdk issue 15314; measured on a remote database on 2026-09-06:
+// `begin` and `Begin` fail with "incomplete input", `BEGIN` passes, and the
+// case of END makes no difference). SQLite reads every case, so the
+// migration file writes both keywords uppercase. normalize() lowercases
+// them for the diff, so the file and the declaration still compare equal.
+function triggerForD1(sql: string): string {
+  const tokens = tokenize(sql);
+  const bare = (t: Token, word: string) => t.type === "ident" && t.text.toLowerCase() === word;
+  const begin = tokens.find((t) => bare(t, "begin"));
+  const end = tokens.findLast((t) => bare(t, "end"));
+  if (!begin || !end) return sql;
+  let out = sql;
+  for (const t of [end, begin]) out = out.slice(0, t.start) + t.text.toUpperCase() + out.slice(t.end);
+  return out;
 }
 
 // wrangler applies `migrations/<NNNN>_<name>.sql` in name order and records

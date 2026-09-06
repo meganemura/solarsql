@@ -5,6 +5,6 @@ CREATE VIEW confirmed_orders as
   from orders o join customers c on c.id = o.customer_id
   where o.status = 'confirmed';
 CREATE TRIGGER orders_touch after update on orders
-  begin
+  BEGIN
     update orders set updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = new.id;
-  end;
+  END;

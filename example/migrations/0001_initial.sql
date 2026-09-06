@@ -21,6 +21,6 @@ CREATE TABLE solarsql_assert (name text not null, ok integer not null) strict;
 CREATE INDEX order_lines_order_id on order_lines (order_id);
 CREATE TRIGGER solarsql_assert_check before insert on solarsql_assert
   when new.ok = 0
-begin
+BEGIN
   select raise(abort, new.name);
-end;
+END;
