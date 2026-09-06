@@ -6,7 +6,7 @@ Status: accepted (2026-09-06)
 
 A search over text, such as the notes of orders, is a common need of an application on D1.
 `LIKE` reads the table in full, and the build reports it.
-SQLite ships FTS5, and D1, a Durable Object, and node:sqlite all carry it (measured on Miniflare's D1: create, insert, `match`, `rank`, and `bm25` work, and the engine keeps five shadow tables next to the search table).
+SQLite ships FTS5, and D1, a Durable Object, and node:sqlite all carry it: the search test of the example in `test/example.test.ts` runs on Miniflare's D1 and on a Durable Object, and `test/node.test.ts` on node:sqlite. The engine keeps five shadow tables next to the search table.
 An external search service is a second system to run.
 
 ## Decision

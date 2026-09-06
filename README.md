@@ -144,7 +144,7 @@ When it yields 0, the whole plan rolls back, and the result names the assert.
 ### Running
 
 ```ts
-import { newId, read } from "solarsql";
+import { newId } from "solarsql";
 import { d1 } from "solarsql/d1";
 // or: import { durable } from "solarsql/durable";
 // or, in a test or a script: import { node } from "solarsql/node";
@@ -169,6 +169,8 @@ The same module code runs on every adapter.
 `db.batch` runs several queries in one D1 round trip and returns their rows by position:
 
 ```ts
+import { read } from "solarsql";
+
 const [orders, customers] = await db.batch([read(orderQueries.byId, { id }), read(customerQueries.all)]);
 // orders: Row<typeof orderQueries.byId>[]; customers: Row<typeof customerQueries.all>[]
 ```
