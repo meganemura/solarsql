@@ -80,6 +80,12 @@ export function exampleSteps(value: Value, options: { oneIsolate: boolean; engin
     assert.deepEqual(await value({ step: "customers" }), [{ id: "c1", name: "Ann", email: "ann@example.com" }]);
   });
 
+  test("a CHECK of the DDL arrives as a value that names the constraint", async () => {
+    // The constraint came in a rebuild of customers under the foreign key of orders (migration 0005).
+    const empty = await value({ step: "createCustomer", id: "c3", name: "", email: "c3@example.com" });
+    assert.deepEqual(empty, { ok: false, kind: "check", constraint: "length(name) > 0" });
+  });
+
   test("an order without lines cannot be confirmed", async () => {
     await value({ step: "placeOrder", id: "o2", customer_id: "c1", lines: [] });
     const result = await value({ step: "confirm", id: "o2" });
