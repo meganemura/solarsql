@@ -538,6 +538,37 @@ export function paramSites(sql: string): Map<string, ParamSite[]> {
       add(name, { kind: "number" });
       continue;
     }
+    // :p in ('a', 'b'): a union of the literals, like a CASE list.
+    if (isKeyword(next, "in") && t[i + 2]?.text === "(") {
+      const literals: string[] = [];
+      let k = i + 3;
+      for (; k < t.length && !(t[k]!.depth === tok.depth && t[k]!.text === ")"); k++) {
+        const cur = t[k]!;
+        if (cur.type === "string") literals.push(cur.text.slice(1, -1).replace(/''/g, "'"));
+        else if (cur.text !== ",") break;
+      }
+      if (literals.length > 0 && t[k]?.text === ")") {
+        add(name, { kind: "one_of", literals });
+        continue;
+      }
+    }
+    // :p = 'a' or 'a' = :p: the literal's type; a number literal gives number.
+    const literalSite = (other: Token | undefined): ParamSite | null =>
+      other?.type === "string" ? { kind: "one_of", literals: [other.text.slice(1, -1).replace(/''/g, "'")] } : other?.type === "number" ? { kind: "number" } : null;
+    if (prev && compareOps.has(prev.text.toLowerCase())) {
+      const site = literalSite(t[i - 2]);
+      if (site) {
+        add(name, site);
+        continue;
+      }
+    }
+    if (next && compareOps.has(next.text.toLowerCase())) {
+      const site = literalSite(t[i + 2]);
+      if (site) {
+        add(name, site);
+        continue;
+      }
+    }
     if (isKeyword(next, "is") && (isKeyword(t[i + 2], "null") || (isKeyword(t[i + 2], "not") && isKeyword(t[i + 3], "null")))) {
       add(name, { kind: "nullable" });
       continue;
