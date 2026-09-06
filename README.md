@@ -23,6 +23,14 @@ migrations/
   index.ts                  the same files, for a Durable Object
 ```
 
+## Add a command
+
+1. Write the plan in `commands.ts`: statements and asserts, with `:name` parameters.
+2. Run `npx solarsql build`. It prints a `+` line for each statement it added and a `-` line for each it removed, and rewrites `solarsql.generated.ts`.
+3. Export the command through `public.ts` when the Worker or another module calls it.
+4. Call `db.run(orderCommands.confirm, { id })` and read the result by its `kind`.
+5. Run `tsc` and the tests. A statement whose text changed has no type until the build runs again, and `tsc` names the call site.
+
 ### schema.ts
 
 ```ts
@@ -105,7 +113,7 @@ export const orderCommands = commands(generated, {
 ```
 
 A plan runs as one D1 batch or one Durable Object transaction.
-An assert is SQL that yields 0 or 1.
+An assert is any SQL expression that yields 0 or 1, and it may use the parameters of the command: a comparison, an `exists (...)`, or a `not exists (...)` over a join, such as `not exists (select 1 from order_lines l join inventory i on i.sku = l.sku where l.order_id = :id and i.qty + l.qty > 100)`.
 When it yields 0, the whole plan rolls back, and the result names the assert.
 `changes()` counts the rows of the statement right before the assert.
 
@@ -197,8 +205,7 @@ ctx.blockConcurrencyWhile(async () => {
 
 ## Requirements
 
-Node 24.10 or later runs the build: `StatementSync.columns()` arrived in Node 23.11 and `DatabaseSync.setAuthorizer()` in Node 24.10.
-The tests of this repository run on Node 26.
+Node 24.10 or later runs the build, because it needs `DatabaseSync.setAuthorizer()` of node:sqlite. The tests of this repository run on Node 26.
 
 ## Design
 
