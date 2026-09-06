@@ -31,6 +31,7 @@ async function main(argv: string[]): Promise<number> {
     for (const s of result.scans) {
       console.log(`scan    ${s.module}: ${s.tables.join(", ")} read in full by: ${oneLine(s.sql)}`);
     }
+    if (result.index.path !== null && result.index.changed) console.log(`${check ? "stale  " : "wrote  "} ${result.index.path} (the migration files, for a Durable Object)`);
     if (result.migration.reason) {
       console.error(`migration blocked: ${result.migration.reason}`);
       return 1;
@@ -40,7 +41,7 @@ async function main(argv: string[]): Promise<number> {
       for (const s of result.migration.statements) console.error(`  ${s.replace(/\s+/g, " ").trim()}`);
       return 1;
     }
-    if (check && result.modules.some((m) => m.changed)) {
+    if (check && (result.modules.some((m) => m.changed) || result.index.changed)) {
       console.error("generated files are stale. Run: npx solarsql build");
       return 1;
     }

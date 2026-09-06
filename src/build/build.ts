@@ -42,6 +42,10 @@ export type BuildResult = {
   // generated file, so the CLI can say what changed.
   modules: { name: string; generatedPath: string; entries: number; changed: boolean; added: string[]; removed: string[] }[];
   migration: { pending: boolean; statements: string[]; reason: string | null };
+  // The bundle of the migration files a Durable Object imports. It is a
+  // generated file too: the build rewrites it when a migration file changed,
+  // and a check reports it stale. `path` is null when there are no files.
+  index: { path: string | null; changed: boolean };
   // Statements whose plan scans a table in full despite a WHERE clause.
   scans: { module: string; sql: string; tables: string[] }[];
 };
@@ -248,7 +252,8 @@ export async function build(configPath: string, options: BuildOptions = {}): Pro
     }
 
     const migration = migrationStatus(configDir, config, modules);
-    return { modules: results, migration, scans };
+    const index = migrationsIndex(resolve(configDir, config.migrations), write);
+    return { modules: results, migration, index, scans };
   } finally {
     engine.close();
   }
@@ -396,6 +401,19 @@ function migrationFiles(dir: string): { name: string; sql: string }[] {
     .filter((f) => f.endsWith(".sql"))
     .sort()
     .map((name) => ({ name, sql: readFileSync(join(dir, name), "utf8") }));
+}
+
+// index.ts follows the .sql files. The migration command writes both; a
+// file edited by hand, or merged, would leave the Durable Object with other
+// SQL than D1 gets, so the build keeps the two in step.
+function migrationsIndex(dir: string, write: boolean): BuildResult["index"] {
+  const files = migrationFiles(dir);
+  if (files.length === 0) return { path: null, changed: false };
+  const path = join(dir, "index.ts");
+  const wanted = emitMigrationsIndex(files);
+  const changed = !existsSync(path) || readFileSync(path, "utf8") !== wanted;
+  if (changed && write) writeFileSync(path, wanted);
+  return { path, changed };
 }
 
 function migrationStatus(configDir: string, config: Config, modules: readonly Module[]): BuildResult["migration"] {
