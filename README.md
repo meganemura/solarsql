@@ -7,6 +7,21 @@ You write SQL. The build step asks the real engine what the SQL returns, and wri
 A command is a list of statements and asserts that runs as one transaction on both targets.
 A module owns its tables, and the build step refuses a statement that reaches into another module's tables.
 
+## Start a project
+
+```sh
+npm install solarsql
+npm install --save-dev typescript @types/node
+npx solarsql init orders
+node --test
+```
+
+`init` writes `solarsql.config.ts`, the module `modules/orders/` with a placeholder table, a query catalog, two commands, and a test on node:sqlite, and `tsconfig.json` when there is none.
+Then it runs the first build and writes `migrations/0001_initial.sql`.
+Replace the table with your own, run `npx solarsql build`, and write the next migration.
+A Worker imports an adapter, as "Running" shows below; wrangler's own init makes the Worker.
+The files are ES modules, so `package.json` needs `"type": "module"` if it names a type at all.
+
 ## The shape
 
 ```
@@ -291,7 +306,8 @@ SOLARSQL_REMOTE_URL=https://solarsql-example.<your subdomain>.workers.dev SOLARS
 
 ## Requirements
 
-Node 24.10 or later runs the build, because it needs `DatabaseSync.setAuthorizer()` of node:sqlite. The tests of this repository run on Node 26.
+Node 24.10 or later runs the build, because it needs `DatabaseSync.setAuthorizer()` of node:sqlite. The tests of this repository run on Node 24 and 26.
+TypeScript 5.7 or later reads the imports with a `.ts` extension that Node's type stripping needs: `allowImportingTsExtensions` under `noEmit`, as the tsconfig `init` writes, or `rewriteRelativeImportExtensions` when tsc emits.
 
 ## Design
 

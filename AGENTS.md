@@ -45,6 +45,7 @@ If you want to cite an internal document, write its substance in place instead.
 - `.github/workflows/ci.yml` runs the tests, the typecheck, and the example's `build --check` on Node 24 and 26, for every push and pull request to main.
 - `npm run build` emits `dist/` from `src/`. Only the pack test needs it.
 - `node src/build/cli.ts build example/solarsql.config.ts` builds the example from the source.
+- `solarsql init <module>` starts a project; it needs the installed package, so `test/pack.test.ts` is where it runs.
 - `SOLARSQL_REMOTE_URL=<the Worker's URL> node --test test/remote.test.ts` runs the example's steps against a deployed Worker, on remote D1 and on a Durable Object. `npm test` skips it. The README says how to deploy; `example/wrangler.jsonc` is gitignored because it names one account's database.
 - `node spike/<file>.ts` runs one experiment and prints the measurements that `docs/v0-measurements.md` and `docs/v1-measurements.md` cite.
 
