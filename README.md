@@ -140,6 +140,7 @@ When it yields 0, the whole plan rolls back, and the result names the assert.
 import { newId } from "solarsql";
 import { d1 } from "solarsql/d1";
 // or: import { durable } from "solarsql/durable";
+// or, in a test or a script: import { node } from "solarsql/node";
 
 const db = d1(env.DB);
 
@@ -165,6 +166,18 @@ const db = d1(env.DB, { observe: (e) => console.log(e.kind, e.name, e.outcome, `
 ```
 
 Retry, concurrency, and dependency injection stay in the calling code. A module function takes `db: Database`.
+
+A module's own tests run on node:sqlite, in-process, with the same module code:
+
+```ts
+import { DatabaseSync } from "node:sqlite";
+import { migrate, node } from "solarsql/node";
+import { migrations } from "./migrations/index.ts";
+
+const raw = new DatabaseSync(":memory:");
+migrate(raw, migrations);
+const db = node(raw);
+```
 
 ### solarsql.config.ts
 

@@ -61,12 +61,12 @@ test("npm pack, install, and run the CLI from node_modules", { timeout: 180_000 
     const committed = readFileSync(join(root, "example/modules/orders/solarsql.generated.ts"), "utf8");
     assert.equal(generated, committed.replace('from "../../../src/index.ts"', 'from "solarsql"'));
 
-    const imported = spawnSync(process.execPath, ["-e", 'import("solarsql/d1").then((m) => console.log(typeof m.d1)); import("solarsql/durable").then((m) => console.log(typeof m.migrate));'], {
+    const imported = spawnSync(process.execPath, ["-e", 'import("solarsql/d1").then((m) => console.log(typeof m.d1)); import("solarsql/durable").then((m) => console.log(typeof m.migrate)); import("solarsql/node").then((m) => console.log(typeof m.node)); import("solarsql").then((m) => console.log(typeof m.newId));'], {
       cwd: join(dir, "consumer"),
       encoding: "utf8",
     });
     assert.equal(imported.status, 0, imported.stderr);
-    assert.equal(imported.stdout.trim().split("\n").sort().join(","), "function,function");
+    assert.equal(imported.stdout.trim().split("\n").sort().join(","), "function,function,function,function");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
