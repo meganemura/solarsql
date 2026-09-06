@@ -115,6 +115,20 @@ describe("solarsql build", () => {
     }
   });
 
+  test("a module imports another module through public.ts only", async () => {
+    const dir = copy();
+    try {
+      const queries = join(dir, "example/modules/orders/queries.ts");
+      const original = readFileSync(queries, "utf8");
+      writeFileSync(queries, `import type { CustomersId } from "../customers/public.ts";\n${original}`);
+      await build(join(dir, "example/solarsql.config.ts"));
+      writeFileSync(queries, `import { customerQueries } from "../customers/queries.ts";\n${original}`);
+      await expectBuildError(dir, /module orders: queries\.ts imports \.\.\/customers\/queries\.ts\. Module customers shows public\.ts; import from there/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a module that reads another module's table without readsAll is refused", async () => {
     const dir = copy();
     try {

@@ -206,6 +206,7 @@ It fails with one message when:
 - a `json_group_array` over an outer join has no `filter`;
 - a parameter has two different types in one command;
 - a statement, a view, or a trigger body touches a table that another module owns;
+- a file of a module imports a file of another module that is not its `public.ts`;
 - a primary key allows NULL;
 - a table is not `strict`;
 - the migration files do not match the schema.
