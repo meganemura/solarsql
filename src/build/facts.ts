@@ -51,9 +51,17 @@ export type Access = {
 export class Engine {
   readonly db: DatabaseSync;
 
+  // A statement the engine refuses is reported with its text, so a bad
+  // trigger body or view names itself.
   constructor(statements: readonly string[]) {
     this.db = new DatabaseSync(":memory:");
-    for (const s of statements) this.db.exec(s);
+    for (const s of statements) {
+      try {
+        this.db.exec(s);
+      } catch (e) {
+        throw new Error(`${(e as Error).message}\n  in: ${s.replace(/\s+/g, " ").trim()}`);
+      }
+    }
   }
 
   close(): void {
@@ -96,6 +104,13 @@ export class Engine {
     }));
     const tail = ddl.slice(ddl.lastIndexOf(")"));
     return { name, sql: ddl, columns, foreignKeys, withoutRowid: /\bwithout\s+rowid\b/i.test(tail), strict: /\bstrict\b/i.test(tail) };
+  }
+
+  // The first column of a table or a view that a statement may set. A
+  // generated column cannot be set, so it is skipped.
+  firstSettableColumn(name: string): string | null {
+    const row = this.db.prepare(`select name from pragma_table_xinfo(?) where hidden = 0 order by cid limit 1`).get(name) as { name: string } | undefined;
+    return row?.name ?? null;
   }
 
   // The output columns of a statement, with the origin of each.

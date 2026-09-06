@@ -64,7 +64,7 @@ A primary key column must be `not null`.
 A `check (x in (...))` becomes a union type, of strings or of numbers: `check (flag in (0, 1))` is `0 | 1`.
 A generated column is read like any other.
 Every table is `strict`, so the engine rejects a value that does not match the declared type, and the generated types hold for every stored value.
-A trigger sits on a table of its module, and its body may touch the tables of that module only.
+A trigger sits on a table or a view of its module, and its body may touch the tables of that module only.
 A view is read by the queries of its module like a table; a report module with `readsAll` may declare a view over every table.
 
 ### queries.ts
@@ -145,7 +145,9 @@ import { d1 } from "solarsql/d1";
 
 const db = d1(env.DB);
 
-const id = newId<OrdersId>(); // a UUID v7, made before the first statement runs
+// An id is made before the first statement runs: a UUID v7.
+await db.run(orderCommands.place, { id: newId<OrdersId>(), customer_id, lines });
+
 const order = await db.first(orderQueries.byId, { id });
 // { id: OrdersId; customer_id: CustomersId; status: "draft" | "confirmed"; note: string | null } | null
 
