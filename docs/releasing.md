@@ -12,3 +12,4 @@ Each step is one command, run from the root, on a clean `main` that CI has passe
 8. After the first publish: the rule in `AGENTS.md` that says the package is reserved at 0.0.0 with no code is out of date; replace it with the rule that a publish follows this file.
 
 `npm publish` and a change of the repository's visibility are the owner's to run.
+When the repository turns public, turn on private vulnerability reporting in its Security settings; `SECURITY.md` points there, and the setting exists only for a public repository.
