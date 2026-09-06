@@ -155,10 +155,14 @@ export class Typer {
       const joinNull = alias !== null && nullableAliases.has(alias);
       return { name: out.name, type: r.nullable || joinNull ? `${r.type} | null` : r.type, json: false };
     }
-    if (item && findCall(item.expr, "json_group_array")) {
+    // The outer JSON call is the one that starts first in the text; the
+    // other may sit inside it, or inside a subquery of it.
+    const array = item ? findCall(item.expr, "json_group_array") : null;
+    const object = item ? findCall(item.expr, "json_object") : null;
+    if (item && array && (!object || array.open < object.open)) {
       return { name: out.name, type: this.jsonArrayType(sql, item, aliases, nullableAliases, note), json: true };
     }
-    if (item && findCall(item.expr, "json_object")) {
+    if (item && object) {
       return { name: out.name, type: this.jsonObjectType(sql, item.expr, item, aliases, nullableAliases, note, false), json: true };
     }
     const affinity = affinities.get(out.name) ?? "";
@@ -252,8 +256,11 @@ export class Typer {
 
   // The type of one value expression inside json_object or json_group_array:
   // a column reference resolves through the tables, a CAST through a probe
-  // query, and anything else is an error.
+  // query, a `json((select json_group_array(...) ...))` subquery through
+  // its own analysis, and anything else is an error.
   private valueType(sql: string, expr: string, aliases: Map<string, string | null>, nullableAliases: Set<string>, note: (r: Resolved) => Resolved): string {
+    const nested = this.nestedJsonType(sql, expr, aliases, note);
+    if (nested !== null) return nested;
     const ref = columnRef(expr);
     if (ref) {
       const alias = ref.alias ?? this.aliasOfBareColumn(aliases, ref.column);
@@ -271,7 +278,53 @@ export class Typer {
         if (scalar !== "unknown") return castNeverNull(expr, (r) => this.refNullable(r, aliases, nullableAliases, sql)) ? scalar : `${scalar} | null`;
       }
     }
-    throw new BuildError(`value "${expr}" inside json has no type. Use a column reference or cast(... as integer | real | text).`, sql);
+    throw new BuildError(`value "${expr}" inside json has no type. Use a column reference, cast(... as integer | real | text), or json((select json_group_array(...) ...)).`, sql);
+  }
+
+  // A one-to-many inside a one-to-many: `json((select json_group_array(...)
+  // from child where child.parent_id = outer.id))`. The subquery is analyzed
+  // on its own, with each reference to an alias of the outer statement
+  // replaced by NULL, which prepares the same and changes no type. The json()
+  // call is required: a subquery's text has no JSON subtype, so without it
+  // the array would nest as a string.
+  private nestedJsonType(sql: string, expr: string, aliases: Map<string, string | null>, note: (r: Resolved) => Resolved): string | null {
+    const bare = /^\(\s*select\b/i.test(expr.trim());
+    const call = findCall(expr, "json");
+    const wrapped = call !== null && /^\s*json\s*\(/i.test(expr) && call.args.length === 1 && /^\(\s*select\b/i.test(call.args[0]!.text.trim());
+    if (!bare && !wrapped) return null;
+    const subquery = (wrapped ? call!.args[0]!.text : expr).trim().replace(/^\(/, "").replace(/\)$/, "");
+    const items = selectItems(subquery);
+    if (!items || items.length !== 1) throw new BuildError(`a subquery inside json must select one value, got ${items?.length ?? 0}`, sql);
+    const item = items[0]!;
+    const isArray = findCall(item.expr, "json_group_array") !== null;
+    const isObject = !isArray && findCall(item.expr, "json_object") !== null;
+    if (!isArray && !isObject) return null;
+    if (!wrapped) throw new BuildError(`the subquery "${expr}" inside json yields JSON text. Wrap it in json(...) so it nests as JSON, not as a string.`, sql);
+    // Outer alias references become NULL, so the subquery prepares alone.
+    const innerAliases = aliasMap(subquery);
+    const tokens = tokenize(subquery);
+    let detached = "";
+    for (let i = 0; i < tokens.length; i++) {
+      const t = tokens[i]!;
+      const next = tokens[i + 1];
+      const after = tokens[i + 2];
+      if (t.type === "ident" && next?.text === "." && after?.type === "ident" && aliases.has(unquote(t.text)) && !innerAliases.has(unquote(t.text))) {
+        detached += "null";
+        i += 2;
+        continue;
+      }
+      detached += t.text;
+    }
+    try {
+      this.engine.prepare(detached);
+    } catch (e) {
+      throw new BuildError(`inside json: ${(e as Error).message}`, sql);
+    }
+    const innerNullable = this.engine.nullableAliases(detached);
+    const innerItem = selectItems(detached)![0]!;
+    if (isArray) return this.jsonArrayType(detached, innerItem, innerAliases, innerNullable, note);
+    // A subquery with no row is NULL.
+    return `${this.jsonObjectType(detached, innerItem.expr, innerItem, innerAliases, innerNullable, note, false)} | null`;
   }
 
   // The type of one named parameter, from where it sits in the statement.

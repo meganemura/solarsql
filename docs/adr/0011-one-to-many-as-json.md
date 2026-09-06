@@ -37,4 +37,5 @@ See v0-measurements.md, section 3.
 ## Consequences
 
 - A nested value that is an expression needs a CAST (ADR 0017).
+- A one-to-many inside the array is `json((select json_group_array(...) from child where child.parent_id = outer.id))`, typed since v4. The `json()` is required: a subquery's text carries no JSON subtype, so without it the inner array nests as a string.
 - The library parses the JSON text into the typed array at the driver boundary.

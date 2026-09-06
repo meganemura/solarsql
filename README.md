@@ -92,6 +92,7 @@ export const orderQueries = queries(generated, {
 Parameters are named, `:id`.
 The build finds their types from where they sit: `where id = :id` gives `:id` the type of the column.
 A JSON aggregation becomes an array type, and the adapter parses it.
+A one-to-many inside it is `json((select json_group_array(...) from child where child.parent_id = l.id))`; the `json()` makes it nest as JSON, not as a string.
 An expression column needs a `cast(... as integer | real | text)`, because the engine reports no type for an expression.
 The type of a cast is `T | null`, except over `count`, `total`, `exists`, a ranking window function, or `coalesce` with a literal, which are never null.
 

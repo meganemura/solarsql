@@ -19,6 +19,7 @@ const ddl = [
   )`,
   `create table order_lines (id text primary key not null, order_id text not null references orders(id), sku text not null, qty integer not null, price real)`,
   `create table files (id text primary key not null, size integer not null, flag integer not null check (flag in (0, 1)), total integer not null as (size * 2) stored, label text as (id || ':' || size) virtual) strict`,
+  `create table tags (id text primary key not null, line_id text not null references order_lines(id), name text not null) strict`,
   ...GUARD_DDL,
 ];
 
@@ -74,6 +75,25 @@ describe("Typer.analyze", () => {
       { name: "customer_name", type: "string", json: false },
       { name: "lines", type: 'Array<{ "id": OrderLinesId; "qty": number; "total": number | null }>', json: true },
     ]);
+  });
+
+  test("a one-to-many inside a one-to-many: json((select json_group_array(...))) inside json_object", () => {
+    const a = t.analyze(
+      "select o.id, coalesce(json_group_array(json_object('id', l.id, 'tags', json((select json_group_array(g.name) from tags g where g.line_id = l.id)))) filter (where l.id is not null), '[]') as lines from orders o left join order_lines l on l.order_id = o.id where o.id = :id group by o.id",
+      "orders",
+    );
+    assert.deepEqual(a.columns, [
+      { name: "id", type: "OrdersId", json: false },
+      { name: "lines", type: 'Array<{ "id": OrderLinesId; "tags": Array<string> }>', json: true },
+    ]);
+    // A json_object subquery may find no row, so it allows null.
+    const b = t.analyze("select json_object('first', json((select json_object('id', l.id, 'sku', l.sku) from order_lines l where l.order_id = o.id order by l.id limit 1))) as summary from orders o where o.id = :id", "orders");
+    assert.deepEqual(b.columns, [{ name: "summary", type: '{ "first": { "id": OrderLinesId; "sku": string } | null }', json: true }]);
+    // Without json() the subquery nests as a string, and the build says so.
+    assert.throws(
+      () => t.analyze("select json_object('id', o.id, 'tags', (select json_group_array(g.name) from tags g where g.line_id = o.id)) as x from orders o", "orders"),
+      (e: unknown) => e instanceof BuildError && /Wrap it in json\(\.\.\.\)/.test(e.message),
+    );
   });
 
   test("a JSON aggregation without a filter over an outer join is refused", () => {
