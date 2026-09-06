@@ -120,6 +120,12 @@ for (const target of ["d1", "do"] as const) {
       assert.deepEqual(await value({ step: "search", customer_id: "c1", status: null, sort: "status", limit: 1, offset: 1 }), [{ id: "o2", status: "draft", note: null }]);
     });
 
+    test("a LIKE pattern is a typed parameter, and the query reads the table in full", async () => {
+      await value({ step: "annotate", id: "o2", note: "gift wrap" });
+      assert.deepEqual(await value({ step: "byNote", pattern: "%gift%" }), [{ id: "o2", status: "draft", note: "gift wrap" }]);
+      await value({ step: "annotate", id: "o2", note: null });
+    });
+
     test("a query without parameters", async () => {
       assert.deepEqual(await value({ step: "customers" }), [{ id: "c1", name: "Ann", email: "ann@example.com" }]);
     });

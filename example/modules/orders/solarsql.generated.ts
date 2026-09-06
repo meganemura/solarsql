@@ -29,9 +29,14 @@ export type Generated = {
     params: { ids: readonly OrdersId[] };
     row: { id: OrdersId; status: "draft" | "confirmed" };
   };
-  /** Orders of one customer, with an optional status and a chosen order. The optional filter reads the table in full, which the build reports. */
-  "\n    -- Orders of one customer, with an optional status and a chosen order.\n    -- The optional filter reads the table in full, which the build reports.\n    select id, status, note from orders\n    where customer_id = :customer_id and (:status is null or status = :status)\n    order by case :sort when 'id' then id when 'status' then status end\n    limit :limit offset :offset": {
+  /** Orders of one customer, with an optional status and a chosen order. */
+  "\n    -- Orders of one customer, with an optional status and a chosen order.\n    select id, status, note from orders\n    where customer_id = :customer_id and (:status is null or status = :status)\n    order by case :sort when 'id' then id when 'status' then status end\n    limit :limit offset :offset": {
     params: { customer_id: CustomersId; status: "draft" | "confirmed" | null; sort: "id" | "status"; limit: number; offset: number };
+    row: { id: OrdersId; status: "draft" | "confirmed"; note: string | null };
+  };
+  /** Orders whose note matches a pattern. No index serves LIKE, so this reads the table in full, and the build reports it. */
+  "\n    -- Orders whose note matches a pattern. No index serves LIKE, so this\n    -- reads the table in full, and the build reports it.\n    select id, status, note from orders where note like :pattern order by id": {
+    params: { pattern: string | null };
     row: { id: OrdersId; status: "draft" | "confirmed"; note: string | null };
   };
   "insert into orders (id, customer_id, status) values (:id, :customer_id, 'draft')": {
@@ -69,7 +74,8 @@ export const generated: Meta<Generated> = {
   "\n    -- One order with its lines as an array. Empty when it has none.\n    select o.id, o.status,\n      coalesce(json_group_array(json_object('id', l.id, 'sku', l.sku, 'qty', l.qty, 'price', l.price))\n        filter (where l.id is not null), '[]') as lines\n    from orders o\n    left join order_lines l on l.order_id = o.id\n    where o.id = :id\n    group by o.id": { params: ["id"], encode: [], json: ["lines"] },
   "\n    -- The orders of one customer, newest id first.\n    select id, status from orders where customer_id = :customer_id order by id desc": { params: ["customer_id"], encode: [], json: [] },
   "\n    -- The orders with the given ids. One parameter carries the whole list,\n    -- so the list can be longer than the 100 bound values D1 allows.\n    select id, status from orders where id in (select value from json_each(:ids)) order by id": { params: ["ids"], encode: ["ids"], json: [] },
-  "\n    -- Orders of one customer, with an optional status and a chosen order.\n    -- The optional filter reads the table in full, which the build reports.\n    select id, status, note from orders\n    where customer_id = :customer_id and (:status is null or status = :status)\n    order by case :sort when 'id' then id when 'status' then status end\n    limit :limit offset :offset": { params: ["customer_id", "status", "sort", "limit", "offset"], encode: [], json: [] },
+  "\n    -- Orders of one customer, with an optional status and a chosen order.\n    select id, status, note from orders\n    where customer_id = :customer_id and (:status is null or status = :status)\n    order by case :sort when 'id' then id when 'status' then status end\n    limit :limit offset :offset": { params: ["customer_id", "status", "sort", "limit", "offset"], encode: [], json: [] },
+  "\n    -- Orders whose note matches a pattern. No index serves LIKE, so this\n    -- reads the table in full, and the build reports it.\n    select id, status, note from orders where note like :pattern order by id": { params: ["pattern"], encode: [], json: [] },
   "insert into orders (id, customer_id, status) values (:id, :customer_id, 'draft')": { params: ["id", "customer_id"], encode: [], json: [] },
   "insert into order_lines (id, order_id, sku, qty, price)\n       select value ->> 'id', :id, value ->> 'sku', value ->> 'qty', value ->> 'price' from json_each(:lines)": { params: ["id", "lines"], encode: ["lines"], json: [] },
   "select id, customer_id, status, note from orders where id = :id": { params: ["id"], encode: [], json: [] },
