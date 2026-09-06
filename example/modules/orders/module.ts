@@ -123,4 +123,9 @@ export const orderCommands = commands(generated, {
     ],
     returns: "select id, customer_id, status, note from orders where id = :id",
   },
+  // Every order, its lines, and the search rows, gone. No trigger follows a
+  // delete into the search table, so the plan clears it by hand.
+  clear: {
+    plan: ["delete from order_lines", "delete from orders", "delete from order_search"],
+  },
 });

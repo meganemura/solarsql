@@ -15,6 +15,10 @@ export type Generated = {
     params: { id: CustomersId };
     row: { id: CustomersId; name: string; email: string };
   };
+  "delete from customers": {
+    params: {};
+    row: {};
+  };
   /** One customer, or none. */
   "\n    -- One customer, or none.\n    select id, name, email from customers where id = :id": {
     params: { id: CustomersId };
@@ -30,6 +34,7 @@ export type Generated = {
 export const generated: Meta<Generated> = {
   "insert into customers (id, name, email) values (:id, :name, :email)": { params: ["id", "name", "email"], encode: [], json: [] },
   "select id, name, email from customers where id = :id": { params: ["id"], encode: [], json: [] },
+  "delete from customers": { params: [], encode: [], json: [] },
   "\n    -- One customer, or none.\n    select id, name, email from customers where id = :id": { params: ["id"], encode: [], json: [] },
   "\n    -- Every customer, by name.\n    select id, name, email from customers order by name": { params: [], encode: [], json: [] },
 };

@@ -46,6 +46,7 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0033](adr/0033-one-source-file-per-module.md) | A module is three files: its source, its public file, and its generated file |
 | [0034](adr/0034-search-is-an-fts5-table.md) | Full-text search is an FTS5 table declared with search() |
 | [0035](adr/0035-several-reads-in-one-round-trip.md) | Several reads go in one D1 round trip through db.batch |
+| [0036](adr/0036-the-example-deploys-with-wrangler.md) | The example deploys with wrangler, and a remote test runs its steps |
 
 ## Measurements
 

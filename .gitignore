@@ -15,3 +15,9 @@ dist/
 
 # wrangler and miniflare local state
 .wrangler/
+
+# The example's own wrangler config names one account's D1 database, and
+# .dev.vars holds its secrets. The template is wrangler.example.jsonc.
+example/wrangler.jsonc
+example/wrangler.toml
+example/.dev.vars

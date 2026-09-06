@@ -1,0 +1,22 @@
+// The Worker of the example, for wrangler. Copy this file to wrangler.jsonc
+// next to it (that name is gitignored, because it holds the id of one
+// account's database) and put in the id that `wrangler d1 create
+// solarsql-example` prints.
+{
+  "name": "solarsql-example",
+  "main": "worker.ts",
+  "compatibility_date": "2026-08-28",
+  "workers_dev": true,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "solarsql-example",
+      "database_id": "the id that wrangler d1 create prints",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "STORE", "class_name": "Store" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Store"] }]
+}

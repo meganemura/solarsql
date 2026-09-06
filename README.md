@@ -262,6 +262,31 @@ ctx.blockConcurrencyWhile(async () => {
 });
 ```
 
+## Deploy the example
+
+The example is a Worker with a D1 binding and a Durable Object, and wrangler deploys it.
+Copy the template, create the database, and put the id it prints in the copy:
+
+```sh
+cd example
+cp wrangler.example.jsonc wrangler.jsonc   # gitignored: it names your database
+npx wrangler d1 create solarsql-example    # prints the id for wrangler.jsonc
+npx wrangler d1 migrations apply solarsql-example --remote
+npx wrangler secret put TOKEN              # any string; the Worker refuses a request without it
+npx wrangler deploy
+```
+
+`wrangler d1 migrations apply` takes the files of `example/migrations` in name order and keeps its own record of the applied ones.
+The Durable Object applies the same files with `migrate()` on its first request.
+
+The remote test sends the steps of the Miniflare test to the deployed Worker, on D1 and on the Durable Object, after a reset of both:
+
+```sh
+SOLARSQL_REMOTE_URL=https://solarsql-example.<your subdomain>.workers.dev SOLARSQL_REMOTE_TOKEN=<the secret> node --test test/remote.test.ts
+```
+
+`npm test` skips it.
+
 ## Requirements
 
 Node 24.10 or later runs the build, because it needs `DatabaseSync.setAuthorizer()` of node:sqlite. The tests of this repository run on Node 26.
