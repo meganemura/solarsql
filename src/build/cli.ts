@@ -3,14 +3,17 @@
 //   solarsql build [config]             types, boundaries, migration check
 //   solarsql build --check [config]     the same, writing nothing; exit 1 when a file is stale
 //   solarsql migration <name> [config]  write the next migration file
-// Boundary: printing and exit codes only. build.ts does the work.
+//   solarsql init <module> [dir]        a first module, built, with its migration
+// Boundary: printing and exit codes only. build.ts and init.ts do the work.
 import { build, migration } from "./build.ts";
+import { init } from "./init.ts";
 import { BuildError } from "./typegen.ts";
 
 const usage = `usage:
   solarsql build [solarsql.config.ts]
   solarsql build --check [solarsql.config.ts]   writes nothing; exit 1 when a generated file or a migration is stale
-  solarsql migration <name> [solarsql.config.ts]`;
+  solarsql migration <name> [solarsql.config.ts]
+  solarsql init <module> [dir]                  writes solarsql.config.ts and modules/<module>/, then builds and writes the first migration`;
 
 // One line of SQL, enough to recognize the statement.
 function oneLine(sql: string): string {
@@ -60,6 +63,20 @@ async function main(argv: string[]): Promise<number> {
       return 1;
     }
     console.log(result.filename ? `wrote ${result.filename}` : "nothing to migrate");
+    return 0;
+  }
+  if (command === "init") {
+    const module = rest[0];
+    if (!module) {
+      console.error(usage);
+      return 2;
+    }
+    const result = await init(module, rest[1] ?? ".");
+    for (const f of result.written) console.log(`wrote   ${f}`);
+    if (result.notice) console.log(`note    ${result.notice}`);
+    console.log(`next    node --test                 runs modules/${module}/module.test.ts on node:sqlite`);
+    console.log(`        npx tsc --noEmit            typescript and @types/node are the dev dependencies it needs`);
+    console.log(`        import { d1 } from "solarsql/d1", or "solarsql/durable", in the Worker; see the README`);
     return 0;
   }
   console.error(usage);

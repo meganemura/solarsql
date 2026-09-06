@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -67,6 +67,30 @@ test("npm pack, install, and run the CLI from node_modules", { timeout: 180_000 
     });
     assert.equal(imported.status, 0, imported.stderr);
     assert.equal(imported.stdout.trim().split("\n").sort().join(","), "function,function,function,function");
+
+    // From zero: init writes a module, builds it, and writes the first
+    // migration; the module's test runs on node:sqlite, and tsc accepts what
+    // init wrote. The consumer's root has no configuration yet.
+    const consumer = join(dir, "consumer");
+    const inited = spawnSync(cli, ["init", "order_lines"], { cwd: consumer, encoding: "utf8" });
+    assert.equal(inited.status, 0, inited.stdout + inited.stderr);
+    assert.match(inited.stdout, /wrote   migrations\/0001_initial\.sql/);
+    assert.match(inited.stdout, /wrote   tsconfig\.json/);
+    assert.match(readFileSync(join(consumer, "modules/order_lines/solarsql.generated.ts"), "utf8"), /OrderLinesId/);
+    // Under `node --test`, a child node inherits NODE_TEST_CONTEXT and would
+    // report to this runner instead of its stdout.
+    const { NODE_TEST_CONTEXT: _, ...env } = process.env;
+    const tested = spawnSync(process.execPath, ["--test", "modules/order_lines/module.test.ts"], { cwd: consumer, encoding: "utf8", env });
+    assert.equal(tested.status, 0, tested.stdout + tested.stderr);
+    assert.match(tested.stdout, /^ℹ pass 1$/m);
+    // tsc and @types/node from this repository, so the check needs no network.
+    symlinkSync(join(root, "node_modules/@types"), join(consumer, "node_modules/@types"), "dir");
+    const typed = spawnSync(join(root, "node_modules/.bin/tsc"), ["--noEmit", "-p", join(consumer, "tsconfig.json")], { cwd: consumer, encoding: "utf8" });
+    assert.equal(typed.status, 0, typed.stdout + typed.stderr);
+    // A second init in the same project is refused, and changes nothing.
+    const again = spawnSync(cli, ["init", "orders"], { cwd: consumer, encoding: "utf8" });
+    assert.equal(again.status, 1);
+    assert.match(again.stderr, /solarsql\.config\.ts exists/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
