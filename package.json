@@ -1,10 +1,28 @@
 {
   "name": "solarsql",
-  "version": "0.0.0",
-  "description": "Reserved.",
+  "version": "0.1.0",
+  "description": "Typed SQL for SQLite on Cloudflare D1 and Durable Objects: types from the real engine at build time, a command as one transaction, failures as values.",
+  "keywords": [
+    "cloudflare",
+    "workers",
+    "d1",
+    "durable-objects",
+    "sqlite",
+    "sql",
+    "typescript",
+    "migrations",
+    "typed-sql"
+  ],
   "license": "MIT",
   "author": "meganemura",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/meganemura/solarsql.git"
+  },
+  "homepage": "https://github.com/meganemura/solarsql#readme",
+  "bugs": "https://github.com/meganemura/solarsql/issues",
   "type": "module",
+  "sideEffects": false,
   "engines": {
     "node": ">=24.10.0"
   },
