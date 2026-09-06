@@ -67,6 +67,20 @@ for (const target of ["d1", "do"] as const) {
       });
     });
 
+    test("a bulk update from JSON rows, through one json_each parameter used twice", async () => {
+      const repriced = await value({ step: "reprice", id: "o1", lines: [{ id: "l1", price: 2 }, { id: "l2", price: 5 }] });
+      assert.deepEqual(repriced, { ok: true, rows: [{ id: "o1", customer_id: "c1", status: "draft", note: null }] });
+      const order = (await value({ step: "order", id: "o1" })) as { lines: { id: string; price: number }[] };
+      assert.deepEqual(order.lines.map((l) => [l.id, l.price]), [["l1", 2], ["l2", 5]]);
+      // A line of another order, or an unknown one, fails the assert and changes nothing.
+      const refused = await value({ step: "reprice", id: "o1", lines: [{ id: "l1", price: 9 }, { id: "nope", price: 9 }] });
+      assert.deepEqual(refused, { ok: false, kind: "assert", assert: "all_lines_known" });
+      const same = (await value({ step: "order", id: "o1" })) as { lines: { id: string; price: number }[] };
+      assert.deepEqual(same.lines.map((l) => l.price), [2, 5]);
+      // Back to the prices the later tests count on.
+      await value({ step: "reprice", id: "o1", lines: [{ id: "l1", price: 1.5 }, { id: "l2", price: 4 }] });
+    });
+
     test("asserts pass, then the second run names the failed assert", async () => {
       const first = await value({ step: "confirm", id: "o1" });
       assert.deepEqual(first, { ok: true, rows: [{ id: "o1", customer_id: "c1", status: "confirmed", note: null }] });

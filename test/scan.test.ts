@@ -127,8 +127,21 @@ describe("shapes", () => {
     assert.deepEqual(sites.get("name"), [{ kind: "compare", alias: null, column: "name" }]);
     const ins = paramSites("insert into orders (id, customer_id, status) values (:id, :customer_id, 'draft')");
     assert.deepEqual(ins.get("customer_id"), [{ kind: "insert", table: "orders", column: "customer_id" }]);
-    const other = paramSites("select value from json_each(:lines)");
-    assert.deepEqual(other.get("lines"), [{ kind: "other" }]);
+    const bare = paramSites("select value from json_each(:lines)");
+    assert.deepEqual(bare.get("lines"), [{ kind: "json_each", keys: [], scalar: null }]);
+    const ignore = paramSites("insert or ignore into orders (id, status) values (:id, 'draft')");
+    assert.deepEqual(ignore.get("id"), [{ kind: "insert", table: "orders", column: "id" }]);
+    const replace = paramSites("replace into orders (id, status) values (:id, 'draft')");
+    assert.deepEqual(replace.get("id"), [{ kind: "insert", table: "orders", column: "id" }]);
+    // json_each anywhere: the keys of `value ->> 'k'` in the same scope, each
+    // with the column it is compared with, set into, or listed for.
+    const bulk = paramSites("update order_lines set price = (select value ->> 'price' from json_each(:lines) where value ->> 'id' = order_lines.id) where order_id = :id and id in (select value ->> 'id' from json_each(:lines))");
+    assert.deepEqual(bulk.get("lines"), [
+      { kind: "json_each", keys: [{ key: "price", ref: { alias: null, column: "price" } }, { key: "id", ref: { alias: "order_lines", column: "id" } }], scalar: null },
+      { kind: "json_each", keys: [{ key: "id", ref: { alias: null, column: "id" } }], scalar: null },
+    ]);
+    const scalars = paramSites("insert into tags (id, line_id, name) select value, :line_id, 'x' from json_each(:ids)");
+    assert.deepEqual(scalars.get("ids"), [{ kind: "json_each", keys: [], scalar: { table: "tags", column: "id" } }]);
   });
 
   test("definitions splits columns and constraints", () => {

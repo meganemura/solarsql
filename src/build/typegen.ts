@@ -275,9 +275,17 @@ export class Typer {
   }
 
   // The type of one named parameter, from where it sits in the statement.
+  // Sites that name a column must agree on the base type. The parameter
+  // allows null when every such site does, or when `:p is null` appears.
+  // CASE lists union their literals. json_each sites union their keys.
   private paramType(sql: string, name: string, aliases: Map<string, string | null>, note: (r: Resolved) => Resolved): { type: string; encode: boolean } {
     const sites = paramSites(sql).get(name) ?? [];
     const types = new Set<string>();
+    const columnSites: Resolved[] = [];
+    const literals: string[] = [];
+    const jsonKeys = new Map<string, string>();
+    let jsonScalar: string | null = null;
+    let jsonSites = 0;
     let encode = false;
     let nullable = false;
     const withNull = (r: Resolved) => (r.nullable ? `${note(r).type} | null` : note(r).type);
@@ -307,8 +315,18 @@ export class Typer {
         types.add(`readonly { ${fields.join("; ")} }[]`);
         encode = true;
         continue;
+      } else if (site.kind === "json_each") {
+        encode = true;
+        jsonSites++;
+        for (const k of site.keys) {
+          const e = k.ref ? ofRef(k.ref.alias, k.ref.column) : null;
+          const type = e ? withNull(e) : "SqlValue";
+          if (!jsonKeys.has(k.key) || (jsonKeys.get(k.key) === "SqlValue" && type !== "SqlValue")) jsonKeys.set(k.key, type);
+        }
+        if (site.scalar) jsonScalar = withNull(this.column(site.scalar.table, site.scalar.column, sql));
+        continue;
       } else if (site.kind === "one_of") {
-        types.add(site.literals.map((l) => JSON.stringify(l)).join(" | "));
+        literals.push(...site.literals);
         continue;
       } else if (site.kind === "number") {
         types.add("number");
@@ -317,7 +335,19 @@ export class Typer {
         nullable = true;
         continue;
       }
-      if (r) types.add(withNull(r));
+      if (r) columnSites.push(note(r));
+    }
+    if (columnSites.length > 0) {
+      const bases = new Set(columnSites.map((r) => r.type));
+      if (bases.size > 1) throw new BuildError(`parameter :${name} is used with two different types: ${[...bases].join(" and ")}`, sql);
+      const base = [...bases][0]!;
+      types.add(columnSites.every((r) => r.nullable) ? `${base} | null` : base);
+    }
+    if (literals.length > 0) types.add([...new Set(literals)].map((l) => JSON.stringify(l)).join(" | "));
+    if (jsonSites > 0) {
+      if (jsonKeys.size > 0) types.add(`readonly { ${[...jsonKeys].map(([k, v]) => `${JSON.stringify(k)}: ${v}`).join("; ")} }[]`);
+      else if (jsonScalar !== null) types.add(`readonly ${jsonScalar}[]`);
+      else types.add("readonly SqlValue[]");
     }
     if (types.size > 1) throw new BuildError(`parameter :${name} is used with two different types: ${[...types].join(" and ")}`, sql);
     let type = types.size === 1 ? [...types][0]! : "SqlValue";
@@ -373,6 +403,8 @@ function updateTarget(sql: string): string | null {
   let i = 0;
   if (isKeyword(t[0], "insert")) {
     i = isKeyword(t[1], "or") ? 4 : 2;
+  } else if (isKeyword(t[0], "replace")) {
+    i = 2;
   } else if (isKeyword(t[0], "update")) {
     i = isKeyword(t[1], "or") ? 3 : 1;
   } else return null;

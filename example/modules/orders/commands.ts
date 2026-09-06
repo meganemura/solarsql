@@ -21,4 +21,15 @@ export const orderCommands = commands(generated, {
   annotate: {
     plan: ["update orders set note = :note where id = :id"],
   },
+  reprice: {
+    // The price of several lines of one order from one JSON array. Every id
+    // must belong to the order, or the whole command rolls back.
+    plan: [
+      `update order_lines
+       set price = (select value ->> 'price' from json_each(:lines) where value ->> 'id' = order_lines.id)
+       where order_id = :id and id in (select value ->> 'id' from json_each(:lines))`,
+      assert("all_lines_known", "changes() = json_array_length(:lines)"),
+    ],
+    returns: "select id, customer_id, status, note from orders where id = :id",
+  },
 });

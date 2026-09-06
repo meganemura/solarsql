@@ -229,20 +229,25 @@ function isReferencedKey(engine: Engine, m: Module, table: string, column: strin
 }
 
 // Rules a plan must follow: one type per parameter name across the plan,
-// and changes() only right after the statement it measures.
+// and changes() only right after the statement it measures. A parameter
+// the build could not place in one statement (SqlValue) takes the type,
+// and the JSON encoding, of its typed use elsewhere in the plan, so the
+// command's parameter object has one type and every statement binds the
+// value the same way.
 function checkCommands(m: Module, entries: readonly { key: string; analysis: Analysis }[]): void {
   const byKey = new Map(entries.map((e) => [e.key, e.analysis]));
+  // Where a statement's parameter was refined, so two commands that share
+  // the statement cannot pull it two ways.
+  const refined = new Map<string, Map<string, { type: string; command: string }>>();
   for (const c of m.commands) {
-    const types = new Map<string, { type: string; sql: string }>();
+    const types = new Map<string, { type: string; encode: boolean; sql: string }>();
     const keys = [...c.plan.map((i) => (typeof i === "string" ? i : i.predicate)), ...(c.returns ? [c.returns] : [])];
     for (const key of keys) {
       for (const p of byKey.get(key)!.params) {
         const seen = types.get(p.name);
-        // SqlValue is the type of a parameter the build could not place. A
-        // typed use elsewhere in the plan refines it.
         if (seen && p.type === "SqlValue") continue;
         if (seen && seen.type === "SqlValue") {
-          types.set(p.name, { type: p.type, sql: key });
+          types.set(p.name, { type: p.type, encode: p.encode, sql: key });
           continue;
         }
         if (seen && seen.type !== p.type) {
@@ -250,7 +255,20 @@ function checkCommands(m: Module, entries: readonly { key: string; analysis: Ana
             `command ${m.name}.${c.name}: parameter :${p.name} is ${seen.type} in one statement and ${p.type} in another.\n  ${seen.sql}\n  ${key}`,
           );
         }
-        types.set(p.name, { type: p.type, sql: key });
+        types.set(p.name, { type: p.type, encode: p.encode, sql: key });
+      }
+    }
+    for (const key of keys) {
+      for (const p of byKey.get(key)!.params) {
+        const t = types.get(p.name)!;
+        if (p.type !== "SqlValue" || t.type === "SqlValue") continue;
+        const earlier = refined.get(key)?.get(p.name);
+        if (earlier && earlier.type !== t.type) {
+          throw new BuildError(`parameter :${p.name} of this statement is ${earlier.type} in command ${m.name}.${earlier.command} and ${t.type} in command ${m.name}.${c.name}. Give the statement a type of its own, or split it.`, key);
+        }
+        p.type = t.type;
+        p.encode = t.encode;
+        refined.set(key, new Map([...(refined.get(key) ?? []), [p.name, { type: t.type, command: c.name }]]));
       }
     }
     for (const [i, item] of c.plan.entries()) {
