@@ -277,6 +277,7 @@ npx wrangler deploy
 ```
 
 `wrangler d1 migrations apply` takes the files of `example/migrations` in name order and keeps its own record of the applied ones.
+A trigger in a migration file opens with an uppercase `BEGIN`, whatever the declaration wrote: D1's HTTP API keeps a trigger body whole only then (ADR 0036).
 The Durable Object applies the same files with `migrate()` on its first request.
 
 The remote test sends the steps of the Miniflare test to the deployed Worker, on D1 and on the Durable Object, after a reset of both:

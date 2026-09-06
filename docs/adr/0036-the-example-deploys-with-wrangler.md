@@ -29,6 +29,14 @@ The steps are the ones the Miniflare test runs, from one shared file, so a diffe
 A deployed Worker answers anyone, and every step writes, so the Worker takes a token.
 The ids of the steps are fixed, and the stores keep their rows between runs, so a run starts with a reset.
 
+## What the first remote run found
+
+`wrangler d1 migrations apply --remote` refused the first migration file with `incomplete input: SQLITE_ERROR`, while the same file applied on Miniflare, on a Durable Object, and on node:sqlite.
+D1's HTTP API splits a request into statements on its own, and it keeps a trigger body whole only when the `BEGIN` that opens it is uppercase (workers-sdk issue 15314).
+Measured on the remote database: `begin` and `Begin` fail, `BEGIN` passes, and the case of `END` makes no difference.
+The migration writer now writes both keywords uppercase in every trigger, whatever the declaration wrote; the diff compares them case-insensitively, so nothing else changes.
+A Worker's own D1 binding takes one statement per call and is not affected.
+
 ## Consequences
 
 - The remote test is opt-in, and one HTTPS round trip per step makes it slow. CI does not run it.
