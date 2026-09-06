@@ -128,7 +128,7 @@ Section 1 attributed the extra reading of a solarsql run to four causes: the REA
 
 ### Setup
 
-The kit of section 1, the same task text, the same model, three runs per arm at once. The project files of both starters are byte-identical to section 1; the solarsql starter holds the changed library from the packed tarball, with a README of 217 lines (was 210). `metrics.py` gained a count of the reads of the generated file after the first build.
+The kit of section 1, the same task text, the same model, three runs per arm at once. The project files of both starters are the same as in section 1, except the header line of the generated files, which is one of the three changes; the solarsql starter holds the changed library from the packed tarball, with a README of 217 lines (was 210). `metrics.py` gained a count of the reads of the generated file after the first build.
 
 ### Results
 

@@ -23,12 +23,13 @@ copy of the solarsql-1 run, before its one `db.run`.
 `results/2026-09-06-exp1-rerun/` is experiment 1 run again on the library
 after the changes it prompted (the build prints what it added and removed,
 the generated file names the build command, the README opens with a
-recipe), with the starter's project files unchanged.
+recipe). The starter's project files are the same as in the first
+execution, except the header line of the generated files.
 
 ## Files
 
-- `build-starters.sh [work dir] [runs per arm]` builds both starters in a
-  work directory, checks them (visible tests green, hidden tests red on
+- `build-starters.sh [work dir] [runs per arm] [experiment]` builds both
+  starters in a work directory, checks them (visible tests green, hidden tests red on
   both), and copies each starter once per run. Drizzle is installed in the
   work directory only.
 - `task.md` is the task text; `{{DIR}}` is the run directory.
