@@ -40,36 +40,34 @@ export default config({
 
 Each message names the fix. The build stops at the first, and prints the statement under `in:`.
 
-| Message begins with | Fix |
+| The message contains | Fix |
 |---|---|
-| `column "x" is an expression with no type` | wrap the expression in `cast(... as integer)`, `cast(... as real)`, or `cast(... as text)` |
+| `is an expression with no type` | wrap the expression in `cast(... as integer)`, `cast(... as real)`, or `cast(... as text)` |
 | `json_group_array over the outer join alias` | add `filter (where <alias>.<column> is not null)` |
-| `the subquery "..." inside json yields JSON text` | wrap the subquery in `json(...)` |
-| `value "..." inside json has no type` | use a column reference, a cast, or `json((select json_group_array(...)))` |
+| `inside json yields JSON text` | wrap the subquery in `json(...)` |
+| `inside json has no type` | use a column reference, a cast, or `json((select json_group_array(...)))` |
 | `json_object key must be a string literal` | write the key as `'name'` |
-| `parameter :p is used with two different types` | give the two places one type, or use two parameters |
-| `parameter :p of this statement is` | the same statement text sits in two commands with two types; give it a type of its own, or split it |
-| `command m.c: assert a uses changes()` | put the assert right after the statement it counts |
+| `is used with two different types` | give the two places of the parameter one type, or use two parameters |
+| `of this statement is` | the same statement text sits in two commands with two types; give it a type of its own, or split it |
+| `uses changes(), which counts the statement right before it` | put the assert right after the statement it counts |
 | `use a named parameter (:name) instead of` | replace `?` with `:name` |
-| `module m reads t.c. Module o owns t` | read through the owner's `public.ts`, or declare `readsAll` for a report module |
-| `module m inserts into t`, `updates t`, `deletes from t` | a write into another module's table; move the statement to the owner |
-| `module m: view v reads t.c` / `module m: trigger x ...` | a view or a trigger body reaches another module's table; same fix |
-| `module m: module.ts imports ../o/module.ts` | import from `../o/public.ts` |
-| `table t has no primary key` | declare one: `id text primary key not null` |
-| `table t is not STRICT` | add `strict` after the closing parenthesis |
-| `table t is declared by module a and by module b` | one owner per table |
-| `column t.c has the declared type "x", which maps to no TypeScript type` | use `text`, `integer`, `real`, `blob`, or `any` |
-| `module m: table() needs one CREATE TABLE statement` (and `index()`, `view()`, `trigger()`, `search()`) | one CREATE statement per call; `search()` needs `using fts5(...)` |
-| `module m: trigger x is on t, which` | a trigger sits on a table or a view of its own module |
-| `module m: index i is on t, which` | an index sits on a table of its own module |
+| `Use its public.ts, or declare readsAll for a report module` | a read of another module's table: read through the owner's `public.ts`, or declare `readsAll` on a report module; a write (`inserts into`, `updates`, `deletes from`) moves to the owner |
+| `shows public.ts; import from there` | import from the other module's `public.ts` |
+| `has no primary key. Declare one` | `id text primary key not null` |
+| `is not STRICT. Add` | add `strict` after the closing parenthesis |
+| `is declared by module` | one owner per table |
+| `which maps to no TypeScript type` | use `text`, `integer`, `real`, `blob`, or `any` |
+| `needs one CREATE TABLE statement` (and `CREATE INDEX`, `CREATE VIEW`, `CREATE TRIGGER`, `CREATE VIRTUAL TABLE ... USING fts5(...)`) | one CREATE statement per call |
+| `A trigger belongs to the module of its table or view` | move the trigger to the owner of its table or view |
+| `An index belongs to the module of its table` | move the index to the owner of its table |
 | `schema:` | the engine refused the DDL; the rest is its own message |
-| `module m: solarsql.generated.ts is missing` | run `npx solarsql build` (a check writes nothing) |
+| `is missing. Run: npx solarsql build` | run the build; a check writes nothing |
 | `schema changed. Write the migration` | run `npx solarsql migration <name>` |
 | `migration blocked:` | a table both loses and gains a column, or a new column is `not null` without a default; split the change or add a default |
 | `generated files are stale` | run `npx solarsql build` |
-| `migration name must match [a-z0-9_]+` | rename |
-| `module name must match [a-z][a-z0-9_]*` | rename |
-| `... exists. init is for a project without one` | init never writes over a file; add a module by hand ([schema.md](schema.md)) |
+| `migration name must match` | rename: `[a-z0-9_]+` |
+| `module name must match` | rename: `[a-z][a-z0-9_]*` |
+| `exists. init is for a project without one` | init never writes over a file; add a module by hand ([schema.md](schema.md)) |
 
 A statement that does not prepare fails with the engine's own message, such as `no such column: x`, under the module and the statement.
 
