@@ -211,8 +211,9 @@ export function created(sql: string): { kind: "table" | "index" | "trigger" | "v
   return { kind, name: unquote(name.text) };
 }
 
-// The name, the event, and the table of a CREATE TRIGGER statement, else null.
-export function triggerTarget(sql: string): { name: string; event: "insert" | "update" | "delete"; table: string } | null {
+// The name, the event, the columns of `update of c1, c2`, and the table of a
+// CREATE TRIGGER statement, else null.
+export function triggerTarget(sql: string): { name: string; event: "insert" | "update" | "delete"; columns: string[]; table: string } | null {
   const t = significant(tokenize(sql));
   const c = created(sql);
   if (!c || c.kind !== "trigger") return null;
@@ -225,10 +226,18 @@ export function triggerTarget(sql: string): { name: string; event: "insert" | "u
   const event = eventTok.text.toLowerCase();
   if (event !== "insert" && event !== "update" && event !== "delete") return null;
   i++;
+  const columns: string[] = [];
+  if (event === "update" && isKeyword(t[i], "of")) {
+    i++;
+    while (t[i] && !isKeyword(t[i], "on")) {
+      if (t[i]!.type === "ident") columns.push(unquote(t[i]!.text));
+      i++;
+    }
+  }
   while (t[i] && !isKeyword(t[i], "on")) i++;
   const table = t[i + 1];
   if (!table || table.type !== "ident") return null;
-  return { name: c.name, event, table: unquote(table.text) };
+  return { name: c.name, event, columns, table: unquote(table.text) };
 }
 
 // Split a token range at top-level commas (depth equal to the depth of the

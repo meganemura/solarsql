@@ -140,12 +140,27 @@ describe("solarsql build", () => {
     }
   });
 
-  test("a trigger body that writes another module's table is refused", async () => {
+  test("a trigger body that writes another module's table is refused, also under UPDATE OF", async () => {
+    for (const head of ["after update on orders", "after update of note on orders", "before delete on orders", "after insert on orders"]) {
+      const dir = copy();
+      try {
+        const schema = join(dir, "example/modules/orders/schema.ts");
+        const body = readFileSync(schema, "utf8").replace("after update on orders", head).replace("update orders set updated_at", "update customers set name = 'x' where id = new.customer_id;\n    update orders set updated_at");
+        // A DELETE trigger sees old, not new.
+        writeFileSync(schema, head.includes("delete") ? body.replace(/new\./g, "old.") : body);
+        await expectBuildError(dir, /module orders: trigger orders_touch updates customers\. Module customers owns customers/);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test("a trigger body the engine refuses is reported with its text", async () => {
     const dir = copy();
     try {
       const schema = join(dir, "example/modules/orders/schema.ts");
-      writeFileSync(schema, readFileSync(schema, "utf8").replace("update orders set updated_at", "update customers set name = 'x' where id = new.customer_id;\n    update orders set updated_at"));
-      await expectBuildError(dir, /module orders: trigger orders_touch updates into customers\. Module customers owns customers/);
+      writeFileSync(schema, readFileSync(schema, "utf8").replace("after update on orders", "after delete on orders"));
+      await expectBuildError(dir, /module orders: trigger orders_touch: no such column: new\.id\n  in: create trigger orders_touch after delete on orders/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -156,7 +171,22 @@ describe("solarsql build", () => {
     try {
       const schema = join(dir, "example/modules/orders/schema.ts");
       writeFileSync(schema, readFileSync(schema, "utf8").replace("after update on orders", "after update on customers"));
-      await expectBuildError(dir, /module orders: trigger orders_touch is on table customers, which module customers owns/);
+      await expectBuildError(dir, /module orders: trigger orders_touch is on customers, which module customers owns/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an INSTEAD OF trigger on a view of the module is checked like a table trigger", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/orders/schema.ts");
+      const own = `\nexport const notes = view("create view order_notes as select id, note from orders");\nexport const notesInsert = trigger("create trigger order_notes_insert instead of insert on order_notes begin update orders set note = new.note where id = new.id; end");\n`;
+      writeFileSync(schema, readFileSync(schema, "utf8").replace("import { index, table, trigger }", "import { index, table, trigger, view }") + own);
+      await build(join(dir, "example/solarsql.config.ts"));
+      const reports = join(dir, "example/modules/reports/schema.ts");
+      writeFileSync(reports, readFileSync(reports, "utf8").replace('import { view }', 'import { trigger, view }') + `\nexport const drop = trigger("create trigger confirmed_delete instead of delete on confirmed_orders begin delete from orders where id = old.id; end");\n`);
+      await expectBuildError(dir, /module reports: trigger confirmed_delete deletes from orders\. Module orders owns orders/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

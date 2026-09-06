@@ -163,17 +163,24 @@ export async function build(configPath: string, options: BuildOptions = {}): Pro
       if (!c || c.kind !== "view") throw new BuildError(`module ${m.name}: view() needs one CREATE VIEW statement`, sql);
     }
   }
-  // A trigger sits on a table of its own module.
+  // A trigger sits on a table or a view of its own module.
+  const viewOwner = new Map<string, Module>();
+  for (const m of modules) for (const sql of m.views) viewOwner.set(created(sql)!.name, m);
   for (const m of modules) {
     for (const sql of m.triggers) {
       const t = triggerTarget(sql);
-      if (!t) throw new BuildError(`module ${m.name}: trigger() needs one CREATE TRIGGER statement with BEFORE, AFTER, or INSTEAD OF, an event, and ON <table>`, sql);
-      const o = owner.get(t.table);
-      if (o !== m) throw new BuildError(`module ${m.name}: trigger ${t.name} is on table ${t.table}, which ${o ? `module ${o.name} owns` : "no module declares"}. A trigger belongs to the module of its table.`, sql);
+      if (!t) throw new BuildError(`module ${m.name}: trigger() needs one CREATE TRIGGER statement with BEFORE, AFTER, or INSTEAD OF, an event, and ON <table or view>`, sql);
+      const o = owner.get(t.table) ?? viewOwner.get(t.table);
+      if (o !== m) throw new BuildError(`module ${m.name}: trigger ${t.name} is on ${t.table}, which ${o ? `module ${o.name} owns` : "no module declares"}. A trigger belongs to the module of its table or view.`, sql);
     }
   }
 
-  const engine = new Engine(declaredDdl(modules));
+  let engine: Engine;
+  try {
+    engine = new Engine(declaredDdl(modules));
+  } catch (e) {
+    throw new BuildError(`schema: ${(e as Error).message}`);
+  }
   try {
     const brands = new Map<string, Brand>();
     for (const t of engine.tables()) {
@@ -277,7 +284,7 @@ function checkBoundary(engine: Engine, m: Module, owner: Map<string, Module>, sq
     if (!o || table === GUARD_TABLE || o === m) continue;
     if (a.action === "read" && m.readsAll) continue;
     if (a.action === "read" && a.column && isReferencedKey(engine, m, table, a.column)) continue;
-    const what = a.action === "read" ? `reads ${table}.${a.column}` : `${a.action}s into ${table}`;
+    const what = a.action === "read" ? `reads ${table}.${a.column}` : a.action === "insert" ? `inserts into ${table}` : a.action === "update" ? `updates ${table}` : `deletes from ${table}`;
     const who = subject ? `module ${m.name}: ${subject}` : `module ${m.name}`;
     throw new BuildError(`${who} ${what}. Module ${o.name} owns ${table}. Use its public.ts, or declare readsAll for a report module.`, subject ? undefined : sql);
   }
@@ -286,13 +293,24 @@ function checkBoundary(engine: Engine, m: Module, owner: Map<string, Module>, sq
 // The engine compiles a trigger body with the statement that fires it, and
 // the authorizer reports the body's accesses with the trigger's name. So a
 // statement of the trigger's event is prepared, and the accesses it
-// reports through the trigger are checked.
+// reports through the trigger are checked. An `update of c1, c2` trigger
+// is compiled only when the statement sets one of those columns, so the
+// statement sets the first of them.
 function checkTriggerBoundary(engine: Engine, m: Module, owner: Map<string, Module>, sql: string): void {
   const t = triggerTarget(sql)!;
   const table = quoteIdent(t.table);
-  const first = quoteIdent(engine.table(t.table).columns[0]!.name);
-  const firing = t.event === "insert" ? `insert into ${table} default values` : t.event === "delete" ? `delete from ${table}` : `update ${table} set ${first} = ${first}`;
-  checkBoundary(engine, m, owner, firing, `trigger ${t.name}`, t.name);
+  const column = t.columns[0] ?? engine.firstSettableColumn(t.table);
+  if (column === null) throw new BuildError(`module ${m.name}: trigger ${t.name}: ${t.table} has no column to set`, sql);
+  const set = quoteIdent(column);
+  const firing = t.event === "insert" ? `insert into ${table} default values` : t.event === "delete" ? `delete from ${table}` : `update ${table} set ${set} = ${set}`;
+  // The engine checks a trigger body when it compiles the body into a
+  // statement, not at CREATE TRIGGER, so its message arrives here.
+  try {
+    checkBoundary(engine, m, owner, firing, `trigger ${t.name}`, t.name);
+  } catch (e) {
+    if (e instanceof BuildError) throw e;
+    throw new BuildError(`module ${m.name}: trigger ${t.name}: ${(e as Error).message}`, sql);
+  }
 }
 
 function isReferencedKey(engine: Engine, m: Module, table: string, column: string): boolean {
