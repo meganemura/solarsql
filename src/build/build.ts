@@ -13,7 +13,7 @@ import { GUARD_DDL, GUARD_TABLE, assertStatement } from "../runtime/plan.ts";
 import { GENERATED_FILE, emitGenerated, emitMigrationsIndex, emitStub } from "./emit.ts";
 import { Engine } from "./facts.ts";
 import { applied, diff, introspect, open, render } from "./migration.ts";
-import { created, quoteIdent, triggerTarget } from "./scan.ts";
+import { created, indexTarget, quoteIdent, triggerTarget } from "./scan.ts";
 import { BuildError, Typer, brandName, type Analysis, type Brand } from "./typegen.ts";
 
 export type Module = {
@@ -171,6 +171,16 @@ export async function build(configPath: string, options: BuildOptions = {}): Pro
     for (const sql of m.views) {
       const c = created(sql);
       if (!c || c.kind !== "view") throw new BuildError(`module ${m.name}: view() needs one CREATE VIEW statement`, sql);
+    }
+  }
+  // An index sits on a table of its own module: it is part of that table's
+  // shape, and the migration of the owner carries it.
+  for (const m of modules) {
+    for (const sql of m.indexes) {
+      const target = indexTarget(sql);
+      if (!target) throw new BuildError(`module ${m.name}: index() needs one CREATE INDEX statement with ON <table>`, sql);
+      const o = owner.get(target.table);
+      if (o !== m) throw new BuildError(`module ${m.name}: index ${target.name} is on ${target.table}, which ${o ? `module ${o.name} owns` : "no module declares"}. An index belongs to the module of its table.`, sql);
     }
   }
   // A trigger sits on a table or a view of its own module.

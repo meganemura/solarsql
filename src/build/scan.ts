@@ -215,6 +215,18 @@ export function created(sql: string): { kind: "table" | "index" | "trigger" | "v
   return { kind: kind as "table" | "index" | "trigger" | "view" | "virtual", name: unquote(name.text) };
 }
 
+// The name and the table of a CREATE INDEX statement, else null.
+export function indexTarget(sql: string): { name: string; table: string } | null {
+  const t = significant(tokenize(sql));
+  const c = created(sql);
+  if (!c || c.kind !== "index") return null;
+  let i = t.findIndex((tok) => tok.type === "ident" && unquote(tok.text) === c.name && tok.depth === 0) + 1;
+  if (i === 0 || !isKeyword(t[i], "on")) return null;
+  const table = t[i + 1];
+  if (!table || table.type !== "ident") return null;
+  return { name: c.name, table: unquote(table.text) };
+}
+
 // The name, the event, the columns of `update of c1, c2`, and the table of a
 // CREATE TRIGGER statement, else null.
 export function triggerTarget(sql: string): { name: string; event: "insert" | "update" | "delete"; columns: string[]; table: string } | null {
