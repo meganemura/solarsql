@@ -35,7 +35,7 @@ If you want to cite an internal document, write its substance in place instead.
 - Do not add dependencies without the owner's approval. Pin exact versions. Prefer language-official packages, then vendor packages, and avoid single-maintainer packages.
 - Write tests with Hegel (`@hegeldev/hegel`, property-based) wherever a property exists: round trips, invariants, bounds, equivalence. Example-based tests cover exact output and command behavior.
 - Keep the inner loop synchronous and in-process: `node:sqlite` for type checks and unit tests. Use Miniflare only in CI and in opt-in tests.
-- Comments say why, not what. Each module starts with its responsibility and its boundary.
+- Comments say why: the constraint, or the alternative that was refused. Each module starts with its responsibility and its boundary.
 - `.claude-team/` holds task specs and reports. It is gitignored. Never reference it from committed content.
 - The npm package `solarsql` is reserved at 0.0.0 with no code. Do not publish without the owner's explicit approval.
 

@@ -51,7 +51,6 @@ describe("D1 batch with a guard table", () => {
       },
       { sql: "update orders set status = 'confirmed' where id = 'o1'" },
     ]);
-    console.log("failed batch reply:", JSON.stringify(reply));
     assert.equal(reply.ok, false);
     if (reply.ok) return;
     assert.match(reply.message, /not_confirmable/);
@@ -99,7 +98,6 @@ describe("D1 batch with a guard table", () => {
       { sql: "update orders set status = 'confirmed' where id = 'o4' and status = 'draft'" },
       { sql: "insert into solarsql_assert (name, ok) select 'one_row_updated', changes() = 1" },
     ]);
-    console.log("changes() assert reply:", JSON.stringify(second));
     assert.equal(second.ok, false);
     if (second.ok) return;
     assert.match(second.message, /one_row_updated/);
@@ -117,7 +115,6 @@ describe("D1 batch with a guard table", () => {
           .bind("o5"),
       ]),
       (e: unknown) => {
-        console.log("getD1Database() error:", JSON.stringify({ message: (e as Error).message, cause: String((e as Error).cause) }));
         return /not_confirmable/.test((e as Error).message);
       },
     );

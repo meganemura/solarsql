@@ -34,7 +34,7 @@ export default config({
 });
 ```
 
-`readsAll` lets a module read every table; it is for reports. `library` (default `"solarsql"`) is the import specifier the generated files use.
+`readsAll` lets a report module read every table. `library` (default `"solarsql"`) is the import specifier the generated files use.
 
 ## Messages
 

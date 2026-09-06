@@ -1,6 +1,6 @@
 # ADR 0030: The program model stays with the caller, and failures are values
 
-Status: accepted (2026-09-06). Supersedes the last paragraph of ADR 0023: a constraint failure is a value too.
+Status: accepted (2026-09-06). Supersedes the last paragraph of ADR 0023: a constraint failure is a value too. Extended by ADR 0039: the observe hook carries D1's meta.
 
 ## Context
 

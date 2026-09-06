@@ -27,5 +27,5 @@ A user's module test runs in milliseconds, with no runtime to start.
 ## Consequences
 
 - The adapter is for Node. A Worker imports `solarsql/d1` or `solarsql/durable`.
-- Miniflare stays the check of the D1 batch and of the Durable Object transaction; those are the library's tests, not the user's.
+- Miniflare stays the check of the D1 batch and of the Durable Object transaction, in the library's own tests.
 - A behavior that differs between node:sqlite and D1 is a bug of the library, to be caught by its Miniflare tests.

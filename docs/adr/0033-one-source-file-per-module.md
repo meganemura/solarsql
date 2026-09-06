@@ -27,5 +27,5 @@ The generated file stays a file of its own because the build rewrites it whole.
 ## Consequences
 
 - An agent opens three files per module instead of five. The measurement kit of v3 re-measures this.
-- A long module is one long file. A module that grows past reading in one sitting is a module to split by its tables (ADR 0008), not by file kind.
+- A long module is one long file. A module that grows past reading in one sitting is split by its tables (ADR 0008).
 - The experiment starters and the example follow the new layout.
