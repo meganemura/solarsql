@@ -245,6 +245,7 @@ npx solarsql migration <name>
 ```
 
 This writes `migrations/NNNN_<name>.sql` with the difference between the migration files and the schema, in the format wrangler applies.
+`migrations/index.ts` is the same files as one module, for a Durable Object; every build keeps it in step with the files.
 A table rebuild, for a constraint change, runs inside one transaction and keeps the rows and the foreign keys.
 A changed view or trigger is dropped and created again; a rebuild drops every view first, because a rename under a view fails.
 A changed search table is dropped and created again, and starts empty: the table it indexes keeps its rows, and the search rows must be inserted again.

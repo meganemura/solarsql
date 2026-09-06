@@ -76,6 +76,30 @@ describe("solarsql build", () => {
     }
   });
 
+  test("the migrations index follows the .sql files, and a check reports it stale", async () => {
+    const dir = copy();
+    try {
+      const index = join(dir, "example/migrations/index.ts");
+      const file = join(dir, "example/migrations/0002_orders_customer_id.sql");
+      const before = readFileSync(index, "utf8");
+      assert.equal((await build(join(dir, "example/solarsql.config.ts"), { write: false })).index.changed, false);
+      // An edit that keeps the schema: a comment line in one migration file.
+      writeFileSync(file, `${readFileSync(file, "utf8")}-- applied on the second of the month\n`);
+      const checked = await build(join(dir, "example/solarsql.config.ts"), { write: false });
+      assert.deepEqual(checked.index, { path: index, changed: true });
+      assert.equal(readFileSync(index, "utf8"), before);
+      const written = await build(join(dir, "example/solarsql.config.ts"));
+      assert.equal(written.index.changed, true);
+      assert.match(readFileSync(index, "utf8"), /applied on the second of the month/);
+      // Without an index at all, the build writes one.
+      rmSync(index);
+      await build(join(dir, "example/solarsql.config.ts"));
+      assert.match(readFileSync(index, "utf8"), /0004_search\.sql/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a changed statement is reported as one removed and one added", async () => {
     const dir = copy();
     try {
