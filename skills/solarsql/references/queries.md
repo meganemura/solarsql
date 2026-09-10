@@ -55,7 +55,7 @@ A parameter compared with a column of a view is `SqlValue`; compare with the tab
 | a column of a view | the type of the column the view selects |
 | an expression: `count(*)`, `sum(x)`, `a + b`, `bm25(t)`, a window function, a `case`, a subquery | needs `cast(... as integer \| real \| text)`; the build refuses it without one |
 | `cast(expr as T)` | `T \| null` |
-| `cast(count(...) as integer)`, `total(...)`, `row_number()`, `rank()`, `dense_rank()`, `ntile(...)`, `exists (...)`, `not exists (...)`, `coalesce(x, <literal>)`, `coalesce(x, <not null column>)` | `T`, never null |
+| `cast(<shape> as T)` where the whole `<shape>` is `count(...)`, `total(...)`, `row_number()`, `rank()`, `dense_rank()`, `ntile(...)`, `exists (...)`, `not exists (...)`, `coalesce(x, <literal>)`, or `coalesce(x, <not null column>)`, such as `cast(coalesce(b.n, 0) as integer)` | `T`, never null |
 | `json_group_array(json_object('k', c, ...))` | `{ k: T; ... }[]`, parsed by the adapter |
 | `json_group_array(c)` | `T[]` |
 | `json_object('k', c, ...)` | `{ k: T; ... }` |
