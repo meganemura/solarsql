@@ -25,6 +25,12 @@ Every build keeps `index.ts` in step with the `.sql` files.
 The order in a file: drop views, drop triggers and indexes, drop tables, change tables, create search tables, create indexes, views, and triggers.
 A trigger in a migration file opens with an uppercase `BEGIN`, whatever the declaration wrote: D1's HTTP API keeps a trigger body whole only then.
 
+## A project where every database starts empty
+
+A test, or a query layer on an in-memory database, applies every migration file to an empty database each time, so the history of files has no reader.
+Such a project may keep one file and rewrite it on each schema change: delete `migrations/`, run `npx solarsql migration initial`, then `npx solarsql build`.
+A database that a file has reached needs the next file instead: it records the files it applied by name, and a rewritten first file is not applied again. A D1 database after `wrangler d1 migrations apply` is one.
+
 ## Files written by hand
 
 The build applies every `.sql` file of the directory in name order to compute the current schema, so a file written by hand is fine when it changes no schema: a data backfill, an `update`, a `delete`. Name it in the sequence, `0005_backfill.sql`, and the next build rewrites `index.ts`.
