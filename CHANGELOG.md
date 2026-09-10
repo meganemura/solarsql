@@ -2,7 +2,7 @@
 
 The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0, a minor version may change the API; the entry says what changed.
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-09-10)
 
 The first release.
 
