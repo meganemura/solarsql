@@ -18,6 +18,7 @@ The files are ES modules; a package.json that says `"type": "commonjs"` gets a n
 ## build
 
 The build imports every module of `solarsql.config.ts`, applies the schema to an in-memory SQLite, prepares every statement on it, and writes `solarsql.generated.ts` next to each module.
+A generated file that is missing gets a stub before the import, so a fresh clone builds whatever the modules import from each other, and a configuration file that imports a module builds too.
 It prints `wrote` or `current` per module, a `+` line per statement added and a `-` line per statement removed, `scan` lines for full scans, and `migrations are current`, or the statements a migration would hold.
 The generated file is keyed by the SQL text: a statement whose text changed has no entry, and `tsc` fails at the call site until the build runs again. Commit the generated file.
 
@@ -62,6 +63,7 @@ Each message names the fix. The build stops at the first, and prints the stateme
 | `An index belongs to the module of its table` | move the index to the owner of its table |
 | `schema:` | the engine refused the DDL; the rest is its own message |
 | `is missing. Run: npx solarsql build` | run the build; a check writes nothing |
+| `is not in modules` | the configuration imports a module it does not list; add the module's directory to `modules` |
 | `schema changed. Write the migration` | run `npx solarsql migration <name>` |
 | `migration blocked:` | a table both loses and gains a column, or a new column is `not null` without a default; split the change or add a default |
 | `generated files are stale` | run `npx solarsql build` |
