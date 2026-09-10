@@ -2,7 +2,7 @@
 
 The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0, a minor version may change the API; the entry says what changed.
 
-## 0.3.0 (unreleased)
+## 0.3.0 (2026-09-11)
 
 - Added: `changes` in the result of `db.run`: `{ ok: true; rows; changes }`, the rows the plan's statements inserted, updated, or deleted, their triggers' rows included, as D1's `meta.changes` counts them; an assert and `returns` add nothing (ADR 0042). The deployed example Worker reports it after a redeploy.
 - Added: `solarsql build` prints a `reads` line per query of a module with `readsAll`, with the tables the query reads, and the time each module took to import and to type; a `time` line gives the whole build.
