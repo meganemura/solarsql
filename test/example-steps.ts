@@ -16,7 +16,7 @@ export type Value = (body: Record<string, unknown>) => Promise<unknown>;
 export function exampleSteps(value: Value, options: { oneIsolate: boolean; engineMeta: boolean }): void {
   test("a command with returns gives typed rows", async () => {
     const created = await value({ step: "createCustomer", id: "c1", name: "Ann", email: "ann@example.com" });
-    assert.deepEqual(created, { ok: true, rows: [{ id: "c1", name: "Ann", email: "ann@example.com" }] });
+    assert.deepEqual(created, { ok: true, rows: [{ id: "c1", name: "Ann", email: "ann@example.com" }], changes: 1 });
   });
 
   test("a plan inserts a parent and its children from JSON in one transaction", async () => {
@@ -29,7 +29,7 @@ export function exampleSteps(value: Value, options: { oneIsolate: boolean; engin
         { id: "l2", sku: "B", qty: 1, price: 4 },
       ],
     });
-    assert.deepEqual(placed, { ok: true, rows: [{ id: "o1", customer_id: "c1", status: "draft", note: null }] });
+    assert.deepEqual(placed, { ok: true, rows: [{ id: "o1", customer_id: "c1", status: "draft", note: null }], changes: 7 });
   });
 
   test("a JSON aggregation arrives as an array", async () => {
@@ -46,7 +46,7 @@ export function exampleSteps(value: Value, options: { oneIsolate: boolean; engin
 
   test("a bulk update from JSON rows, through one json_each parameter used twice", async () => {
     const repriced = await value({ step: "reprice", id: "o1", lines: [{ id: "l1", price: 2 }, { id: "l2", price: 5 }] });
-    assert.deepEqual(repriced, { ok: true, rows: [{ id: "o1", customer_id: "c1", status: "draft", note: null }] });
+    assert.deepEqual(repriced, { ok: true, rows: [{ id: "o1", customer_id: "c1", status: "draft", note: null }], changes: 2 });
     const order = (await value({ step: "order", id: "o1" })) as { lines: { id: string; price: number }[] };
     assert.deepEqual(order.lines.map((l) => [l.id, l.price]), [["l1", 2], ["l2", 5]]);
     // A line of another order, or an unknown one, fails the assert and changes nothing.
@@ -69,7 +69,7 @@ export function exampleSteps(value: Value, options: { oneIsolate: boolean; engin
 
   test("asserts pass, then the second run names the failed assert", async () => {
     const first = await value({ step: "confirm", id: "o1" });
-    assert.deepEqual(first, { ok: true, rows: [{ id: "o1", customer_id: "c1", status: "confirmed", note: null }] });
+    assert.deepEqual(first, { ok: true, rows: [{ id: "o1", customer_id: "c1", status: "confirmed", note: null }], changes: 2 });
     const second = await value({ step: "confirm", id: "o1" });
     assert.deepEqual(second, { ok: false, kind: "assert", assert: "was_draft" });
   });
@@ -95,8 +95,10 @@ export function exampleSteps(value: Value, options: { oneIsolate: boolean; engin
   });
 
   test("a nullable parameter accepts null, and the trigger stamps the update", async () => {
-    const noted = (await value({ step: "annotate", id: "o1", note: "rush" })) as { ok: true; rows: { id: string; note: string | null; updated_at: string | null }[] };
+    const noted = (await value({ step: "annotate", id: "o1", note: "rush" })) as { ok: true; rows: { id: string; note: string | null; updated_at: string | null }[]; changes: number };
     assert.equal(noted.rows[0]!.note, "rush");
+    // The update, the stamp trigger's update, and the search table's triggers: the same count on every adapter.
+    assert.equal(noted.changes, 8);
     assert.match(noted.rows[0]!.updated_at ?? "", /^\d{4}-\d{2}-\d{2}T/);
     const cleared = (await value({ step: "annotate", id: "o1", note: null })) as { ok: true; rows: { note: string | null }[] };
     assert.equal(cleared.rows[0]!.note, null);
@@ -174,14 +176,14 @@ export function exampleSteps(value: Value, options: { oneIsolate: boolean; engin
   });
 
   test("a reset empties the tables of both modules, the search rows too", async () => {
-    assert.deepEqual(await value({ step: "reset" }), { ok: true, rows: [] });
+    assert.deepEqual(await value({ step: "reset" }), { ok: true, rows: [], changes: 1 });
     assert.deepEqual(await value({ step: "customers" }), []);
     assert.deepEqual(await value({ step: "ordersOf", customer_id: "c1" }), []);
     await value({ step: "createCustomer", id: "c1", name: "Ann", email: "ann@example.com" });
     await value({ step: "placeOrder", id: "o1", customer_id: "c1", lines: [] });
     await value({ step: "annotate", id: "o1", note: "gift" });
     assert.deepEqual((await value({ step: "searchNotes", query: "gift" }) as { id: string }[]).map((h) => h.id), ["o1"]);
-    assert.deepEqual(await value({ step: "reset" }), { ok: true, rows: [] });
+    assert.deepEqual(await value({ step: "reset" }), { ok: true, rows: [], changes: 1 });
     assert.deepEqual(await value({ step: "searchNotes", query: "gift" }), []);
   });
 }

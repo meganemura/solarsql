@@ -198,7 +198,7 @@ export type ConstraintFailure =
 // rejects a row are normal outcomes, and both arrive as values with one
 // discriminant. Every other engine error is thrown.
 export type CommandResult<C> = C extends Command<infer G, infer P>
-  ? { ok: true; rows: PlanRows<G, P>[] } | { ok: false; kind: "assert"; assert: PlanAsserts<P> } | ({ ok: false } & ConstraintFailure)
+  ? { ok: true; rows: PlanRows<G, P>[]; changes: number } | { ok: false; kind: "assert"; assert: PlanAsserts<P> } | ({ ok: false } & ConstraintFailure)
   : never;
 
 // What the observe hook of an adapter receives after each query, batch of

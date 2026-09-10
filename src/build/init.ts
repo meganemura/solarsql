@@ -135,7 +135,7 @@ test("create, then finish once", async () => {
   migrate(raw, migrations);
   const db = node(raw);
   const id = newId<${id}>();
-  assert.deepEqual(await db.run(${c}Commands.create, { id, name: "first" }), { ok: true, rows: [{ id, name: "first", done: 0 }] });
+  assert.deepEqual(await db.run(${c}Commands.create, { id, name: "first" }), { ok: true, rows: [{ id, name: "first", done: 0 }], changes: 1 });
   assert.equal((await db.run(${c}Commands.finish, { id })).ok, true);
   assert.deepEqual(await db.run(${c}Commands.finish, { id }), { ok: false, kind: "assert", assert: "was_open" });
   assert.deepEqual(await db.all(${c}Queries.all), [{ id, name: "first", done: 1 }]);

@@ -52,7 +52,7 @@ export const orderCommands = commands(generated, {
 `db.run(command, params)` gives `CommandResult<typeof command>`:
 
 ```ts
-{ ok: true; rows: Row[] }                                    // rows of `returns`, or []
+{ ok: true; rows: Row[]; changes: number }                   // rows of `returns`, or [], and rows changed
 | { ok: false; kind: "assert"; assert: "has_lines" | "was_draft" }
 | { ok: false; kind: "unique"; table: string; columns: string[] }
 | { ok: false; kind: "check"; constraint: string }
@@ -63,6 +63,7 @@ export const orderCommands = commands(generated, {
 
 A failed assert and a rejected row are values with one `kind`, and nothing of the plan stays written. Every other engine error is thrown.
 `kind: "assert"` carries the union of the plan's assert names, so a `switch` on it is exhaustive.
+`changes` counts the rows the plan's statements inserted, updated, or deleted, the rows their triggers wrote included, as D1's `meta.changes` counts them, where an assert's `changes()` leaves a trigger's rows out; an assert and `returns` add nothing, and a plan that changed nothing gives 0.
 
 ## What a plan may touch
 
