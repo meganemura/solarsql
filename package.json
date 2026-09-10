@@ -1,6 +1,6 @@
 {
   "name": "solarsql",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Typed SQL for SQLite on Cloudflare D1 and Durable Objects: types from the real engine at build time, a command as one transaction, failures as values.",
   "keywords": [
     "cloudflare",
