@@ -20,10 +20,10 @@ The migration files are `migrations/NNNN_<name>.sql` and `migrations/index.ts`.
 Load the reference of the step before you edit.
 
 1. **Start a project**: `npx solarsql init <module>`. What it writes and what it refuses: [references/build.md](references/build.md).
-2. **Change the schema**: edit `table()`, `index()`, `view()`, `trigger()`, or `search()` in `module.ts`, then `npx solarsql build`, then `npx solarsql migration <name>`. Rules and types of the DDL: [references/schema.md](references/schema.md). What the migration contains: [references/migrations.md](references/migrations.md).
+2. **Change the schema**: edit `table()`, `index()`, `view()`, `trigger()`, or `search()` in `module.ts`, then `npx solarsql build`, then `npx solarsql migration <name>`. Rules and types of the DDL: [references/schema.md](references/schema.md). What the migration contains, and one file for a project where every database starts empty: [references/migrations.md](references/migrations.md).
 3. **Add a query**: a key in `queries(generated, { ... })`, then `npx solarsql build`. How a parameter and a column get their types, and the recipes for lists, rows, optional filters, sorting, paging, JSON, and search: [references/queries.md](references/queries.md).
-4. **Add a command**: a key in `commands(generated, { ... })` with `plan`, asserts, and `returns`, then `npx solarsql build`. Plans, asserts, results by `kind`, and what a plan may touch: [references/commands.md](references/commands.md).
-5. **Run it**: `d1(env.DB)`, `durable(ctx.storage)`, or `node(db)`; `db.all`, `db.first`, `db.run`, `db.batch`; the tables a query or a command reads, in `meta.reads`; the observe hook; ids; a module's test: [references/running.md](references/running.md).
+4. **Add a command**: a key in `commands(generated, { ... })` with `plan`, asserts, and `returns`, then `npx solarsql build`. Plans, asserts, results by `kind` with the rows the plan changed, and what a plan may touch: [references/commands.md](references/commands.md).
+5. **Run it**: `d1(env.DB)`, `durable(ctx.storage)`, or `node(db)`; `db.all`, `db.first`, `db.run`, `db.batch`; `Row` and `Params` outside the module; the tables a query or a command reads, in `meta.reads`; the observe hook; ids; a module's test: [references/running.md](references/running.md).
 6. **Read a build message**: the message names the fix. The table of messages: [references/build.md](references/build.md).
 7. **Deploy the example** and run its steps on remote D1 and a Durable Object: [references/deploy.md](references/deploy.md).
 

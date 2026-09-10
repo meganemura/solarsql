@@ -63,6 +63,9 @@ export function d1(binding: D1Like, options: AdapterOptions = {}): Database {
           if (constraint !== null) return { ok: false, ...constraint } as CommandResult<C>;
           throw e;
         }
+        // One reply per statement, in plan order. An assert is a guard-table
+        // insert and would count 1, so only the plan's SQL strings are summed;
+        // a reply without a number counts 0.
         const changes = command.plan.reduce((sum, item, i) => {
           if (typeof item !== "string") return sum;
           const value = (results[i]?.meta as { changes?: unknown } | undefined)?.changes;

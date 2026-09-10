@@ -196,7 +196,8 @@ export type ConstraintFailure =
 
 // The result of a command. An assert that yields 0 and a constraint that
 // rejects a row are normal outcomes, and both arrive as values with one
-// discriminant. Every other engine error is thrown.
+// discriminant. Every other engine error is thrown. `changes` is the rows
+// the plan changed, as D1 counts them (ADR 0042).
 export type CommandResult<C> = C extends Command<infer G, infer P>
   ? { ok: true; rows: PlanRows<G, P>[]; changes: number } | { ok: false; kind: "assert"; assert: PlanAsserts<P> } | ({ ok: false } & ConstraintFailure)
   : never;
