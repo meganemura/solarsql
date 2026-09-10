@@ -1,6 +1,6 @@
 ---
 name: solarsql
-description: Use when a project uses solarsql, the typed SQL layer for SQLite on Cloudflare D1 and Durable Objects. Covers writing or changing a module.ts (tables, indexes, views, triggers, FTS5 search tables, queries, commands), the type a parameter or a column gets, a build message and its fix, a migration, a module's test on node:sqlite, wiring an adapter in a Worker, and deploying the example. Also use when the user names solarsql, `solarsql build`, `solarsql migration`, `solarsql init`, `solarsql.generated.ts`, a plan, or an assert.
+description: Use when a project uses solarsql, the typed SQL layer for SQLite on Cloudflare D1 and Durable Objects. Covers writing or changing a module.ts (tables, indexes, views, triggers, FTS5 search tables, queries, commands), the type a parameter or a column gets, the tables a query reads, a build message and its fix, a migration, a module's test on node:sqlite, wiring an adapter in a Worker, and deploying the example. Also use when the user names solarsql, `solarsql build`, `solarsql migration`, `solarsql init`, `solarsql.generated.ts`, a plan, or an assert.
 ---
 
 # solarsql
@@ -23,7 +23,7 @@ Load the reference of the step before you edit.
 2. **Change the schema**: edit `table()`, `index()`, `view()`, `trigger()`, or `search()` in `module.ts`, then `npx solarsql build`, then `npx solarsql migration <name>`. Rules and types of the DDL: [references/schema.md](references/schema.md). What the migration contains: [references/migrations.md](references/migrations.md).
 3. **Add a query**: a key in `queries(generated, { ... })`, then `npx solarsql build`. How a parameter and a column get their types, and the recipes for lists, rows, optional filters, sorting, paging, JSON, and search: [references/queries.md](references/queries.md).
 4. **Add a command**: a key in `commands(generated, { ... })` with `plan`, asserts, and `returns`, then `npx solarsql build`. Plans, asserts, results by `kind`, and what a plan may touch: [references/commands.md](references/commands.md).
-5. **Run it**: `d1(env.DB)`, `durable(ctx.storage)`, or `node(db)`; `db.all`, `db.first`, `db.run`, `db.batch`; the observe hook; ids; a module's test: [references/running.md](references/running.md).
+5. **Run it**: `d1(env.DB)`, `durable(ctx.storage)`, or `node(db)`; `db.all`, `db.first`, `db.run`, `db.batch`; the tables a query or a command reads, in `meta.reads`; the observe hook; ids; a module's test: [references/running.md](references/running.md).
 6. **Read a build message**: the message names the fix. The table of messages: [references/build.md](references/build.md).
 7. **Deploy the example** and run its steps on remote D1 and a Durable Object: [references/deploy.md](references/deploy.md).
 
