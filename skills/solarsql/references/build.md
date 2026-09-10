@@ -19,10 +19,10 @@ The files are ES modules; a package.json that says `"type": "commonjs"` gets a n
 
 The build imports every module of `solarsql.config.ts`, applies the schema to an in-memory SQLite, prepares every statement on it, and writes `solarsql.generated.ts` next to each module.
 A generated file that is missing gets a stub before the import, so a fresh clone builds whatever the modules import from each other, and a configuration file that imports a module builds too.
-It prints `wrote` or `current` per module, a `+` line per statement added and a `-` line per statement removed, `scan` lines for full scans, and `migrations are current`, or the statements a migration would hold.
+It prints `wrote` or `current` per module, with the time to import and type that module at the end of the line, a `+` line per statement added and a `-` line per statement removed, `scan` lines for full scans, a `reads` line per query of a `readsAll` module with the tables that query reads, a `time` line for the whole build, and `migrations are current`, or the statements a migration would hold.
 The generated file is keyed by the SQL text: a statement whose text changed has no entry, and `tsc` fails at the call site until the build runs again. Commit the generated file.
 
-`build --check` writes nothing and exits 1 when a generated file, `migrations/index.ts`, or a migration is behind the source. It is for CI and for a test hook.
+`build --check` writes nothing and exits 1 when a generated file, `migrations/index.ts`, or a migration is behind the source. It is for CI, for a test hook, and for `prepublishOnly` in a package that ships its generated files.
 
 ## solarsql.config.ts
 
