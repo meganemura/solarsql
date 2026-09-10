@@ -2,6 +2,11 @@
 
 The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0, a minor version may change the API; the entry says what changed.
 
+## 0.2.0 (unreleased)
+
+- Fixed: `solarsql build` on a fresh clone wrote the stub of a generated file one module at a time, after importing the configuration file. A module with a value import of a module listed after it, and a configuration file that imports a module through its `public.ts`, failed with `ERR_MODULE_NOT_FOUND`. The build now writes every stub before it imports a module, and writes the stub a configuration import asks for (ADR 0040).
+- Docs: the never-null row of the column table in `queries.md` shows the cast around each shape; a bare `coalesce(x, 0)` was never accepted.
+
 ## 0.1.0 (2026-09-10)
 
 The first release.

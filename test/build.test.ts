@@ -3,7 +3,7 @@
 // shapes the design rules out. Each case works on a copy of the example.
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { build, migration } from "../src/build/build.ts";
@@ -51,6 +51,81 @@ describe("solarsql build", () => {
       for (const m of ["customers", "orders", "reports"]) {
         assert.equal(readFileSync(join(dir, `example/modules/${m}/solarsql.generated.ts`), "utf8"), readFileSync(join(root, `example/modules/${m}/solarsql.generated.ts`), "utf8"));
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a fresh clone builds when a module imports a module listed after it", async () => {
+    const dir = copy();
+    try {
+      for (const m of ["customers", "orders", "reports"]) rmSync(join(dir, `example/modules/${m}/solarsql.generated.ts`));
+      // A value import, so the module graph reaches orders' generated file at import time.
+      const file = join(dir, "example/modules/customers/module.ts");
+      writeFileSync(file, `import { orderQueries } from "../orders/public.ts";\nexport const orderQueryNames = Object.keys(orderQueries.entries);\n${readFileSync(file, "utf8")}`);
+      const result = await build(join(dir, "example/solarsql.config.ts"));
+      assert.deepEqual(result.modules.map((m) => [m.name, m.changed]), [["customers", true], ["orders", true], ["reports", true]]);
+      assert.equal(readFileSync(join(dir, "example/modules/orders/solarsql.generated.ts"), "utf8"), readFileSync(join(root, "example/modules/orders/solarsql.generated.ts"), "utf8"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // A project that lists its modules in the configuration and exports, from
+  // the same file, what the application wires up.
+  function configThatImportsOrders(dir: string, modules: string): void {
+    writeFileSync(
+      join(dir, "example/solarsql.config.ts"),
+      [
+        'import { config } from "../src/index.ts";',
+        'import { orderQueries } from "./modules/orders/public.ts";',
+        "export const loaders = { orders: orderQueries };",
+        `export default config({ modules: [${modules}], migrations: "./migrations", library: "../../../src/index.ts" });`,
+        "",
+      ].join("\n"),
+    );
+  }
+
+  test("a fresh clone builds when the configuration imports a module", async () => {
+    const dir = copy();
+    try {
+      for (const m of ["customers", "orders", "reports"]) rmSync(join(dir, `example/modules/${m}/solarsql.generated.ts`));
+      configThatImportsOrders(dir, '"./modules/customers", "./modules/orders", { dir: "./modules/reports", readsAll: true }');
+      const result = await build(join(dir, "example/solarsql.config.ts"));
+      assert.deepEqual(result.modules.map((m) => m.changed), [true, true, true]);
+      for (const m of ["customers", "orders", "reports"]) {
+        assert.equal(readFileSync(join(dir, `example/modules/${m}/solarsql.generated.ts`), "utf8"), readFileSync(join(root, `example/modules/${m}/solarsql.generated.ts`), "utf8"));
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Its own copy: Node keeps a module it imported once, so a check right
+  // after a build in the same process would not reach the import that fails.
+  test("a check on a configuration that imports a module reports the missing generated file in the build's words", async () => {
+    const dir = copy();
+    try {
+      for (const m of ["customers", "orders", "reports"]) rmSync(join(dir, `example/modules/${m}/solarsql.generated.ts`));
+      configThatImportsOrders(dir, '"./modules/customers", "./modules/orders", { dir: "./modules/reports", readsAll: true }');
+      await assert.rejects(build(join(dir, "example/solarsql.config.ts"), { write: false }), (e: unknown) => {
+        assert.ok(e instanceof BuildError, String(e));
+        assert.match(e.message, /module orders: .*solarsql\.generated\.ts is missing\. Run: npx solarsql build/);
+        return true;
+      });
+      assert.equal(existsSync(join(dir, "example/modules/orders/solarsql.generated.ts")), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a configuration that imports a module it does not list is refused, and the stub does not stay", async () => {
+    const dir = copy();
+    try {
+      for (const m of ["customers", "orders", "reports"]) rmSync(join(dir, `example/modules/${m}/solarsql.generated.ts`));
+      configThatImportsOrders(dir, '"./modules/customers"');
+      await expectBuildError(dir, /module orders: solarsql\.config\.ts imports it, and it is not in modules\. Add "\.\/modules\/orders" to modules\./);
+      assert.equal(existsSync(join(dir, "example/modules/orders/solarsql.generated.ts")), false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -5,9 +5,9 @@
 // Boundary: this file owns the module layout and the file system. The
 // facts come from facts.ts, the types from typegen.ts, the file text from
 // emit.ts, and the migration statements from migration.ts.
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Command, Config, Index, ModuleConfig, PlanItem, Query, Search, Table, Trigger, View } from "../index.ts";
 import { GUARD_DDL, GUARD_TABLE, assertStatement } from "../runtime/plan.ts";
 import { GENERATED_FILE, emitGenerated, emitMigrationsIndex, emitStub } from "./emit.ts";
@@ -52,28 +52,51 @@ export type BuildResult = {
 
 export type Loaded = { config: Config; configDir: string; modules: Module[] };
 
-// The module files, imported. The generated file gets a stub first, so the
-// import succeeds before the first build. A check that writes nothing
-// stops at a missing generated file instead.
+// The module files, imported. A generated file that is missing gets a stub
+// before the import, so a module imports before the first build (ADR 0025,
+// ADR 0040): the stub of every listed module before any module is
+// imported, since a module may import a module listed after it; and the
+// stub a config that imports a module asks for. A check that writes
+// nothing stops at a missing generated file instead.
 export async function load(configPath: string, write = true): Promise<Loaded> {
   const absolute = resolve(configPath);
   const configDir = dirname(absolute);
-  const config = (await importFresh(absolute)).default as Config | undefined;
+  const stubbed: string[] = [];
+  const config = (await importConfig(absolute, write, stubbed)).default as Config | undefined;
   if (!config || !Array.isArray(config.modules) || typeof config.migrations !== "string") {
     throw new BuildError(`${configPath} must export default config({ modules: [...], migrations: "..." })`);
   }
-  const modules: Module[] = [];
-  for (const entry of config.modules) {
+  const library = config.library ?? "solarsql";
+  const listed = config.modules.map((entry) => {
     const mc: ModuleConfig = typeof entry === "string" ? { dir: entry } : entry;
-    const dir = resolve(configDir, mc.dir);
+    return { mc, dir: resolve(configDir, mc.dir) };
+  });
+  for (const { dir } of listed) {
     const name = basename(dir);
     const source = join(dir, "module.ts");
     if (!existsSync(source)) throw new BuildError(`module ${name}: ${source} does not exist`);
     const generatedPath = join(dir, GENERATED_FILE);
     if (!existsSync(generatedPath)) {
       if (!write) throw new BuildError(`module ${name}: ${generatedPath} is missing. Run: npx solarsql build`);
-      writeFileSync(generatedPath, emitStub(config.library ?? "solarsql"));
+      writeFileSync(generatedPath, emitStub(library));
     }
+  }
+  // A module the config imports but does not list would keep its stub for
+  // ever, since no build fills it: the stub goes, and the message names the
+  // entry to add. The other stubs get the library specifier, known now.
+  // Node names the file by its real path, and the configuration may sit
+  // under a symbolic link, so the comparison is between real paths.
+  const unlisted = stubbed.filter((path) => !listed.some((l) => realpathSync(l.dir) === realpathSync(dirname(path))));
+  for (const path of unlisted) unlinkSync(path);
+  if (unlisted[0] !== undefined) {
+    const dir = dirname(unlisted[0]);
+    throw new BuildError(`module ${basename(dir)}: ${basename(absolute)} imports it, and it is not in modules. Add ${JSON.stringify(`./${relative(realpathSync(configDir), dir).split("\\").join("/")}`)} to modules.`);
+  }
+  for (const path of stubbed) writeFileSync(path, emitStub(library));
+  const modules: Module[] = [];
+  for (const { mc, dir } of listed) {
+    const name = basename(dir);
+    const source = join(dir, "module.ts");
     const tables: string[] = [];
     const indexes: string[] = [];
     const searches: string[] = [];
@@ -107,6 +130,40 @@ export async function load(configPath: string, write = true): Promise<Loaded> {
     modules.push({ name, dir, readsAll: mc.readsAll ?? false, tables, indexes, searches, views, triggers, statements, commands });
   }
   return { config, configDir, modules };
+}
+
+// The configuration file, imported. It may import a module through its
+// public.ts, and the module imports its generated file, which a fresh
+// clone lacks. Node names the file it cannot find; when that file is the
+// generated file of a module, the build writes the stub and imports again.
+// The same path twice means the stub did not help, and the error stands.
+async function importConfig(absolute: string, write: boolean, stubbed: string[]): Promise<Record<string, unknown>> {
+  for (;;) {
+    try {
+      return await importFresh(absolute);
+    } catch (e) {
+      const missing = missingGeneratedFile(e);
+      if (missing === null || stubbed.includes(missing)) throw e;
+      const name = basename(dirname(missing));
+      if (!write) throw new BuildError(`module ${name}: ${missing} is missing. Run: npx solarsql build`);
+      // The library specifier is in the config, which has not loaded yet;
+      // load() rewrites the stub once it has. The import is type-only, so
+      // the specifier does not matter for this import.
+      writeFileSync(missing, emitStub("solarsql"));
+      stubbed.push(missing);
+    }
+  }
+}
+
+// The path of the generated file an import could not find, when the error
+// is that and a module.ts sits beside the file; else null.
+function missingGeneratedFile(e: unknown): string | null {
+  if (!e || typeof e !== "object" || (e as { code?: unknown }).code !== "ERR_MODULE_NOT_FOUND") return null;
+  const url = (e as { url?: unknown }).url;
+  if (typeof url !== "string" || !url.startsWith("file:")) return null;
+  const path = fileURLToPath(url);
+  if (basename(path) !== GENERATED_FILE || !existsSync(join(dirname(path), "module.ts"))) return null;
+  return path;
 }
 
 // The statements of `after` that `before` lacks, and the other way round,
