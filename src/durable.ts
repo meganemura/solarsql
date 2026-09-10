@@ -38,14 +38,17 @@ export function durable(storage: StorageLike, options: AdapterOptions = {}): Dat
         const params = (args[0] ?? {}) as Record<string, SqlValue>;
         try {
           const out = storage.transactionSync(() => {
+            let changes = 0;
             command.plan.forEach((item, i) => {
               const sql = typeof item === "string" ? item : assertStatement(item.name, item.predicate);
+              const before = totalChanges(storage);
               storage.sql.exec(sql, ...bindValues(command.meta.statements[i]!, params)).toArray();
+              if (typeof item === "string") changes += totalChanges(storage) - before;
             });
-            if (command.returns === null) return [];
-            return rows(command.returns, command.meta.returns!, params);
+            const resultRows = command.returns === null ? [] : rows(command.returns, command.meta.returns!, params);
+            return { rows: resultRows, changes };
           });
-          return { ok: true, rows: out } as CommandResult<C>;
+          return { ok: true, ...out } as CommandResult<C>;
         } catch (e) {
           const failed = assertFailure(e, command.meta.asserts);
           if (failed !== null) return { ok: false, kind: "assert", assert: failed } as CommandResult<C>;
@@ -55,6 +58,14 @@ export function durable(storage: StorageLike, options: AdapterOptions = {}): Dat
         }
       }, (r) => outcomeOf(r as { ok: boolean; kind?: string; assert?: string })),
   };
+}
+
+// D1 reports a statement's changes as the difference of total_changes(),
+// which counts the rows a trigger wrote too, and changes() does not. The
+// same difference here keeps the count equal on the three adapters.
+function totalChanges(storage: StorageLike): number {
+  const n = storage.sql.exec("select total_changes() as n").toArray()[0]?.n;
+  return typeof n === "number" ? n : 0;
 }
 
 export type MigrationFile = { name: string; sql: string };
