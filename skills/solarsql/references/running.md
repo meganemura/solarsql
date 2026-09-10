@@ -35,6 +35,13 @@ A query without parameters takes none: `db.all(customerQueries.all)`.
 JSON columns arrive parsed, and array parameters go encoded; the module code sees plain values.
 Retry, concurrency, and dependency injection stay in the calling code. A function of a module takes `db: Database`.
 
+## What a query and a command carry
+
+`orderQueries.byId.meta.reads` names the tables the statement reads, sorted, once each: the tables and search tables of the schema, reached directly, through a view, through a trigger the statement fires, or by a foreign key check.
+A view, `json_each`, and a `pragma_*` function hold no rows and do not appear.
+A command carries one such entry per statement of its plan in `meta.statements`, and one for `returns`.
+A caller that picks a data source by table, or drops a cache by table, reads it instead of parsing the SQL.
+
 ## Adapters
 
 | Adapter | Takes | A command is |

@@ -53,6 +53,7 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0038](adr/0038-the-skill-is-the-usage-documentation.md) | The skill is the usage documentation, and the README is the door |
 | [0039](adr/0039-observe-carries-the-engine-meta.md) | The observe hook carries D1's meta |
 | [0040](adr/0040-the-build-writes-the-stub-an-import-asks-for.md) | The build writes the stub an import asks for, so a fresh clone builds in any module order and a configuration file may import a module |
+| [0041](adr/0041-the-generated-meta-names-the-tables-a-statement-reads.md) | The generated meta names the tables a statement reads, for a caller that routes or invalidates by table |
 
 ## Measurements
 

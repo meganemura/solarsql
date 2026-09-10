@@ -62,7 +62,8 @@ export function emitGenerated(input: GeneratedInput): string {
     const params = analysis.params.map((p) => JSON.stringify(p.name)).join(", ");
     const encode = analysis.params.filter((p) => p.encode).map((p) => JSON.stringify(p.name)).join(", ");
     const json = analysis.columns.filter((c) => c.json).map((c) => JSON.stringify(c.name)).join(", ");
-    lines.push(`  ${JSON.stringify(key)}: { params: [${params}], encode: [${encode}], json: [${json}] },`);
+    const reads = analysis.reads.map((t) => JSON.stringify(t)).join(", ");
+    lines.push(`  ${JSON.stringify(key)}: { params: [${params}], encode: [${encode}], json: [${json}], reads: [${reads}] },`);
   }
   lines.push("};");
   lines.push("");
