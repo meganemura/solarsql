@@ -5,6 +5,7 @@
 // Boundary: no file system, no module layout, no boundary check. build.ts
 // owns those. A shape this file cannot type becomes a BuildError with the
 // SQL and the reason.
+import { GUARD_TABLE } from "../runtime/plan.ts";
 import type { ColumnFact, Engine, OutputColumn, TableFact } from "./facts.ts";
 import { aliasMap, columnRef, findCall, isKeyword, leadingComment, namedParams, paramSites, selectItems, significant, tokenize, unquote } from "./scan.ts";
 
@@ -34,6 +35,10 @@ export type Analysis = {
   brands: Set<string>;
   // Tables the engine scans in full for a statement with a WHERE clause.
   scans: string[];
+  // The tables of the schema the statement reads, sorted, once each: reached
+  // directly, through a view, through a trigger the statement fires, or by
+  // a foreign key check. A view, json_each, and pragma_* are not tables.
+  reads: string[];
 };
 
 export function pascal(name: string): string {
@@ -144,7 +149,18 @@ export class Typer {
     }
     const params = names.map((name) => ({ name, ...this.paramType(sql, name, aliases, note) }));
     const scans = select && /\bwhere\b/i.test(sql) ? this.engine.fullScans(sql) : [];
-    return { sql, doc: leadingComment(sql), returnsRows, params, columns, brands, scans };
+    return { sql, doc: leadingComment(sql), returnsRows, params, columns, brands, scans, reads: this.reads(sql) };
+  }
+
+  // The authorizer reports every read at prepare, under the table's name,
+  // and names a view, a table-valued function, and the guard table the
+  // same way; the declared tables are the ones that hold rows.
+  private reads(sql: string): string[] {
+    const out = new Set<string>();
+    for (const a of this.engine.accesses(sql)) {
+      if (a.action === "read" && a.table !== null && a.table !== GUARD_TABLE && this.tables.has(a.table)) out.add(a.table);
+    }
+    return [...out].sort();
   }
 
   private outputColumn(

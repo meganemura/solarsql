@@ -35,7 +35,9 @@ export type GeneratedMap = Record<string, Entry>;
 
 // The value the generated file exports. Per statement: the parameter names
 // in the order SQLite numbers them, the parameters the adapter encodes as
-// JSON text (arrays for json_each), and the columns that hold JSON text.
+// JSON text (arrays for json_each), the columns that hold JSON text, and
+// the tables of the schema the statement reads, sorted (ADR 0041), for a
+// caller that routes or invalidates by table.
 // The optional `__types` member carries the type map for inference only and
 // never holds a value.
 export type Meta<G extends GeneratedMap> = {
@@ -43,10 +45,11 @@ export type Meta<G extends GeneratedMap> = {
     params: readonly (keyof G[K]["params"] & string)[];
     encode: readonly (keyof G[K]["params"] & string)[];
     json: readonly (keyof G[K]["row"] & string)[];
+    reads: readonly string[];
   };
 } & { readonly __types?: G };
 
-export type StatementMeta = { params: readonly string[]; encode: readonly string[]; json: readonly string[] };
+export type StatementMeta = { params: readonly string[]; encode: readonly string[]; json: readonly string[]; reads: readonly string[] };
 
 // --- schema -------------------------------------------------------------------
 
@@ -250,7 +253,7 @@ export type Database = {
 
 function metaOf(generated: Meta<GeneratedMap>, sql: string): StatementMeta {
   const m = (generated as Record<string, StatementMeta | undefined>)[sql];
-  return m ?? { params: [], encode: [], json: [] };
+  return m ?? { params: [], encode: [], json: [], reads: [] };
 }
 
 // --- configuration ------------------------------------------------------------

@@ -19,7 +19,7 @@ test("the inner array is an array, not a string", async () => {
     insert into tags values ('t1', 'l1', 'gift'), ('t2', 'l1', 'fragile');
   `);
   // The meta the build would write for this statement.
-  const generated = { [sql]: { params: ["id"], encode: [], json: ["lines"] } } as unknown as Meta<{ [sql]: { params: { id: string }; row: { id: string; lines: { id: string; tags: string[] }[] } } }>;
+  const generated = { [sql]: { params: ["id"], encode: [], json: ["lines"], reads: ["orders"] } } as unknown as Meta<{ [sql]: { params: { id: string }; row: { id: string; lines: { id: string; tags: string[] }[] } } }>;
   const q = queries(generated, { withTags: sql });
   const row = await node(raw).first(q.withTags, { id: "o1" });
   assert.deepEqual(row, { id: "o1", lines: [{ id: "l1", tags: ["gift", "fragile"] }, { id: "l2", tags: [] }] });

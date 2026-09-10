@@ -4,6 +4,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## 0.2.0 (unreleased)
 
+- Added: `reads` in the generated meta of every statement: the tables of the schema it reads, sorted, once each, reached directly, through a view, through a trigger, or by a foreign key check (ADR 0041). `query.meta.reads` and `command.meta.statements[i].reads` carry it. The generated file gains a field, so a project that upgrades runs `npx solarsql build`; `tsc` names the generated file until then.
 - Fixed: `solarsql build` on a fresh clone wrote the stub of a generated file one module at a time, after importing the configuration file. A module with a value import of a module listed after it, and a configuration file that imports a module through its `public.ts`, failed with `ERR_MODULE_NOT_FOUND`. The build now writes every stub before it imports a module, and writes the stub a configuration import asks for (ADR 0040).
 - Docs: the never-null row of the column table in `queries.md` shows the cast around each shape; a bare `coalesce(x, 0)` was never accepted.
 
