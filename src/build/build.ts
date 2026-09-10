@@ -19,6 +19,9 @@ import { BuildError, Typer, brandName, type Analysis, type Brand } from "./typeg
 export type Module = {
   name: string;
   dir: string;
+  // The time the module file took to import. A slow build is usually a
+  // slow import, and the per-module time in the CLI adds this to the typing.
+  importMs: number;
   readsAll: boolean;
   tables: string[];
   indexes: string[];
@@ -28,6 +31,9 @@ export type Module = {
   // Every statement the module runs, keyed by what the generated map keys it
   // on: the SQL of a query or statement, or the predicate of an assert.
   statements: Map<string, string>;
+  // The queries by catalog name, in catalog order: `statements` is keyed by
+  // SQL, and the reads report names the query.
+  queries: { name: string; sql: string }[];
   commands: { name: string; plan: readonly PlanItem[]; returns: string | null }[];
 };
 
@@ -40,7 +46,7 @@ export type BuildOptions = {
 export type BuildResult = {
   // Per module: the statements this build added to and removed from the
   // generated file, so the CLI can say what changed.
-  modules: { name: string; generatedPath: string; entries: number; changed: boolean; added: string[]; removed: string[] }[];
+  modules: { name: string; generatedPath: string; entries: number; changed: boolean; added: string[]; removed: string[]; ms: number }[];
   migration: { pending: boolean; statements: string[]; reason: string | null };
   // The bundle of the migration files a Durable Object imports. It is a
   // generated file too: the build rewrites it when a migration file changed,
@@ -48,6 +54,11 @@ export type BuildResult = {
   index: { path: string | null; changed: boolean };
   // Statements whose plan scans a table in full despite a WHERE clause.
   scans: { module: string; sql: string; tables: string[] }[];
+  // The tables each query of a readsAll module reads. Only there: another
+  // module reads its own tables and the keys of its foreign keys.
+  reads: { module: string; query: string; tables: string[] }[];
+  // The whole build, so the module times can be compared with the rest.
+  ms: number;
 };
 
 export type Loaded = { config: Config; configDir: string; modules: Module[] };
@@ -103,9 +114,13 @@ export async function load(configPath: string, write = true): Promise<Loaded> {
     const views: string[] = [];
     const triggers: string[] = [];
     const statements = new Map<string, string>();
+    const queries: Module["queries"] = [];
     const commands: Module["commands"] = [];
     // One file exports the schema, the queries, and the commands (ADR 0033).
-    for (const value of Object.values(await importFresh(source))) {
+    const importStarted = performance.now();
+    const exports = await importFresh(source);
+    const importMs = performance.now() - importStarted;
+    for (const value of Object.values(exports)) {
       const v = value as (Table | Index | Search | View | Trigger | { kind: "queries"; entries: Record<string, Query<string, never>> } | { kind: "commands"; entries: Record<string, Command<never, never>> }) | null;
       if (!v || typeof v !== "object" || !("kind" in v)) continue;
       if (v.kind === "table") tables.push(v.sql);
@@ -114,7 +129,10 @@ export async function load(configPath: string, write = true): Promise<Loaded> {
       if (v.kind === "view") views.push(v.sql);
       if (v.kind === "trigger") triggers.push(v.sql);
       if (v.kind === "queries") {
-        for (const q of Object.values(v.entries)) statements.set(q.sql, q.sql);
+        for (const q of Object.values(v.entries)) {
+          queries.push({ name: q.name, sql: q.sql });
+          statements.set(q.sql, q.sql);
+        }
       }
       if (v.kind === "commands") {
         for (const [cname, c] of Object.entries(v.entries)) {
@@ -127,7 +145,7 @@ export async function load(configPath: string, write = true): Promise<Loaded> {
         }
       }
     }
-    modules.push({ name, dir, readsAll: mc.readsAll ?? false, tables, indexes, searches, views, triggers, statements, commands });
+    modules.push({ name, dir, importMs, readsAll: mc.readsAll ?? false, tables, indexes, searches, views, triggers, statements, queries, commands });
   }
   return { config, configDir, modules };
 }
@@ -198,6 +216,7 @@ export function declaredDdl(modules: readonly Module[]): string[] {
 }
 
 export async function build(configPath: string, options: BuildOptions = {}): Promise<BuildResult> {
+  const buildStarted = performance.now();
   const write = options.write ?? true;
   const loaded = await load(configPath, write);
   const { config, configDir, modules } = loaded;
@@ -280,16 +299,23 @@ export async function build(configPath: string, options: BuildOptions = {}): Pro
     const brandModule = new Map([...brands.values()].map((b) => [b.typeName, b.module]));
     const results: BuildResult["modules"] = [];
     const scans: BuildResult["scans"] = [];
+    const reads: BuildResult["reads"] = [];
 
     for (const m of modules) {
       const entries: { key: string; analysis: Analysis }[] = [];
       const used = new Set<string>();
+      const typeStarted = performance.now();
       for (const [key, sql] of m.statements) {
         const analysis = typer.analyze(sql, m.name);
         checkBoundary(engine, m, owner, sql);
         for (const b of analysis.brands) used.add(b);
         if (analysis.scans.length > 0) scans.push({ module: m.name, sql: key, tables: analysis.scans });
         entries.push({ key, analysis });
+      }
+      const typeMs = performance.now() - typeStarted;
+      if (m.readsAll) {
+        const analysisBySql = new Map(entries.map((entry) => [entry.key, entry.analysis]));
+        for (const query of m.queries) reads.push({ module: m.name, query: query.name, tables: analysisBySql.get(query.sql)!.reads });
       }
       checkCommands(m, entries);
       const importedBrands = new Map<string, string[]>();
@@ -315,12 +341,12 @@ export async function build(configPath: string, options: BuildOptions = {}): Pro
       const { added, removed } = keyDiff(before, entries.map((e) => e.key));
       const changed = readFileSync(generatedPath, "utf8") !== text;
       if (changed && write) writeFileSync(generatedPath, text);
-      results.push({ name: m.name, generatedPath, entries: entries.length, changed, added, removed });
+      results.push({ name: m.name, generatedPath, entries: entries.length, changed, added, removed, ms: Math.round(m.importMs + typeMs) });
     }
 
     const migration = migrationStatus(configDir, config, modules);
     const index = migrationsIndex(resolve(configDir, config.migrations), write);
-    return { modules: results, migration, index, scans };
+    return { modules: results, migration, index, scans, reads, ms: Math.round(performance.now() - buildStarted) };
   } finally {
     engine.close();
   }

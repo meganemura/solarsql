@@ -32,9 +32,16 @@ describe("solarsql build", () => {
     try {
       const result = await build(join(dir, "example/solarsql.config.ts"));
       assert.deepEqual(result.modules.map((m) => [m.name, m.changed, m.added, m.removed]), [["customers", false, [], []], ["orders", false, [], []], ["reports", false, [], []]]);
+      assert.ok(result.modules.every((m) => Number.isInteger(m.ms) && m.ms >= 0));
+      assert.ok(Number.isInteger(result.ms) && result.ms >= 0);
       assert.deepEqual(result.migration, { pending: false, statements: [], reason: null });
       // orderQueries.byNote filters with LIKE on a column without an index, and the build says so.
       assert.deepEqual(result.scans.map((s) => [s.module, s.tables, /note like/.test(s.sql)]), [["orders", ["orders"], true]]);
+      assert.deepEqual(result.reads, [
+        { module: "reports", query: "revenueByCustomer", tables: ["customers", "order_lines", "orders"] },
+        { module: "reports", query: "confirmedOrders", tables: ["customers", "orders"] },
+      ]);
+      assert.equal(result.reads.some((r) => r.module === "customers" || r.module === "orders"), false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

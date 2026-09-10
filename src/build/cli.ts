@@ -27,13 +27,17 @@ async function main(argv: string[]): Promise<number> {
     const args = rest.filter((a) => a !== "--check");
     const result = await build(args[0] ?? "solarsql.config.ts", { write: !check });
     for (const m of result.modules) {
-      console.log(`${m.changed ? (check ? "stale  " : "wrote  ") : "current"} ${m.generatedPath} (${m.entries} statements)`);
+      console.log(`${m.changed ? (check ? "stale  " : "wrote  ") : "current"} ${m.generatedPath} (${m.entries} statements, ${m.ms}ms)`);
       for (const k of m.added) console.log(`  + ${oneLine(k)}`);
       for (const k of m.removed) console.log(`  - ${oneLine(k)}`);
     }
     for (const s of result.scans) {
       console.log(`scan    ${s.module}: ${s.tables.join(", ")} read in full by: ${oneLine(s.sql)}`);
     }
+    for (const r of result.reads) {
+      console.log(`reads   ${r.module}.${r.query}: ${r.tables.length > 0 ? r.tables.join(", ") : "(none)"}`);
+    }
+    console.log(`time    ${result.ms}ms`);
     if (result.index.path !== null && result.index.changed) console.log(`${check ? "stale  " : "wrote  "} ${result.index.path} (the migration files, for a Durable Object)`);
     if (result.migration.reason) {
       console.error(`migration blocked: ${result.migration.reason}`);
