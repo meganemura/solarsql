@@ -49,6 +49,8 @@ A parameter compared with a column of a view is `SqlValue`; compare with the tab
 
 ## The type of a column
 
+A column of the select list that is not a column reference (a column of a table or a view, or `t.*`) is an expression, and an expression needs `cast(... as integer | real | text)`, whatever SQLite would return for it. The one exception is a JSON shape: `json_group_array(...)`, `json_object(...)`, and `coalesce(json_group_array(...) ..., '[]')` need no cast, and the rows below say how the build types them.
+
 | Column of the select list | Type |
 |---|---|
 | a column of a table, or `t.*` | the declared type ([schema.md](schema.md)); `\| null` on the outer side of a `left join` |

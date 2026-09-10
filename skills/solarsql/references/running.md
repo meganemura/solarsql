@@ -16,7 +16,7 @@ const order = await db.first(orderQueries.byId, { id });
 // { id: OrdersId; customer_id: CustomersId; status: "draft" | "confirmed"; note: string | null } | null
 
 const result = await db.run(orderCommands.confirm, { id });
-// see commands.md: { ok: true; rows } | { ok: false; kind: "assert" | "unique" | ... }
+// see commands.md: { ok: true; rows; changes } | { ok: false; kind: "assert" | "unique" | ... }
 
 const [orders, customers] = await db.batch([read(orderQueries.byId, { id }), read(customerQueries.all)]);
 // orders: Row<typeof orderQueries.byId>[]; customers: Row<typeof customerQueries.all>[]
@@ -34,6 +34,18 @@ const [orders, customers] = await db.batch([read(orderQueries.byId, { id }), rea
 A query without parameters takes none: `db.all(customerQueries.all)`.
 JSON columns arrive parsed, and array parameters go encoded; the module code sees plain values.
 Retry, concurrency, and dependency injection stay in the calling code. A function of a module takes `db: Database`.
+
+## Types outside the module
+
+A loader, a CLI, or any code outside the module takes its row type from the query and its parameter type from the command, so a field is written once, in the SQL.
+
+```ts
+import type { Params, Row } from "solarsql";
+import { orderCommands, orderQueries } from "./modules/orders/public.ts";
+
+type Order = Row<typeof orderQueries.byId>;                      // { id: OrdersId; customer_id: CustomersId; status: "draft" | "confirmed"; note: string | null }
+type Line = Params<typeof orderCommands.place>["lines"][number]; // { id: OrderLinesId; sku: string; qty: number; price: number }
+```
 
 ## What a query and a command carry
 
