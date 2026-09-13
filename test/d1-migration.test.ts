@@ -128,3 +128,21 @@ describe("D1 applies generated migrations", () => {
     assert.deepEqual(plan, { kind: "ok", statements: [] });
   });
 });
+
+test('D1 rebuilds retain the AUTOINCREMENT history after a deleted maximum', async t => {
+  const d1=new D1Harness();
+  t.after(()=>d1.dispose());
+  const ddl='create table identities(id integer primary key autoincrement,value text) strict';
+  const db=open([ddl]),target=open([ddl.replace('value text','value text not null')]);
+  try {
+    const plan=diff(introspect(db),introspect(target));
+    if(plan.kind!=='ok')throw new Error(plan.reason);
+    const seed=await d1.batch([ddl,"insert into identities values(100,'removed')",'delete from identities',"insert into identities values(1,'kept')"].map(sql=>({sql})));
+    assert.equal(seed.ok,true,JSON.stringify(seed));
+    const changed=await d1.batch(plan.statements.map(sql=>({sql})));
+    assert.equal(changed.ok,true,JSON.stringify(changed));
+    const next=await d1.all("insert into identities(value) values('next') returning id");
+    assert.equal(next.ok,true,JSON.stringify(next));
+    assert.deepEqual(rows(next as WorkerOk),[{id:101}]);
+  }finally{db.close();target.close();}
+});

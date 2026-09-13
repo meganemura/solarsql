@@ -4,6 +4,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: rebuilds retain AUTOINCREMENT history, including deleted maxima and empty tables (ADR 0070).
+
 - Fixed: schema analysis and migrations retain legal names such as `sqliteCache` (ADR 0069).
 
 - Fixed: table rebuilds preserve accessible row identifiers and refuse ambiguous alias changes (ADR 0068).

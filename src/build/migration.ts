@@ -9,7 +9,7 @@
 // (CREATE VIRTUAL TABLE) has no ALTER: a change drops it and creates it
 // again, and its shadow tables are the engine's own.
 import { DatabaseSync } from "node:sqlite";
-import { definitions, normalize, quoteIdent, splitStatements, tokenize, type Token } from "./scan.ts";
+import { definitions, isKeyword, normalize, quoteIdent, splitStatements, tokenize, type Token } from "./scan.ts";
 
 export type Column = { name: string; type: string; notnull: boolean; dflt: string | null; pk: number; def: string; generated: boolean };
 export type ForeignKey = { table: string; from: string; to: string; onUpdate: string; onDelete: string };
@@ -223,6 +223,9 @@ function tableStatements(current: Table, target: Table, renames: readonly Rename
   const name = quoteIdent(current.name);
   const fresh = quoteIdent(`_solarsql_new_${current.name}`);
   const copy = quoteIdent(`_solarsql_copy_${current.name}`);
+  const sequence = quoteIdent(`_solarsql_sequence_${current.name}`);
+  const tableLiteral = `'${current.name.replaceAll("'", "''")}'`;
+  const keepsSequence = [current, target].every(table => tokenize(table.sql).some(token => isKeyword(token, "autoincrement")));
   return {
     kind: "ok",
     rebuilt: true,
@@ -230,9 +233,17 @@ function tableStatements(current: Table, target: Table, renames: readonly Rename
       ...statements,
       renamedCreate(target.sql, `_solarsql_new_${current.name}`),
       `create table ${copy} as select ${capture.join(", ")} from ${name}`,
+      ...(keepsSequence ? [`create table ${sequence} as select max(seq) as seq from sqlite_sequence where name = ${tableLiteral}`] : []),
       `drop table ${name}`,
       `alter table ${fresh} rename to ${name}`,
       `insert into ${name} (${destination.join(", ")}) select ${restore.join(", ")} from ${copy}`,
+      // Deleted maxima are absent from copied rows. Keep their high-water
+      // mark in SQL so even a 64-bit sequence never passes through JavaScript.
+      ...(keepsSequence ? [
+        `insert into sqlite_sequence (name, seq) select ${tableLiteral}, seq from ${sequence} where seq is not null and not exists (select 1 from sqlite_sequence where name = ${tableLiteral})`,
+        `update sqlite_sequence set seq = max(seq, coalesce((select seq from ${sequence}), seq)) where name = ${tableLiteral}`,
+        `drop table ${sequence}`,
+      ] : []),
       `drop table ${copy}`,
     ],
   };

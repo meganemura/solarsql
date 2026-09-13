@@ -123,3 +123,4 @@ This deadline applies to the CLI; the in-process `rehearse` function does not ca
 Automatic table rebuilds preserve accessible row identifiers when both schema versions have them.
 If all identifier spellings are shadowed, or a new primary-key alias would change their meaning, generation reports a blocked migration.
 Keep an accessible identifier with the same alias, or write an explicit migration with a data check (ADR 0068).
+When both versions use AUTOINCREMENT, rebuilds also retain its sequence history, including deleted maximum identifiers (ADR 0070).

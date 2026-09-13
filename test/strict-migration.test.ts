@@ -96,3 +96,82 @@ test('rebuilds preserve generated row identities and declared values', async () 
     }finally{db.close();target.close();}
   });
 });
+
+test('AUTOINCREMENT rebuilds preserve deleted maxima, empty history, and rollback', () => {
+  const ddl='create table t(id integer primary key autoincrement,value text) strict';
+  const target=open([ddl.replace('value text','value text not null')]);
+  try {
+    for(const seed of ["insert into t values(100,'removed');delete from t;insert into t values(1,'kept')", "insert into t values(100,'removed');delete from t", '']) {
+      const db=open([ddl]);
+      try {
+        db.exec(seed);
+        const plan=diff(introspect(db),introspect(target));
+        if(plan.kind!=='ok')throw new Error(plan.reason);
+        db.exec('begin');for(const sql of plan.statements)db.exec(sql);db.exec('commit');
+        assert.equal(db.prepare("insert into t(value) values('next') returning id").get()!.id,seed?101:1);
+      }finally{db.close();}
+    }
+    const db=open([ddl]);
+    try {
+      db.exec('insert into t values(100,null)');
+      const plan=diff(introspect(db),introspect(target));
+      if(plan.kind!=='ok')throw new Error(plan.reason);
+      db.exec('begin');
+      assert.throws(()=>{for(const sql of plan.statements)db.exec(sql);},/NOT NULL/);
+      db.exec('rollback');
+      assert.equal(db.prepare("insert into t(value) values('next') returning id").get()!.id,101);
+      assert.equal(db.prepare('select count(*) as n from t').get()!.n,2);
+    }finally{db.close();}
+  }finally{target.close();}
+});
+
+test('sequence preservation follows the keyword and explicit AUTOINCREMENT transitions', () => {
+  for(const [from,to] of [
+    ['id integer primary key, value text /* autoincrement */', 'id integer primary key, value text not null /* autoincrement */'],
+    ['id integer primary key, "autoincrement" text, value text', 'id integer primary key, "autoincrement" text, value text not null'],
+    ['id integer primary key, value text default \'autoincrement\'', 'id integer primary key, value text not null default \'autoincrement\''],
+    ['id integer primary key, value text','id integer primary key autoincrement, value text'],
+    ['id integer primary key autoincrement, value text','id integer primary key, value text'],
+  ]) {
+    const db=open([`create table t(${from}) strict`]),target=open([`create table t(${to}) strict`]);
+    try {
+      db.exec("insert into t(id,value) values(1,'kept')");
+      const plan=diff(introspect(db),introspect(target));
+      if(plan.kind!=='ok')throw new Error(plan.reason);
+      assert.equal(plan.statements.some(sql=>sql.includes('_solarsql_sequence_')),false);
+      db.exec('begin');for(const sql of plan.statements)db.exec(sql);db.exec('commit');
+      assert.equal(db.prepare("insert into t(value) values('next') returning id").get()!.id,2);
+    }finally{db.close();target.close();}
+  }
+});
+
+test('AUTOINCREMENT histories retain their next identifier after rebuilding', async () => {
+  const {test:property}=await import('@hegeldev/hegel');
+  const gs=await import('@hegeldev/hegel/generators');
+  property(tc=>{
+    const high=tc.draw(gs.integers({minValue:2,maxValue:1_000_000}));
+    const keep=tc.draw(gs.booleans());
+    const ddl='create table t(id integer primary key autoincrement,value text) strict';
+    const db=open([ddl]),target=open([ddl.replace('value text','value text not null')]);
+    try {
+      db.prepare('insert into t values(?,null)').run(high);db.exec('delete from t');
+      if(keep)db.exec("insert into t values(1,'kept')");
+      const plan=diff(introspect(db),introspect(target));
+      if(plan.kind!=='ok')throw new Error(plan.reason);
+      db.exec('begin');for(const sql of plan.statements)db.exec(sql);db.exec('commit');
+      assert.equal(db.prepare("insert into t(value) values('next') returning id").get()!.id,high+1);
+    }finally{db.close();target.close();}
+  });
+});
+
+test('an exhausted 64-bit AUTOINCREMENT history stays exhausted after rebuilding', () => {
+  const ddl='create table t(id integer primary key autoincrement,value text) strict';
+  const db=open([ddl]),target=open([ddl.replace('value text','value text not null')]);
+  try {
+    db.exec("insert into t values(9223372036854775807,'removed');delete from t");
+    const plan=diff(introspect(db),introspect(target));
+    if(plan.kind!=='ok')throw new Error(plan.reason);
+    db.exec('begin');for(const sql of plan.statements)db.exec(sql);db.exec('commit');
+    assert.throws(()=>db.exec("insert into t(value) values('next')"), /database or disk is full/);
+  }finally{db.close();target.close();}
+});
