@@ -76,3 +76,29 @@ After checking the original files against your deployment records and database, 
 Use the same option with Durable Object storage. This records the supplied SQL as a trusted baseline; it cannot prove the original SQL.
 Subsequent calls compare exact SQL, including comments and whitespace.
 D1 migrations applied through wrangler retain wrangler's history behavior; this check does not wrap that workflow.
+
+## Rehearse with existing data
+
+```sh
+npx solarsql rehearse local.sqlite proposed.sql checks.json
+```
+
+The command opens the source read-only and uses SQLite backup to create a disposable snapshot, including committed WAL data.
+It applies the proposed SQL to the snapshot in one transaction and checks database integrity and foreign keys.
+It blocks database attachments. It deletes the snapshot on completion or failure.
+The versioned JSON result includes before/after row counts, completed checks, and failure diagnostics. Exit 1 indicates failure.
+
+The optional `checks.json` has two maps of names to SQL:
+
+```json
+{
+  "queries": { "oldRead": "select id, value from items where id = :id" },
+  "assertions": { "retained": "select count(*) = 20 from items" }
+}
+```
+
+Queries compile before and after the change; result column names and declared types must match.
+This detects structural incompatibility, not every semantic or nullability change.
+Assertions execute after migration and must each return one row with one value equal to 1. They take no parameters.
+Use assertions for application-specific data requirements. Row counts alone do not prove value preservation.
+The command rehearses proposed SQL, not migration history adoption or a remote deployment.

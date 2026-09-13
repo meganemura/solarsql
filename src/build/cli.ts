@@ -5,6 +5,8 @@
 //   solarsql migration <name> [config]  write the next migration file
 //   solarsql init <module> [dir]        a first module, built, with its migration
 // Boundary: printing and exit codes only. build.ts and init.ts do the work.
+import { readFileSync } from "node:fs";
+import { rehearse } from "./rehearse.ts";
 import { build, migration } from "./build.ts";
 import { init } from "./init.ts";
 import { shellArgument } from "./shell.ts";
@@ -13,6 +15,7 @@ import { BuildError } from "./typegen.ts";
 const usage = `usage:
   solarsql build [solarsql.config.ts]
   solarsql build --check [solarsql.config.ts]   writes nothing; exit 1 when a generated file or a migration is stale
+  solarsql rehearse <database.sqlite> <change.sql> [checks.json]   validate a disposable snapshot
   solarsql inspect [solarsql.config.ts]        JSON contracts, accesses and freshness; writes no build artifacts
   solarsql build --json [solarsql.config.ts]   machine-readable generation result (combine with --check)
   solarsql migration <name> [solarsql.config.ts]
@@ -25,6 +28,13 @@ function oneLine(sql: string): string {
 
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
+  if (command === "rehearse") {
+    if (rest.length < 2 || rest.length > 3) throw new BuildError("Use solarsql rehearse <database.sqlite> <change.sql> [checks.json].");
+    const checks = rest[2] ? JSON.parse(readFileSync(rest[2], "utf8")) : {};
+    const report = await rehearse(rest[0]!, readFileSync(rest[1]!, "utf8"), checks);
+    console.log(JSON.stringify(report));
+    return report.ok ? 0 : 1;
+  }
   if (command === "build" || command === "inspect") {
     const inspect = command === "inspect";
     const check = inspect || rest.includes("--check");
@@ -110,7 +120,7 @@ async function main(argv: string[]): Promise<number> {
 main(process.argv.slice(2)).then(
   (code) => process.exit(code),
   (e) => {
-    if (process.argv.includes("--json") || ["inspect"].includes(process.argv[2] ?? "")) console.log(JSON.stringify({ version: 1, ok: false, diagnostics: [{ code: "BUILD_FAILED", message: e instanceof Error ? e.message : String(e), sql: e instanceof BuildError ? e.sql : undefined, locations: e instanceof BuildError ? e.locations : [] }] }));
+    if (process.argv.includes("--json") || ["inspect", "rehearse"].includes(process.argv[2] ?? "")) console.log(JSON.stringify({ version: 1, ok: false, diagnostics: [{ code: "BUILD_FAILED", message: e instanceof Error ? e.message : String(e), sql: e instanceof BuildError ? e.sql : undefined, locations: e instanceof BuildError ? e.locations : [] }] }));
     else if (e instanceof BuildError) console.error(`error: ${e.message}`);
     else console.error(e);
     process.exit(1);

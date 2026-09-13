@@ -1,0 +1,72 @@
+// Responsibility: verify migration rehearsal against populated snapshots.
+// Boundary: deployment ordering and arbitrary data meaning remain caller checks.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { rehearse, rehearseSnapshot } from '../src/build/rehearse.ts';
+
+test('rehearsal checks data and old queries without changing the source', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'solarsql-rehearsal-test-'));
+  t.after(() => rmSync(dir, {recursive:true,force:true}));
+  const path = join(dir,'source.sqlite');
+  const db = new DatabaseSync(path);
+  db.exec("create table items(id integer primary key, value text not null) strict; insert into items values (1,'kept')");
+  db.close();
+  const original = readFileSync(path);
+  const report = await rehearse(path,'alter table items add column note text', {
+    queries: {old:'select id, value from items where id = :id'},
+    assertions: {preserved:"select count(*) = 1 and min(value) = 'kept' from items"},
+  });
+  assert.equal(report.ok, true, JSON.stringify(report));
+  assert.deepEqual(report.before, {items:1});
+  assert.deepEqual(report.after, {items:1});
+  assert.deepEqual(report.queries, ['old']);
+  assert.deepEqual(report.assertions, ['preserved']);
+  assert.deepEqual(readFileSync(path), original);
+  for (const [sql, checks, code] of [
+    ['alter table items drop column value', {queries:{old:'select id, value from items'}}, 'QUERY_COMPATIBILITY_FAILED'],
+    ['delete from items', {assertions:{retained:'select count(*) = 1 from items'}}, 'ASSERTION_FAILED'],
+    ["insert into items values (2, null)", {}, 'MIGRATION_FAILED'],
+    [`attach database '${path.replaceAll("'", "''")}' as source; delete from source.items`, {}, 'MIGRATION_FAILED'],
+    ['commit', {}, 'MIGRATION_FAILED'],
+  ] as const) {
+    const failed = await rehearse(path,sql,checks);
+    assert.equal(failed.ok,false);
+    assert.equal(failed.diagnostics[0]!.code,code,JSON.stringify(failed));
+    assert.deepEqual(readFileSync(path),original);
+  }
+});
+
+test('rehearsal snapshots committed WAL data and rejects broken foreign keys', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'solarsql-rehearsal-wal-'));
+  t.after(() => rmSync(dir, {recursive:true,force:true}));
+  const path = join(dir,'source.sqlite');
+  const db = new DatabaseSync(path);
+  t.after(() => db.close());
+  db.exec('pragma journal_mode = wal; create table parents(id integer primary key); create table children(p integer references parents(id)); insert into parents values (1); insert into children values (1)');
+  const report = await rehearse(path,'alter table children add column note text');
+  assert.equal(report.ok,true,JSON.stringify(report));
+  assert.deepEqual(report.before,{children:1,parents:1});
+  const failed = await rehearse(path,'pragma defer_foreign_keys = on; delete from parents');
+  assert.equal(failed.ok,false);
+  assert.equal(db.prepare('select count(*) as n from parents').get()!.n,1);
+});
+
+test('a nullable column transition preserves arbitrary stored values', async () => {
+  const { test: property } = await import('@hegeldev/hegel');
+  const gs = await import('@hegeldev/hegel/generators');
+  property(tc => {
+    const n = tc.draw(gs.integers());
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec('create table values_test(n integer) strict');
+      db.prepare('insert into values_test values (?)').run(n);
+      const result = rehearseSnapshot(db, 'alter table values_test add column extra text', {assertions:{retained:`select n = ${n} from values_test`}});
+      assert.equal(result.ok,true,JSON.stringify(result));
+      assert.equal(db.prepare('select n from values_test').get()!.n,n);
+    } finally { db.close(); }
+  });
+});
