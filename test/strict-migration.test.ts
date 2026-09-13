@@ -28,3 +28,71 @@ test("a stored text in an integer column fails the rebuild, and the file rolls b
   db.exec("rollback");
   assert.deepEqual(db.prepare("select * from t").all().map((r) => ({ ...r })), [{ id: "a", n: "twelve" }]);
 });
+
+test('rebuilds retain accessible row identities across aliases, shadowing, and renames', () => {
+  const cases = [
+    { columns:'id text primary key not null, value text', identifier:'rowid', insert:"rowid,id,value", values:"42,'key','kept'" },
+    { columns:'id integer primary key, value text', identifier:'id', insert:'id,value', values:"42,'kept'" },
+    { columns:'id integer primary key desc, value text', identifier:'rowid', insert:'rowid,id,value', values:"42,99,'kept'" },
+    { columns:'RowId text, _rowid_ text, value text', identifier:'oid', insert:'oid,RowId,_rowid_,value', values:"42,'shadow','other','kept'" },
+    { columns:'id integer primary key, rowid text, _rowid_ text, oid text, value text', identifier:'id', insert:'id,rowid,_rowid_,oid,value', values:"42,'r','u','o','kept'" },
+    { columns:'id text primary key, _solarsql_rowid integer, value text', identifier:'rowid', insert:'rowid,id,_solarsql_rowid,value', values:"42,'key',99,'kept'" },
+  ];
+  for (const fixture of cases) {
+    const db = open([`create table t(${fixture.columns})`]);
+    const target = open([`create table t(${fixture.columns.replace('value text','value text not null')})`]);
+    try {
+      db.exec(`insert into t(${fixture.insert}) values(${fixture.values})`);
+      const before = db.prepare(`select ${fixture.identifier} as identity,* from t`).all();
+      const plan = diff(introspect(db),introspect(target));
+      assert.equal(plan.kind,'ok',JSON.stringify(plan));
+      db.exec('begin');
+      for (const sql of plan.statements) db.exec(sql);
+      db.exec('commit');
+      assert.deepEqual(db.prepare(`select ${fixture.identifier} as identity,* from t`).all(),before,fixture.columns);
+    } finally { db.close();target.close(); }
+  }
+  const db = open(['create table t(id integer primary key, value text)']);
+  const target = open(['create table t(key integer primary key, value text not null, computed text as (value))']);
+  try {
+    db.exec("insert into t values(42,'kept')");
+    const plan = diff(introspect(db),introspect(target),[{table:'t',from:'id',to:'key'}]);
+    if (plan.kind !== 'ok') throw new Error(plan.reason);
+    db.exec('begin');for(const sql of plan.statements)db.exec(sql);db.exec('commit');
+    assert.deepEqual({...db.prepare('select * from t').get()},{key:42,value:'kept',computed:'kept'});
+  } finally {db.close();target.close();}
+});
+
+test('rebuilds block inaccessible row identities and changed primary-key aliases', () => {
+  for (const [before,after] of [
+    ['rowid text, _rowid_ text, oid text, value text','rowid text, _rowid_ text, oid text, value text not null'],
+    ['id integer, value text','id integer primary key, value text not null'],
+    ['id integer primary key desc, value text','id integer primary key, value text not null'],
+  ]) {
+    const db=open([`create table t(${before})`]), target=open([`create table t(${after})`]);
+    try {
+      const plan=diff(introspect(db),introspect(target));
+      assert.equal(plan.kind,'blocked');
+      if(plan.kind==='blocked')assert.match(plan.reason,/rowid preservation.*explicit migration/);
+    }finally{db.close();target.close();}
+  }
+});
+
+test('rebuilds preserve generated row identities and declared values', async () => {
+  const {test:property}=await import('@hegeldev/hegel');
+  const gs=await import('@hegeldev/hegel/generators');
+  property(tc=>{
+    const id=tc.draw(gs.integers({minValue:-1_000_000,maxValue:1_000_000}));
+    const value=tc.draw(gs.text({maxSize:50}));
+    const db=open(['create table t(id text primary key not null,value text) strict']);
+    const target=open(['create table t(id text primary key not null,value text not null) strict']);
+    try {
+      db.prepare('insert into t(rowid,id,value) values(?,?,?)').run(id,'key',value);
+      const before=db.prepare('select rowid,* from t').all();
+      const plan=diff(introspect(db),introspect(target));
+      if(plan.kind!=='ok')throw new Error(plan.reason);
+      db.exec('begin');for(const sql of plan.statements)db.exec(sql);db.exec('commit');
+      assert.deepEqual(db.prepare('select rowid,* from t').all(),before);
+    }finally{db.close();target.close();}
+  });
+});

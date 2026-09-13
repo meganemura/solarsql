@@ -119,3 +119,7 @@ Use `--timeout-ms 120000` when the workload needs a larger finite budget.
 A deadline produces exit 1 and `REHEARSAL_TIMEOUT` after the parent removes its snapshots.
 Inspect the workload before increasing the budget. The source database remains unchanged.
 This deadline applies to the CLI; the in-process `rehearse` function does not cancel native backup.
+
+Automatic table rebuilds preserve accessible row identifiers when both schema versions have them.
+If all identifier spellings are shadowed, or a new primary-key alias would change their meaning, generation reports a blocked migration.
+Keep an accessible identifier with the same alias, or write an explicit migration with a data check (ADR 0068).

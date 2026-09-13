@@ -13,7 +13,7 @@ import { definitions, normalize, quoteIdent, splitStatements, tokenize, type Tok
 
 export type Column = { name: string; type: string; notnull: boolean; dflt: string | null; pk: number; def: string; generated: boolean };
 export type ForeignKey = { table: string; from: string; to: string; onUpdate: string; onDelete: string };
-export type Table = { name: string; sql: string; columns: Column[]; foreignKeys: ForeignKey[]; constraints: string[]; withoutRowid: boolean; strict: boolean };
+export type Table = { name: string; sql: string; columns: Column[]; foreignKeys: ForeignKey[]; constraints: string[]; withoutRowid: boolean; strict: boolean; rowidAlias: string | null };
 export type Index = { name: string; table: string; sql: string };
 export type Trigger = { name: string; table: string; sql: string };
 export type View = { name: string; sql: string };
@@ -84,6 +84,12 @@ export function introspect(db: DatabaseSync): Schema {
         constraints: defs?.constraints ?? [],
         withoutRowid: table!.wr === 1,
         strict: table!.strict === 1,
+        // INTEGER PRIMARY KEY DESC has a separate primary-key index and
+        // therefore does not alias rowid. Let SQLite distinguish that case.
+        rowidAlias: table!.wr === 0 && columns.filter(c => c.pk > 0).length === 1
+          && columns.some(c => c.pk > 0 && c.type.toUpperCase() === "INTEGER")
+          && !db.prepare(`select 1 from pragma_index_list(?) where origin = 'pk'`).get(row.name)
+          ? columns.find(c => c.pk > 0)!.name : null,
       });
     } else if (row.type === "index") {
       indexes.set(row.name, { name: row.name, table: row.tbl_name, sql: row.sql });
@@ -114,7 +120,7 @@ function byName(a: { name: string }, b: { name: string }): number {
 }
 
 function tableShape(t: Table): unknown {
-  return { name: t.name, columns: t.columns, foreignKeys: t.foreignKeys, constraints: [...t.constraints].sort(), withoutRowid: t.withoutRowid, strict: t.strict };
+  return { name: t.name, columns: t.columns, foreignKeys: t.foreignKeys, constraints: [...t.constraints].sort(), withoutRowid: t.withoutRowid, strict: t.strict, rowidAlias: t.rowidAlias };
 }
 
 function same(a: unknown, b: unknown): boolean {
@@ -129,6 +135,7 @@ function renamedCreate(sql: string, newName: string): string {
 function tableStatements(current: Table, target: Table, renames: readonly Rename[], keptIndexes: readonly string[]): Plan & { rebuilt?: boolean } {
   const statements: string[] = [];
   const currentColumns = new Map(current.columns.map((c) => [c.name, c]));
+  let currentAlias = current.rowidAlias;
   for (const r of renames.filter((r) => r.table === current.name)) {
     const from = currentColumns.get(r.from);
     if (!from || currentColumns.has(r.to) || !target.columns.some((c) => c.name === r.to)) {
@@ -137,6 +144,7 @@ function tableStatements(current: Table, target: Table, renames: readonly Rename
     statements.push(`alter table ${quoteIdent(current.name)} rename column ${quoteIdent(r.from)} to ${quoteIdent(r.to)}`);
     currentColumns.delete(r.from);
     currentColumns.set(r.to, { ...from, name: r.to });
+    if (currentAlias === r.from) currentAlias = r.to;
   }
   const targetNames = new Set(target.columns.map((c) => c.name));
   const removed = [...currentColumns.keys()].filter((n) => !targetNames.has(n));
@@ -190,7 +198,28 @@ function tableStatements(current: Table, target: Table, renames: readonly Rename
   // references return to zero. diff() blocks delete actions before this
   // plan can reach a database with child rows.
   // A generated column computes itself, so the copy leaves it out.
-  const common = target.columns.filter((c) => !c.generated).map((c) => c.name).filter((n) => currentColumns.has(n)).map(quoteIdent).join(", ");
+  const common = target.columns.filter((c) => !c.generated).map((c) => c.name).filter((n) => currentColumns.has(n));
+  const capture = common.map(quoteIdent), destination = common.map(quoteIdent), restore = common.map(quoteIdent);
+  if (!current.withoutRowid && !target.withoutRowid) {
+    const address = (columns: Iterable<string>, alias: string | null) => {
+      const names = new Set([...columns].map(name => name.toLowerCase()));
+      return alias ?? ["rowid", "_rowid_", "oid"].find(name => !names.has(name));
+    };
+    const from = address(currentColumns.keys(), currentAlias);
+    const to = address(target.columns.map(c => c.name), target.rowidAlias);
+    if (!from || !to || (target.rowidAlias !== null && target.rowidAlias !== currentAlias)) {
+      return { kind: "blocked", reason: `table ${current.name}: the rebuild cannot prove rowid preservation because an identifier is shadowed or its primary-key alias changes. Keep an accessible identifier and its alias, or write an explicit migration with a data check.` };
+    }
+    // A preserved INTEGER PRIMARY KEY already carries the identifier.
+    // Otherwise capture it separately, under a name that cannot mask data.
+    if (target.rowidAlias === null) {
+      let saved = "_solarsql_rowid";
+      while (common.some(name => name.toLowerCase() === saved.toLowerCase())) saved += "_";
+      capture.push(`${quoteIdent(from)} as ${quoteIdent(saved)}`);
+      destination.push(quoteIdent(to));
+      restore.push(quoteIdent(saved));
+    }
+  }
   const name = quoteIdent(current.name);
   const fresh = quoteIdent(`_solarsql_new_${current.name}`);
   const copy = quoteIdent(`_solarsql_copy_${current.name}`);
@@ -200,10 +229,10 @@ function tableStatements(current: Table, target: Table, renames: readonly Rename
     statements: [
       ...statements,
       renamedCreate(target.sql, `_solarsql_new_${current.name}`),
-      `create table ${copy} as select ${common} from ${name}`,
+      `create table ${copy} as select ${capture.join(", ")} from ${name}`,
       `drop table ${name}`,
       `alter table ${fresh} rename to ${name}`,
-      `insert into ${name} (${common}) select ${common} from ${copy}`,
+      `insert into ${name} (${destination.join(", ")}) select ${restore.join(", ")} from ${copy}`,
       `drop table ${copy}`,
     ],
   };
