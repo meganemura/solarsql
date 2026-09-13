@@ -49,10 +49,14 @@ export default {
 `;
 
 export class D1Harness {
-  readonly mf: Miniflare;
+  private runtime: Miniflare | undefined;
+  private disposal: Promise<void> | undefined;
 
-  constructor() {
-    this.mf = new Miniflare(
+  // Test registration also runs for filtered-out suites. Start resources
+  // only when a selected test uses them, so skipped hooks own no runtime.
+  get mf(): Miniflare {
+    if (this.disposal) throw new Error("The D1 test harness is disposed");
+    return this.runtime ??= new Miniflare(
       convertV4MiniflareOptions({
         modules: true,
         script,
@@ -90,7 +94,7 @@ export class D1Harness {
     return this.send("run", [{ sql, params }]);
   }
 
-  async dispose(): Promise<void> {
-    await this.mf.dispose();
+  dispose(): Promise<void> {
+    return this.disposal ??= this.runtime?.dispose() ?? Promise.resolve();
   }
 }

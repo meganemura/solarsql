@@ -5,6 +5,7 @@
 // checks the shape, the rows, and the constraints after a table rebuild.
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { D1Harness, type WorkerOk } from "./d1.ts";
 import { applied, diff, introspect, open, render } from "../src/build/migration.ts";
 import { splitStatements } from "../src/build/scan.ts";
@@ -145,4 +146,21 @@ test('D1 rebuilds retain the AUTOINCREMENT history after a deleted maximum', asy
     assert.equal(next.ok,true,JSON.stringify(next));
     assert.deepEqual(rows(next as WorkerOk),[{id:101}]);
   }finally{db.close();target.close();}
+});
+
+test('focused D1 execution exits without a runtime for skipped suites', () => {
+  const child=spawnSync(process.execPath,['--test','--test-name-pattern=D1 rebuilds retain',import.meta.filename],{encoding:'utf8',timeout:20_000});
+  assert.equal(child.status,0,child.stdout+child.stderr+String(child.error??''));
+});
+
+test('D1 harness disposal is idempotent before and after first use', async () => {
+  const unused=new D1Harness();
+  const first=unused.dispose();
+  assert.equal(unused.dispose(),first);
+  await first;
+  assert.throws(()=>unused.mf,/disposed/);
+  const used=new D1Harness();
+  try {assert.equal((await used.all('select 1')).ok,true);}
+  finally {const closed=used.dispose();assert.equal(used.dispose(),closed);await closed;}
+  await assert.rejects(used.all('select 1'),/disposed/);
 });
