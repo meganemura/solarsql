@@ -16,13 +16,15 @@ Every build keeps `index.ts` in step with the `.sql` files.
 | a new column with a default, or nullable | `alter table t add column ...` |
 | a new `not null` column without a default | refused; give it a default |
 | a table that both loses and gains a column | refused; two migrations, one per change |
-| a changed column, constraint, or foreign key; a dropped column; a new stored generated column on a table with rows | a rebuild: `create table t_new`, `insert into t_new select <common columns> from t`, `drop table t`, `alter table t_new rename to t`, inside one transaction, with `pragma defer_foreign_keys = on` first |
+| a changed column, constraint, or foreign key; a dropped column; a new stored generated column on a table with rows | a rebuild: create the new table, copy common columns into a side table, drop the original, rename the new table, restore rows, then drop the side table; one transaction with `pragma defer_foreign_keys = on` first |
+| a rebuild referenced through ON DELETE CASCADE, SET NULL, SET DEFAULT, or RESTRICT | blocked; write an explicit migration that preserves related rows and foreign keys |
 | a changed view or trigger | `drop` then `create` |
 | any rebuild | every view is dropped first and created last, because a rename under a view fails |
 | a changed search table | `drop table` then `create virtual table`; the search rows start empty and come back through the triggers or a re-insert |
 | a removed object | `drop ...` |
 
 The order in a file: drop views, drop triggers and indexes, drop tables, change tables, create search tables, create indexes, views, and triggers.
+The rebuild check examines incoming references in both schemas, including self-references; cheap ALTER changes remain available.
 A trigger in a migration file opens with an uppercase `BEGIN`, whatever the declaration wrote: D1's HTTP API keeps a trigger body whole only then.
 
 ## A project where every database starts empty
@@ -33,7 +35,10 @@ A database that a file has reached needs the next file instead: it records the f
 
 ## Files written by hand
 
-The build applies every `.sql` file of the directory in name order to compute the current schema, so a file written by hand is fine when it changes no schema: a data backfill, an `update`, a `delete`. Name it in the sequence, `0005_backfill.sql`, and the next build rewrites `index.ts`.
+The build applies every `.sql` file of the directory in name order to compute the current schema.
+A file written by hand can change data or schema; its resulting schema must match the declaration for the final build check.
+Name it in the sequence, such as `0005_backfill.sql`, and the next build rewrites `index.ts`.
+Test a manual rebuild with representative related rows before deployment; the build compares schemas on empty databases.
 
 ## Applying
 

@@ -1,6 +1,6 @@
 # ADR 0019: A table rebuild copies rows through a side table
 
-Status: accepted (2026-09-06)
+Status: accepted (2026-09-06). ADR 0046 restricts automatic rebuilds with incoming foreign-key delete actions.
 
 ## Context
 

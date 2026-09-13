@@ -225,3 +225,95 @@ test("a table that loses and gains a column in one change is blocked", () => {
   assert.equal(plan.kind, "blocked");
   if (plan.kind === "blocked") assert.match(plan.reason, /columns \[c1\] removed and \[c2\] added in one change/);
 });
+
+test("a parent rebuild with cascading children is blocked before it can delete their rows", () => {
+  const current = open([
+    "create table parents (id integer primary key not null, value text not null) strict",
+    "create table children (id integer primary key not null, parent_id integer references parents(id) on delete cascade) strict",
+    "insert into parents values (1, 'keep')",
+    "insert into children values (1, 1)",
+  ]);
+  const target = open([
+    "create table parents (id integer primary key not null, value text not null check(length(value) > 0)) strict",
+    "create table children (id integer primary key not null, parent_id integer references parents(id) on delete cascade) strict",
+  ]);
+  try {
+    const plan = diff(introspect(current), introspect(target));
+    assert.equal(plan.kind, "blocked");
+    if (plan.kind === "blocked") assert.match(plan.reason, /children\.parent_id.*ON DELETE CASCADE.*parents.*explicit migration/);
+    assert.equal(current.prepare("select count(*) as n from children").get()!.n, 1);
+  } finally {
+    current.close();
+    target.close();
+  }
+});
+
+test("accepted parent changes preserve rows and foreign keys across delete actions", () => {
+  let cases = 0;
+  const exercised = new Set<string>();
+  hegel.test((tc) => {
+    cases++;
+    const action = tc.draw(gs.sampledFrom(["NO ACTION", "CASCADE", "SET NULL", "SET DEFAULT", "RESTRICT"]));
+    const rebuild = tc.draw(gs.booleans());
+    const self = tc.draw(gs.booleans());
+    const value = tc.draw(gs.text());
+    const parent = (changed: boolean) => `create table parents (id integer primary key not null, value text not null${changed && rebuild ? " check(value is not null)" : ""}${self ? `, parent_id integer references parents(id) on delete ${action}` : ""}${changed && !rebuild ? ", extra text" : ""}) strict`;
+    const child = `create table children (id integer primary key not null, parent_id integer references parents(id) on delete ${action}) strict`;
+    const current = open([parent(false), ...(!self ? [child] : [])]);
+    const target = open([parent(true), ...(!self ? [child] : [])]);
+    try {
+      current.prepare(`insert into parents (id, value) values (1, ?)`).run(value);
+      if (self) current.prepare("insert into parents (id, value, parent_id) values (2, ?, 1)").run(value);
+      else current.exec("insert into children values (1, 1)");
+      const rows = () => ({
+        parents: current.prepare(`select id, value${self ? ", parent_id" : ""} from parents order by id`).all(),
+        children: self ? [] : current.prepare("select * from children order by id").all(),
+      });
+      const before = rows();
+      const plan = diff(introspect(current), introspect(target));
+      if (rebuild && action !== "NO ACTION") {
+        exercised.add("blocked");
+        assert.equal(plan.kind, "blocked", JSON.stringify({ action, self, plan }));
+      } else {
+        exercised.add(rebuild ? "rebuild" : "alter");
+        assert.equal(plan.kind, "ok", JSON.stringify({ action, self, plan }));
+        if (plan.kind !== "ok") return;
+        current.exec("begin");
+        try {
+          for (const statement of plan.statements) current.exec(statement);
+          current.exec("commit");
+        } catch (error) {
+          current.exec("rollback");
+          throw error;
+        }
+        assert.deepEqual(shape(introspect(current)), shape(introspect(target)));
+      }
+      assert.deepEqual(rows(), before);
+      assert.deepEqual(current.prepare("pragma foreign_key_check").all(), []);
+    } finally {
+      current.close();
+      target.close();
+    }
+  }, { testCases: 100 });
+  console.log("foreign-key preservation cases:", cases);
+  assert.deepEqual([...exercised].sort(), ["alter", "blocked", "rebuild"]);
+});
+
+test("a target child action blocks a later parent rebuild, including case-insensitive references", () => {
+  const current = open([
+    "create table parents (id integer primary key not null, value text) strict",
+    "create table children (id integer primary key not null, parent_id integer references PARENTS(id)) strict",
+  ]);
+  const target = open([
+    "create table parents (id integer primary key not null, value text check(value is not null)) strict",
+    "create table children (id integer primary key not null, parent_id integer references PARENTS(id) on delete set null) strict",
+  ]);
+  try {
+    const plan = diff(introspect(current), introspect(target));
+    assert.equal(plan.kind, "blocked");
+    if (plan.kind === "blocked") assert.match(plan.reason, /children\.parent_id.*ON DELETE SET NULL.*parents/);
+  } finally {
+    current.close();
+    target.close();
+  }
+});

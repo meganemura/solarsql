@@ -185,9 +185,9 @@ function tableStatements(current: Table, target: Table, renames: readonly Rename
     }
   }
 
-  // Rebuild. Only this order commits inside one transaction when the table
-  // is a foreign-key parent: the rows must re-enter under the final name so
-  // the deferred foreign-key counter returns to zero.
+  // Rebuild. Rows re-enter under the final name so deferred NO ACTION
+  // references return to zero. diff() blocks delete actions before this
+  // plan can reach a database with child rows.
   // A generated column computes itself, so the copy leaves it out.
   const common = target.columns.filter((c) => !c.generated).map((c) => c.name).filter((n) => currentColumns.has(n)).map(quoteIdent).join(", ");
   const name = quoteIdent(current.name);
@@ -258,6 +258,22 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
     const plan = tableStatements(current_, target_, renames, keptIndexes.get(name) ?? []);
     if (plan.kind === "blocked") return plan;
     if (plan.rebuilt) {
+      // DROP TABLE runs foreign-key delete actions even when checks are
+      // deferred. Inspect both schemas: an earlier table change can install
+      // a target reference before this parent's rebuild.
+      const sqliteName = (value: string) => value.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+      for (const schema of [current, target]) {
+        for (const table of schema.tables.values()) {
+          for (const reference of table.foreignKeys) {
+            if (sqliteName(reference.table) === sqliteName(name) && reference.onDelete !== "NO ACTION") {
+              return {
+                kind: "blocked",
+                reason: `${table.name}.${reference.from} has ON DELETE ${reference.onDelete} referencing ${name}. Rebuilding ${name} drops the table and can delete or change child rows, or fail. Write an explicit migration that preserves the data and foreign keys.`,
+              };
+            }
+          }
+        }
+      }
       rebuilt.add(name);
       needsDefer = true;
     }
