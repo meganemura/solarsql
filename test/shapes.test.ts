@@ -38,8 +38,7 @@ function typer(): Typer {
 // [label, sql, params, row]. `row` is "-" for a statement that returns no rows.
 const shapes: [string, string, string, string][] = [
   ["select *", "select * from orders where id = :id", "id: OrdersId", "id: OrdersId; customer_id: CustomersId; parent_id: OrdersId | null; status: \"draft\" | \"confirmed\"; note: string | null; created_at: string"],
-  ["self join with o.*, the outer side nullable", "select o.*, p.status as parent_status from orders o left join orders p on p.id = o.parent_id where o.id = :id", "id: OrdersId", "id: OrdersId; customer_id: CustomersId | null; parent_id: OrdersId | null; status: \"draft\" | \"confirmed\"; note: string | null; created_at: string; parent_status: \"draft\" | \"confirmed\""],
-  ["union all, a parameter in each branch", "select id, status from orders where status = :a union all select id, status from orders where customer_id = :b", "a: \"draft\" | \"confirmed\"; b: CustomersId", "id: OrdersId; status: \"draft\" | \"confirmed\""],
+  ["self join with o.*, the outer side nullable", "select o.*, p.status as parent_status from orders o left join orders p on p.id = o.parent_id where o.id = :id", "id: OrdersId", "id: OrdersId; customer_id: CustomersId; parent_id: OrdersId | null; status: \"draft\" | \"confirmed\"; note: string | null; created_at: string; parent_status: \"draft\" | \"confirmed\" | null"],
   ["a CTE", "with recent as (select id, status from orders where customer_id = :customer_id) select id, status from recent order by id", "customer_id: CustomersId", "id: OrdersId; status: \"draft\" | \"confirmed\""],
   ["upsert with excluded", "insert into order_lines (id, order_id, sku, qty, price) values (:id, :order_id, :sku, :qty, :price) on conflict (id) do update set qty = excluded.qty", "id: OrderLinesId; order_id: OrdersId; sku: string; qty: number; price: number", "-"],
   ["upsert with a parameter in the update", "insert into order_lines (id, order_id, sku, qty, price) values (:id, :order_id, :sku, :qty, :price) on conflict (id) do update set qty = :qty2", "id: OrderLinesId; order_id: OrdersId; sku: string; qty: number; price: number; qty2: number", "-"],
@@ -51,7 +50,7 @@ const shapes: [string, string, string, string][] = [
   ["a json_object column", "select json_object('id', id, 'status', status) as o from orders where id = :id", "id: OrdersId", "o: { \"id\": OrdersId; \"status\": \"draft\" | \"confirmed\" } (json)"],
   ["a json array of scalars", "select coalesce(json_group_array(name) filter (where name is not null), '[]') as names from customers", "", "names: Array<string> (json)"],
   // A view hides the origin of its columns from the parameter typing.
-  ["a read through a view", "select id, customer_id from confirmed where customer_id = :c", "c: SqlValue", "id: OrdersId; customer_id: CustomersId"],
+  ["a read through a view", "select id, customer_id from confirmed where customer_id = :c", "c: CustomersId", "id: OrdersId; customer_id: CustomersId"],
   ["a LIKE pattern", "select id from orders where note like :pattern", "pattern: string | null", "id: OrdersId"],
   ["an insert that leaves a default out", "insert into orders (id, customer_id, status) values (:id, :customer_id, 'draft')", "id: OrdersId; customer_id: CustomersId", "-"],
   ["an IN list through json_each", "select id from orders where id in (select value from json_each(:ids))", "ids: readonly OrdersId[] (json)", "id: OrdersId"],
@@ -86,4 +85,12 @@ describe("supported shapes", () => {
       assert.equal(a.returnsRows ? a.columns.map((c) => `${c.name}: ${c.type}${c.json ? " (json)" : ""}`).join("; ") : "-", row);
     });
   }
+});
+
+
+test("UNION ALL retains parameters in both branches", () => {
+  const sql = "select id, status from orders where status = :a union all select id, status from orders where customer_id = :b";
+  const result = typer().analyze(sql, "m");
+  assert.deepEqual(result.params.map(({ name, type }) => [name, type]), [["a", '"draft" | "confirmed"'], ["b", "CustomersId"]]);
+  assert.deepEqual(result.columns.map(({ type }) => type), ["OrdersId", '"draft" | "confirmed"']);
 });

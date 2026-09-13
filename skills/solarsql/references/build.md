@@ -21,8 +21,24 @@ The build imports every module of `solarsql.config.ts`, applies the schema to an
 A generated file that is missing gets a stub before the import, so a fresh clone builds whatever the modules import from each other, and a configuration file that imports a module builds too.
 It prints `wrote` or `current` per module, with the time to import and type that module at the end of the line, a `+` line per statement added and a `-` line per statement removed, `scan` lines for full scans, a `reads` line per query of a `readsAll` module with the tables that query reads, a `time` line for the whole build, and `migrations are current`, or the statements a migration would hold.
 The generated file is keyed by the SQL text: a statement whose text changed has no entry, and `tsc` fails at the call site until the build runs again. Commit the generated file.
+If only the DDL changes, unchanged statements can retain stale types that pass `tsc`; `build --check` detects stale generated files.
 
 `build --check` writes nothing and exits 1 when a generated file, `migrations/index.ts`, or a migration is behind the source. It is for CI, for a test hook, and for `prepublishOnly` in a package that ships its generated files.
+Normal `build` exits 0 after valid generation, even when a migration is pending or blocked; it reports the status and required action.
+Invalid schema, SQL, or module boundaries still fail the build.
+`build --check` and `migration <name>` exit 1 for a blocked migration.
+A successful build does not establish that the change is ready to deploy.
+
+## Verification after an edit
+
+1. Run `npx solarsql build` after a schema or SQL edit.
+2. Read the migration status, even when the build exits 0.
+   When it says `migration pending. Write the migration`, run `npx solarsql migration <name>`.
+   For other errors, apply the fix in the message and run the build again.
+3. Run `npx solarsql build --check` to verify generated files and migrations against the source.
+4. Run the project's TypeScript check (`npx tsc --noEmit` by default) and tests.
+
+Use the same configuration path for each command if the project uses a custom path.
 
 ## solarsql.config.ts
 
@@ -40,9 +56,18 @@ export default config({
 ## Messages
 
 Each message names the fix. The build stops at the first, and prints the statement under `in:`.
+Statement errors also name the `module.ts` path, exported catalog, and entry.
+Command locations include the plan position, counted from 1, and assert name when applicable, or `returns`.
+Shared SQL reports all its catalog locations.
 
 | The message contains | Fix |
 |---|---|
+| `Use exactly one SQL statement` | split SQL into separate plan items; a query entry contains one SELECT or VALUES statement |
+| `A query or returns must be SELECT` | move the write into a command plan and read its result in `returns` |
+| `A plan item must be SELECT` | use a data statement; let the adapter manage the transaction and use migrations for schema changes |
+| `mixes decoded JSON and SQL scalar values` | CAST the JSON branch AS TEXT to use a common output representation |
+| `duplicate output column` | give each result column a distinct AS name |
+| `query scope does not match SQLite's output columns` | use explicit result columns for this unsupported projection |
 | `is an expression with no type` | wrap the expression in `cast(... as integer)`, `cast(... as real)`, or `cast(... as text)` |
 | `json_group_array over the outer join alias` | add `filter (where <alias>.<column> is not null)` |
 | `inside json yields JSON text` | wrap the subquery in `json(...)` |
@@ -64,8 +89,8 @@ Each message names the fix. The build stops at the first, and prints the stateme
 | `schema:` | the engine refused the DDL; the rest is its own message |
 | `is missing. Run: npx solarsql build` | run the build; a check writes nothing |
 | `is not in modules` | the configuration imports a module it does not list; add the module's directory to `modules` |
-| `schema changed. Write the migration` | run `npx solarsql migration <name>` |
-| `migration blocked:` | a table both loses and gains a column, or a new column is `not null` without a default; split the change or add a default |
+| `migration pending. Write the migration` | run `npx solarsql migration <name>` |
+| `migration blocked:` | follow the reason: split an ambiguous column change, add a default, or write an explicit data-preserving migration for a rebuild with foreign-key delete actions |
 | `generated files are stale` | run `npx solarsql build` |
 | `migration name must match` | rename: `[a-z0-9_]+` |
 | `module name must match` | rename: `[a-z][a-z0-9_]*` |

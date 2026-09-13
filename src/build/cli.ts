@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 // Responsibility: the command line of solarsql.
-//   solarsql build [config]             types, boundaries, migration check
+//   solarsql build [config]             generate types and report migration status
 //   solarsql build --check [config]     the same, writing nothing; exit 1 when a file is stale
 //   solarsql migration <name> [config]  write the next migration file
 //   solarsql init <module> [dir]        a first module, built, with its migration
 // Boundary: printing and exit codes only. build.ts and init.ts do the work.
 import { build, migration } from "./build.ts";
 import { init } from "./init.ts";
+import { shellArgument } from "./shell.ts";
 import { BuildError } from "./typegen.ts";
 
 const usage = `usage:
@@ -25,6 +26,7 @@ async function main(argv: string[]): Promise<number> {
   if (command === "build") {
     const check = rest.includes("--check");
     const args = rest.filter((a) => a !== "--check");
+    const configArgument = args[0] === undefined ? "" : ` ${shellArgument(args[0])}`;
     const result = await build(args[0] ?? "solarsql.config.ts", { write: !check });
     for (const m of result.modules) {
       console.log(`${m.changed ? (check ? "stale  " : "wrote  ") : "current"} ${m.generatedPath} (${m.entries} statements, ${m.ms}ms)`);
@@ -41,15 +43,16 @@ async function main(argv: string[]): Promise<number> {
     if (result.index.path !== null && result.index.changed) console.log(`${check ? "stale  " : "wrote  "} ${result.index.path} (the migration files, for a Durable Object)`);
     if (result.migration.reason) {
       console.error(`migration blocked: ${result.migration.reason}`);
-      return 1;
+      console.error(`Write a manual SQL migration in the configured migrations directory, then run: npx solarsql build${configArgument}`);
+      return check ? 1 : 0;
     }
     if (result.migration.pending) {
-      console.error(`schema changed. Write the migration: solarsql migration <name>`);
+      console.error(`migration pending. Write the migration: npx solarsql migration <name>${configArgument}`);
       for (const s of result.migration.statements) console.error(`  ${s.replace(/\s+/g, " ").trim()}`);
-      return 1;
+      return check ? 1 : 0;
     }
     if (check && (result.modules.some((m) => m.changed) || result.index.changed)) {
-      console.error("generated files are stale. Run: npx solarsql build");
+      console.error(`generated files are stale. Run: npx solarsql build${configArgument}`);
       return 1;
     }
     console.log("migrations are current");

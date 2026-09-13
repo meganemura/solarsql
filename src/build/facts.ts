@@ -136,6 +136,14 @@ export class Engine {
     this.db.prepare(sql);
   }
 
+  view(name: string): { sql: string; columns: string[] } | null {
+    const row = this.db.prepare("select sql from sqlite_schema where type = 'view' and name = ? collate nocase").get(name) as { sql: string } | undefined;
+    if (!row) return null;
+    const as = tokenize(row.sql).find((token) => token.depth === 0 && token.type === "ident" && token.text.toLowerCase() === "as");
+    if (!as) return null;
+    return { sql: row.sql.slice(as.end), columns: this.columns(`select * from ${quoteIdent(name)}`).map((column) => column.name) };
+  }
+
   // Aliases on the nullable side of an outer join, from EXPLAIN QUERY PLAN.
   // The engine drops the mark when a WHERE clause excludes NULL, which is
   // more precise than the text.

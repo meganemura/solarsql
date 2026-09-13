@@ -14,7 +14,9 @@ import { GENERATED_FILE, emitGenerated, emitMigrationsIndex, emitStub } from "./
 import { Engine } from "./facts.ts";
 import { applied, diff, introspect, open, render } from "./migration.ts";
 import { created, indexTarget, quoteIdent, triggerTarget } from "./scan.ts";
+import { shellArgument } from "./shell.ts";
 import { BuildError, Typer, brandName, type Analysis, type Brand } from "./typegen.ts";
+import { catalogStatement } from "./statements.ts";
 
 export type Module = {
   name: string;
@@ -31,10 +33,13 @@ export type Module = {
   // Every statement the module runs, keyed by what the generated map keys it
   // on: the SQL of a query or statement, or the predicate of an assert.
   statements: Map<string, string>;
+  // SQL can appear in several catalogs or plan positions; diagnostics name each use.
+  statementUses: Map<string, string[]>;
+  readStatements: Set<string>;
   // The queries by catalog name, in catalog order: `statements` is keyed by
   // SQL, and the reads report names the query.
   queries: { name: string; sql: string }[];
-  commands: { name: string; plan: readonly PlanItem[]; returns: string | null }[];
+  commands: { name: string; catalog: string; plan: readonly PlanItem[]; returns: string | null }[];
 };
 
 export type BuildOptions = {
@@ -73,7 +78,7 @@ export async function load(configPath: string, write = true): Promise<Loaded> {
   const absolute = resolve(configPath);
   const configDir = dirname(absolute);
   const stubbed: string[] = [];
-  const config = (await importConfig(absolute, write, stubbed)).default as Config | undefined;
+  const config = (await importConfig(absolute, write, stubbed, configPath)).default as Config | undefined;
   if (!config || !Array.isArray(config.modules) || typeof config.migrations !== "string") {
     throw new BuildError(`${configPath} must export default config({ modules: [...], migrations: "..." })`);
   }
@@ -88,7 +93,7 @@ export async function load(configPath: string, write = true): Promise<Loaded> {
     if (!existsSync(source)) throw new BuildError(`module ${name}: ${source} does not exist`);
     const generatedPath = join(dir, GENERATED_FILE);
     if (!existsSync(generatedPath)) {
-      if (!write) throw new BuildError(`module ${name}: ${generatedPath} is missing. Run: npx solarsql build`);
+      if (!write) throw new BuildError(`module ${name}: ${generatedPath} is missing. Run: npx solarsql build ${shellArgument(configPath)}`);
       writeFileSync(generatedPath, emitStub(library));
     }
   }
@@ -114,13 +119,24 @@ export async function load(configPath: string, write = true): Promise<Loaded> {
     const views: string[] = [];
     const triggers: string[] = [];
     const statements = new Map<string, string>();
+    const statementUses = new Map<string, string[]>();
+    const readStatements = new Set<string>();
+    const use = (key: string, location: string): void => {
+      statementUses.set(key, [...(statementUses.get(key) ?? []), `${source}: ${location}`]);
+    };
+    const statement = (key: string, sql: string, role: "read" | "plan", location: string): void => {
+      use(key, location);
+      if (role === "read") readStatements.add(key);
+      try { statements.set(key, catalogStatement(sql, role)); }
+      catch (error) { throw withLocations(error, [`${source}: ${location}`], sql); }
+    };
     const queries: Module["queries"] = [];
     const commands: Module["commands"] = [];
     // One file exports the schema, the queries, and the commands (ADR 0033).
     const importStarted = performance.now();
     const exports = await importFresh(source);
     const importMs = performance.now() - importStarted;
-    for (const value of Object.values(exports)) {
+    for (const [catalog, value] of Object.entries(exports)) {
       const v = value as (Table | Index | Search | View | Trigger | { kind: "queries"; entries: Record<string, Query<string, never>> } | { kind: "commands"; entries: Record<string, Command<never, never>> }) | null;
       if (!v || typeof v !== "object" || !("kind" in v)) continue;
       if (v.kind === "table") tables.push(v.sql);
@@ -129,23 +145,26 @@ export async function load(configPath: string, write = true): Promise<Loaded> {
       if (v.kind === "view") views.push(v.sql);
       if (v.kind === "trigger") triggers.push(v.sql);
       if (v.kind === "queries") {
-        for (const q of Object.values(v.entries)) {
+        for (const [entry, q] of Object.entries(v.entries)) {
+          statement(q.sql, q.sql, "read", `query ${catalog}.${entry}`);
           queries.push({ name: q.name, sql: q.sql });
-          statements.set(q.sql, q.sql);
         }
       }
       if (v.kind === "commands") {
         for (const [cname, c] of Object.entries(v.entries)) {
-          commands.push({ name: cname, plan: c.plan, returns: c.returns });
-          for (const item of c.plan) {
-            if (typeof item === "string") statements.set(item, item);
-            else statements.set(item.predicate, assertStatement(item.name, item.predicate));
+          commands.push({ name: cname, catalog, plan: c.plan, returns: c.returns });
+          for (const [position, item] of c.plan.entries()) {
+            const key = typeof item === "string" ? item : item.predicate;
+            statement(key, typeof item === "string" ? item : assertStatement(item.name, item.predicate), "plan",
+              `command ${catalog}.${cname}, plan item ${position + 1}${typeof item === "string" ? "" : `, assert ${item.name}`}`);
           }
-          if (c.returns !== null) statements.set(c.returns, c.returns);
+          if (c.returns !== null) {
+            statement(c.returns, c.returns, "read", `command ${catalog}.${cname}, returns`);
+          }
         }
       }
     }
-    modules.push({ name, dir, importMs, readsAll: mc.readsAll ?? false, tables, indexes, searches, views, triggers, statements, queries, commands });
+    modules.push({ name, dir, importMs, readsAll: mc.readsAll ?? false, tables, indexes, searches, views, triggers, statements, statementUses, readStatements, queries, commands });
   }
   return { config, configDir, modules };
 }
@@ -155,7 +174,7 @@ export async function load(configPath: string, write = true): Promise<Loaded> {
 // clone lacks. Node names the file it cannot find; when that file is the
 // generated file of a module, the build writes the stub and imports again.
 // The same path twice means the stub did not help, and the error stands.
-async function importConfig(absolute: string, write: boolean, stubbed: string[]): Promise<Record<string, unknown>> {
+async function importConfig(absolute: string, write: boolean, stubbed: string[], configPath: string): Promise<Record<string, unknown>> {
   for (;;) {
     try {
       return await importFresh(absolute);
@@ -163,7 +182,7 @@ async function importConfig(absolute: string, write: boolean, stubbed: string[])
       const missing = missingGeneratedFile(e);
       if (missing === null || stubbed.includes(missing)) throw e;
       const name = basename(dirname(missing));
-      if (!write) throw new BuildError(`module ${name}: ${missing} is missing. Run: npx solarsql build`);
+      if (!write) throw new BuildError(`module ${name}: ${missing} is missing. Run: npx solarsql build ${shellArgument(configPath)}`);
       // The library specifier is in the config, which has not loaded yet;
       // load() rewrites the stub once it has. The import is type-only, so
       // the specifier does not matter for this import.
@@ -306,8 +325,16 @@ export async function build(configPath: string, options: BuildOptions = {}): Pro
       const used = new Set<string>();
       const typeStarted = performance.now();
       for (const [key, sql] of m.statements) {
-        const analysis = typer.analyze(sql, m.name);
-        checkBoundary(engine, m, owner, sql);
+        let analysis: Analysis;
+        try {
+          if (m.readStatements.has(key) && engine.accesses(sql).some((access) => ["insert", "update", "delete"].includes(access.action))) {
+            throw new BuildError("A query or returns must not write to the database.", sql);
+          }
+          analysis = typer.analyze(sql, m.name);
+          checkBoundary(engine, m, owner, sql);
+        } catch (error) {
+          throw withLocations(error, m.statementUses.get(key)!, sql);
+        }
         for (const b of analysis.brands) used.add(b);
         if (analysis.scans.length > 0) scans.push({ module: m.name, sql: key, tables: analysis.scans });
         entries.push({ key, analysis });
@@ -447,45 +474,65 @@ function checkCommands(m: Module, entries: readonly { key: string; analysis: Ana
   // the statement cannot pull it two ways.
   const refined = new Map<string, Map<string, { type: string; command: string }>>();
   for (const c of m.commands) {
-    const types = new Map<string, { type: string; encode: boolean; sql: string }>();
-    const keys = [...c.plan.map((i) => (typeof i === "string" ? i : i.predicate)), ...(c.returns ? [c.returns] : [])];
-    for (const key of keys) {
-      for (const p of byKey.get(key)!.params) {
-        const seen = types.get(p.name);
-        if (seen && p.type === "SqlValue") continue;
-        if (seen && seen.type === "SqlValue") {
+    let failureKeys: string[] = [];
+    try {
+      const types = new Map<string, { type: string; encode: boolean; sql: string }>();
+      const keys = [...c.plan.map((i) => (typeof i === "string" ? i : i.predicate)), ...(c.returns ? [c.returns] : [])];
+      for (const key of keys) {
+        for (const p of byKey.get(key)!.params) {
+          const seen = types.get(p.name);
+          if (seen && p.type === "SqlValue") continue;
+          if (seen && seen.type === "SqlValue") {
+            types.set(p.name, { type: p.type, encode: p.encode, sql: key });
+            continue;
+          }
+          if (seen && seen.type !== p.type) {
+            failureKeys = [seen.sql, key];
+            throw new BuildError(
+              `command ${m.name}.${c.name}: parameter :${p.name} is ${seen.type} in one statement and ${p.type} in another.\n  ${seen.sql}\n  ${key}`,
+            );
+          }
           types.set(p.name, { type: p.type, encode: p.encode, sql: key });
-          continue;
         }
-        if (seen && seen.type !== p.type) {
-          throw new BuildError(
-            `command ${m.name}.${c.name}: parameter :${p.name} is ${seen.type} in one statement and ${p.type} in another.\n  ${seen.sql}\n  ${key}`,
-          );
+      }
+      for (const key of keys) {
+        for (const p of byKey.get(key)!.params) {
+          const t = types.get(p.name)!;
+          if (p.type !== "SqlValue" || t.type === "SqlValue") continue;
+          const earlier = refined.get(key)?.get(p.name);
+          if (earlier && earlier.type !== t.type) {
+            failureKeys = [key, t.sql];
+            throw new BuildError(`parameter :${p.name} of this statement is ${earlier.type} in command ${m.name}.${earlier.command} and ${t.type} in command ${m.name}.${c.name}. Give the statement a type of its own, or split it.`, key);
+          }
+          p.type = t.type;
+          p.encode = t.encode;
+          refined.set(key, new Map([...(refined.get(key) ?? []), [p.name, { type: t.type, command: c.name }]]));
         }
-        types.set(p.name, { type: p.type, encode: p.encode, sql: key });
       }
-    }
-    for (const key of keys) {
-      for (const p of byKey.get(key)!.params) {
-        const t = types.get(p.name)!;
-        if (p.type !== "SqlValue" || t.type === "SqlValue") continue;
-        const earlier = refined.get(key)?.get(p.name);
-        if (earlier && earlier.type !== t.type) {
-          throw new BuildError(`parameter :${p.name} of this statement is ${earlier.type} in command ${m.name}.${earlier.command} and ${t.type} in command ${m.name}.${c.name}. Give the statement a type of its own, or split it.`, key);
+      for (const [i, item] of c.plan.entries()) {
+        if (typeof item === "string") continue;
+        const previous = c.plan[i - 1];
+        if (/\bchanges\s*\(/i.test(item.predicate) && (previous === undefined || typeof previous !== "string")) {
+          failureKeys = [item.predicate];
+          throw new BuildError(`command ${m.name}.${c.name}: assert ${item.name} uses changes(), which counts the statement right before it. Put it right after that statement.`);
         }
-        p.type = t.type;
-        p.encode = t.encode;
-        refined.set(key, new Map([...(refined.get(key) ?? []), [p.name, { type: t.type, command: c.name }]]));
       }
-    }
-    for (const [i, item] of c.plan.entries()) {
-      if (typeof item === "string") continue;
-      const previous = c.plan[i - 1];
-      if (/\bchanges\s*\(/i.test(item.predicate) && (previous === undefined || typeof previous !== "string")) {
-        throw new BuildError(`command ${m.name}.${c.name}: assert ${item.name} uses changes(), which counts the statement right before it. Put it right after that statement.`);
-      }
+    } catch (error) {
+      const locations = new Set([
+        `${join(m.dir, "module.ts")}: command ${c.catalog}.${c.name}`,
+        ...failureKeys.flatMap((key) => m.statementUses.get(key) ?? []),
+      ]);
+      throw withLocations(error, [...locations]);
     }
   }
+}
+
+// Keep the engine's message and SQL intact; catalog identity comes from the
+// imported exports, which also covers dynamically constructed catalogs.
+function withLocations(error: unknown, locations: readonly string[], sql?: string): BuildError {
+  const diagnostic = error instanceof BuildError ? error : new BuildError(error instanceof Error ? error.message : String(error), sql);
+  diagnostic.message += `\n  at: ${locations.join("\n  at: ")}`;
+  return diagnostic;
 }
 
 function migrationFiles(dir: string): { name: string; sql: string }[] {

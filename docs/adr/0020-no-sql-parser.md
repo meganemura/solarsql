@@ -1,6 +1,6 @@
 # ADR 0020: No SQL parser, a scanner and engine probes
 
-Status: accepted (2026-09-06)
+Status: accepted (2026-09-06). ADR 0048 extends the scanner with query scopes after result-type counterexamples.
 
 ## Context
 

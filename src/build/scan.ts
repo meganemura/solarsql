@@ -342,7 +342,7 @@ export function columnRef(expr: string): { alias: string | null; column: string 
 // Alias to table name for every `FROM t [AS] a`, `JOIN t [AS] a`, and the
 // comma-separated entries of a FROM list, at any depth. A subquery or a
 // table-valued function maps its alias to null.
-export function aliasMap(sql: string): Map<string, string | null> {
+export function aliasMap(sql: string, outerOnly = false): Map<string, string | null> {
   const map = new Map<string, string | null>();
   const t = significant(tokenize(sql));
   const stop = new Set(["on", "where", "group", "order", "left", "right", "inner", "outer", "cross", "natural", "join", "using", "limit", "full", "union", "except", "intersect", "having", "window", "as", "set", "returning"]);
@@ -378,6 +378,7 @@ export function aliasMap(sql: string): Map<string, string | null> {
   };
   for (let i = 0; i < t.length; i++) {
     const tok = t[i]!;
+    if (outerOnly && tok.depth !== 0) continue;
     if (isKeyword(tok, "from")) {
       openFrom.add(tok.depth);
       entry(i + 1);
@@ -429,10 +430,11 @@ export type ParamSite =
 
 const compareOps = new Set(["=", "==", "<>", "!=", "<", ">", "<=", ">=", "like", "glob", "is", "match"]);
 
-export function paramSites(sql: string): Map<string, ParamSite[]> {
+export function paramSites(sql: string, locate = false): Map<string, (ParamSite & { offset?: number })[]> {
   const t = significant(tokenize(sql));
-  const sites = new Map<string, ParamSite[]>();
-  const add = (name: string, site: ParamSite) => sites.set(name, [...(sites.get(name) ?? []), site]);
+  const sites = new Map<string, (ParamSite & { offset?: number })[]>();
+  let offset = 0;
+  const add = (name: string, site: ParamSite, at = offset) => sites.set(name, [...(sites.get(name) ?? []), locate ? { ...site, offset: at } : site]);
   const refAt = (i: number, dir: -1 | 1): { alias: string | null; column: string; span: number } | null => {
     const a = t[i];
     if (!a || a.type !== "ident") return null;
@@ -447,6 +449,7 @@ export function paramSites(sql: string): Map<string, ParamSite[]> {
   let valueIndex = 0;
   for (let i = 0; i < t.length; i++) {
     const tok = t[i]!;
+    offset = tok.start;
     const target = insertTarget(t, i);
     if (target !== null) {
       insertTable = unquote(t[target]!.text);
@@ -483,7 +486,7 @@ export function paramSites(sql: string): Map<string, ParamSite[]> {
         if (!ends) continue;
         const column = insertColumns[index];
         if (k - itemStart === 1 && t[itemStart]!.type === "param" && t[itemStart]!.text.startsWith(":") && column) {
-          add(t[itemStart]!.text.slice(1), { kind: "insert", table: insertTable, column });
+          add(t[itemStart]!.text.slice(1), { kind: "insert", table: insertTable, column }, t[itemStart]!.start);
           // Mark the token so the generic pass below skips it.
           (t[itemStart] as { handled?: boolean }).handled = true;
         }
@@ -498,10 +501,10 @@ export function paramSites(sql: string): Map<string, ParamSite[]> {
       // ... from json_each(:rows)
       if (isKeyword(t[k], "from") && isKeyword(t[k + 1], "json_each") && t[k + 2]?.text === "(" && t[k + 3]?.type === "param" && t[k + 4]?.text === ")") {
         if (keys.length > 0) {
-          add(t[k + 3]!.text.slice(1), { kind: "rows_json", table: insertTable, keys });
+          add(t[k + 3]!.text.slice(1), { kind: "rows_json", table: insertTable, keys }, t[k + 3]!.start);
           (t[k + 3] as { handled?: boolean }).handled = true;
         } else if (scalar !== null) {
-          add(t[k + 3]!.text.slice(1), { kind: "json_each", keys: [], scalar: { table: insertTable, column: scalar } });
+          add(t[k + 3]!.text.slice(1), { kind: "json_each", keys: [], scalar: { table: insertTable, column: scalar } }, t[k + 3]!.start);
           (t[k + 3] as { handled?: boolean }).handled = true;
         }
       }
@@ -524,7 +527,7 @@ export function paramSites(sql: string): Map<string, ParamSite[]> {
     ) {
       const ref = refAt(i - 8, -1);
       if (ref) {
-        add(name, { kind: "in_json", alias: ref.alias, column: ref.column });
+        add(name, { kind: "in_json", alias: ref.alias, column: ref.column }, t[i - 8]!.start);
         continue;
       }
     }
@@ -729,4 +732,15 @@ function stripComments(text: string): string {
     .filter((t) => t.type !== "comment")
     .map((t) => t.text)
     .join("");
+}
+
+// Only the complete predicate proves this alias present. An OR, a different
+// alias, or a more complex predicate must retain the join's nullable type.
+export function nonNullFilterAlias(expr: string): string | null {
+  const filter = findCall(expr, "filter");
+  if (!filter || filter.args.length !== 1) return null;
+  const tokens = significant(tokenize(filter.args[0]!.text));
+  if (tokens.length !== 7 || tokens[0]!.text.toLowerCase() !== "where" || tokens[4]!.text.toLowerCase() !== "is" || tokens[5]!.text.toLowerCase() !== "not" || tokens[6]!.text.toLowerCase() !== "null") return null;
+  const ref = columnRef(tokens.slice(1, 4).map((token) => token.text).join(""));
+  return ref?.alias ?? null;
 }

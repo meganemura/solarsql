@@ -5,9 +5,10 @@
 // Boundary: no file system, no module layout, no boundary check. build.ts
 // owns those. A shape this file cannot type becomes a BuildError with the
 // SQL and the reason.
+import { queryScope, querySources, sqliteName, unionType, unionMembers, type Cte } from "./scope.ts";
 import { GUARD_TABLE } from "../runtime/plan.ts";
 import type { ColumnFact, Engine, OutputColumn, TableFact } from "./facts.ts";
-import { aliasMap, columnRef, findCall, isKeyword, leadingComment, namedParams, paramSites, selectItems, significant, tokenize, unquote } from "./scan.ts";
+import { aliasMap, columnRef, findCall, isKeyword, leadingComment, namedParams, nonNullFilterAlias, paramSites, quoteIdent, selectItems, significant, splitAtCommas, tokenize, unquote } from "./scan.ts";
 
 export class BuildError extends Error {
   readonly sql: string | undefined;
@@ -71,9 +72,14 @@ function affinityType(affinity: string): string | null {
   return scalarType(a);
 }
 
+type ScopeColumn = Analysis["columns"][number] & { hidden?: boolean };
+type Binding = Cte & { environment: Map<string, Binding> };
+type ScopeContext = { rows: Map<string, ScopeColumn[]>; visible: ScopeColumn[]; nullable: Set<string>; environment: Map<string, Binding>; active: Set<Binding | string>; parent?: ScopeContext };
+
 type Resolved = { type: string; nullable: boolean; brand: string | null };
 
 export class Typer {
+  private readonly recursiveRows = new Map<Binding, ScopeColumn[]>();
   private readonly tables = new Map<string, TableFact>();
   private readonly engine: Engine;
   private readonly brands: Map<string, Brand>;
@@ -90,10 +96,10 @@ export class Typer {
     const c = t?.columns.find((x) => x.name === column);
     if (!t || !c) throw new BuildError(`unknown column ${table}.${column}`, sql);
     // A full-text search table: its columns hold text and may be null, its
-    // rank is a number, and the column named after the table is the match
+    // rank can be null without MATCH, and the column named after the table is the match
     // target, which takes the query string.
     if (t.virtual) {
-      if (c.name === "rank") return { type: "number", nullable: false, brand: null };
+      if (c.name === "rank") return { type: "number", nullable: true, brand: null };
       if (c.name === t.name) return { type: "string", nullable: false, brand: null };
       return { type: "string", nullable: true, brand: null };
     }
@@ -133,22 +139,14 @@ export class Typer {
     }
     const aliases = aliasMap(sql);
     const select = isSelect(sql);
-    const nullableAliases = select ? this.engine.nullableAliases(sql) : new Set<string>();
     const outputs = this.engine.columns(sql);
     const returnsRows = outputs.length > 0;
-    const columns: Analysis["columns"] = [];
-    if (returnsRows) {
-      // RETURNING has no select list to scan and no probe through CREATE
-      // TABLE AS, so its columns must be column references.
-      const items = select ? selectItems(sql) : null;
-      const affinities = select ? this.engine.affinities(sql) : new Map<string, string>();
-      for (const [i, out] of outputs.entries()) {
-        const item = items?.[i] ?? null;
-        columns.push(this.outputColumn(sql, out, item, aliases, nullableAliases, affinities, note));
-      }
-    }
+    this.distinctOutputs(outputs, sql);
+    const columns = select ? this.scopeRows(sql, new Map(), new Set(), note) : outputs.map((out) => this.outputColumn(sql, out, null, aliases, new Set(), new Map(), note));
     const params = names.map((name) => ({ name, ...this.paramType(sql, name, aliases, note) }));
     const scans = select && /\bwhere\b/i.test(sql) ? this.engine.fullScans(sql) : [];
+    const usedTypes = [...columns.map((column) => column.type), ...params.map((param) => param.type)].join(" ").replace(/"(?:[^"\\]|\\.)*"/g, "");
+    for (const brand of brands) if (!new RegExp(`\\b${brand}\\b`).test(usedTypes)) brands.delete(brand);
     return { sql, doc: leadingComment(sql), returnsRows, params, columns, brands, scans, reads: this.reads(sql) };
   }
 
@@ -163,6 +161,218 @@ export class Typer {
     return [...out].sort();
   }
 
+  private distinctOutputs(outputs: readonly { name: string }[], sql: string): void {
+    const names = new Set<string>();
+    for (const out of outputs) {
+      if (names.has(out.name)) throw new BuildError(`duplicate output column "${out.name}". Give each output a distinct AS name.`, sql);
+      names.add(out.name);
+    }
+  }
+
+  private scopeProbe(sql: string, environment: Map<string, Binding>): string {
+    if (environment.size === 0) return sql;
+    const bindings = [...environment.values()].map((binding) => `${quoteIdent(binding.name)}${binding.columns.length ? `(${binding.columns.map(quoteIdent).join(",")})` : ""} as (${binding.sql})`);
+    return `with ${bindings.join(", ")} ${sql}`;
+  }
+
+  private nullableColumn(column: ScopeColumn): ScopeColumn {
+    return { ...column, type: unionType(column.type, "null") };
+  }
+
+  private mergeColumn(left: ScopeColumn, right: ScopeColumn, sql: string): ScopeColumn {
+    if (left.json !== right.json && left.type !== "null" && right.type !== "null") {
+      throw new BuildError(`column "${left.name}" mixes decoded JSON and SQL scalar values. CAST the JSON branch AS TEXT to return text in every branch.`, sql);
+    }
+    return { name: left.name, type: unionType(left.type, right.type), json: left.json || right.json };
+  }
+
+  private scopeRows(sql: string, inherited: Map<string, Binding>, active: Set<Binding | string>, note: (r: Resolved) => Resolved, parent?: ScopeContext): ScopeColumn[] {
+    let scope: ReturnType<typeof queryScope>;
+    try { scope = queryScope(sql); } catch (error) { throw new BuildError(`query scope: ${(error as Error).message}`, sql); }
+    const environment = new Map(inherited);
+    for (const cte of scope.ctes) environment.set(sqliteName(cte.name), { ...cte, environment });
+    const rows = scope.branches.map((branch) => this.branchRows(branch, environment, active, note, parent));
+    let result = rows[0]!;
+    for (let i = 1; i < rows.length; i++) {
+      // INTERSECT and EXCEPT return values of the left input. UNION can
+      // return either branch, so both the storage type and JSON policy merge.
+      if (scope.operators[i - 1]!.startsWith("union")) result = result.map((column, j) => this.mergeColumn(column, rows[i]![j]!, sql));
+    }
+    return result;
+  }
+
+  private sourceRows(source: ReturnType<typeof querySources>[number], environment: Map<string, Binding>, active: Set<Binding | string>, note: (r: Resolved) => Resolved): ScopeColumn[] {
+    if (source.query) return this.scopeRows(source.query, environment, active, note);
+    if (source.functionSql) {
+      return this.engine.columns(this.scopeProbe(`select * from ${source.functionSql}`, environment)).map((column) => ({ name: column.name, type: "SqlValue", json: false }));
+    }
+    const name = source.name!;
+    const binding = source.schema === null ? environment.get(sqliteName(name)) : undefined;
+    if (binding) {
+      if (active.has(binding)) {
+        const rows = this.recursiveRows.get(binding);
+        if (rows) return rows;
+        throw new BuildError(`recursive CTE "${name}" needs a non-recursive SELECT seed`, binding.sql);
+      }
+      const next = new Set(active).add(binding);
+      const rename = (rows: ScopeColumn[]) => rows.map((column, i) => ({ ...column, name: binding.columns[i] ?? column.name }));
+      const scope = queryScope(binding.sql);
+      if (scope.branches.length === 1 || scope.operators.some((op) => !op.startsWith("union"))) {
+        return rename(this.scopeRows(binding.sql, binding.environment, next, note));
+      }
+      // The seed starts a monotone type union. Accept only a fixed point:
+      // this proves that another recursive step cannot add a new value type.
+      let rows = rename(this.scopeRows(scope.branches[0]!, binding.environment, next, note));
+      try {
+        for (let iteration = 0; iteration < 32; iteration++) {
+          this.recursiveRows.set(binding, rows);
+          const inferred = rename(this.scopeRows(binding.sql, binding.environment, next, note));
+          const merged = rows.map((column, i) => this.mergeColumn(column, inferred[i]!, binding.sql));
+          if (merged.every((column, i) => column.type === rows[i]!.type && column.json === rows[i]!.json)) return merged;
+          if (merged.reduce((size, column) => size + column.type.length, 0) > 65_536) break;
+          rows = merged;
+        }
+        throw new BuildError(`recursive CTE "${name}" result types do not stabilize within 32 steps and 65536 type characters. Use CAST for recursive expressions.`, binding.sql);
+      } finally {
+        this.recursiveRows.delete(binding);
+      }
+    }
+    const view = this.engine.view(name);
+    if (view) {
+      const key = `view:${sqliteName(name)}`;
+      if (active.has(key)) throw new BuildError(`recursive view "${name}" needs explicit type support`, view.sql);
+      const rows = this.scopeRows(view.sql, new Map(), new Set(active).add(key), note);
+      return rows.map((column, i) => ({ ...column, name: view.columns[i]! }));
+    }
+    const table = [...this.tables.values()].find((table) => sqliteName(table.name) === sqliteName(name));
+    if (!table) throw new BuildError(`unknown source ${name}`, name);
+    return table.columns.map((column) => {
+      const r = note(this.column(table.name, column.name, name));
+      return { name: column.name, type: r.nullable ? unionType(r.type, "null") : r.type, json: false, ...(column.hidden ? { hidden: true } : {}) };
+    });
+  }
+
+  private scopedReference(ref: { alias: string | null; column: string }, context: ScopeContext, nullable = context.nullable): ScopeColumn | null {
+    if (ref.alias !== null) {
+      const alias = sqliteName(ref.alias);
+      const rows = context.rows.get(alias);
+      if (!rows) return context.parent ? this.scopedReference(ref, context.parent) : null;
+      const column = rows.find((column) => sqliteName(column.name) === sqliteName(ref.column));
+      return column ? nullable.has(alias) ? this.nullableColumn(column) : column : null;
+    }
+    const found = context.visible.filter((column) => sqliteName(column.name) === sqliteName(ref.column));
+    if (found.length === 0) {
+      for (const [alias, rows] of context.rows) for (const column of rows) {
+        if (column.hidden && sqliteName(column.name) === sqliteName(ref.column)) found.push(nullable.has(alias) ? this.nullableColumn(column) : column);
+      }
+    }
+    if (found.length === 1) return found[0]!;
+    return found.length === 0 && context.parent ? this.scopedReference(ref, context.parent) : null;
+  }
+
+  private detachedProbe(sql: string, context: ScopeContext): string {
+    if (!context.parent) return this.scopeProbe(sql, context.environment);
+    const tokens = significant(tokenize(sql));
+    const replacements: { start: number; end: number }[] = [];
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i]!;
+      if (token.type !== "ident" || tokens[i + 1]?.text !== "." || tokens[i + 2]?.type !== "ident") continue;
+      const alias = sqliteName(unquote(token.text));
+      if (!context.rows.has(alias) && this.scopedReference({ alias, column: unquote(tokens[i + 2]!.text) }, context.parent)) {
+        replacements.push({ start: token.start, end: tokens[i + 2]!.end });
+        i += 2;
+      }
+    }
+    for (const replacement of replacements.reverse()) sql = sql.slice(0, replacement.start) + "null" + sql.slice(replacement.end);
+    return this.scopeProbe(sql, context.environment);
+  }
+
+  private sourceContext(sql: string, environment: Map<string, Binding>, active: Set<Binding | string>, note: (r: Resolved) => Resolved, parent?: ScopeContext): { context: ScopeContext; aliases: Map<string, string | null> } {
+    let sources: ReturnType<typeof querySources>;
+    try { sources = querySources(sql); } catch (error) { throw new BuildError(`query scope: ${(error as Error).message}`, sql); }
+    const context: ScopeContext = { rows: new Map(), visible: [], nullable: new Set(), environment, active, ...(parent ? { parent } : {}) };
+    const aliases = new Map<string, string | null>();
+    for (const source of sources) {
+      const alias = sqliteName(source.alias);
+      const rows = this.sourceRows(source, environment, active, note);
+      const common = new Set((source.natural ? rows.filter((column) => context.visible.some((left) => sqliteName(left.name) === sqliteName(column.name))).map((column) => column.name) : source.using).map(sqliteName));
+      const before = context.visible;
+      if (source.join === "right" || source.join === "full") {
+        for (const previous of context.rows.keys()) context.nullable.add(previous);
+        context.visible = context.visible.map((column) => this.nullableColumn(column));
+      }
+      context.rows.set(alias, rows);
+      aliases.set(alias, source.name);
+      if (source.join === "left" || source.join === "full") context.nullable.add(alias);
+      context.visible = context.visible.map((column, i) => {
+        if (!common.has(sqliteName(column.name))) return column;
+        const right = rows.find((r) => sqliteName(r.name) === sqliteName(column.name))!;
+        if (source.join === "right") return { ...right, name: column.name };
+        if (source.join === "full") return this.mergeColumn(before[i]!, right, sql);
+        return before[i]!;
+      });
+      context.visible.push(...rows.filter((column) => !column.hidden && !common.has(sqliteName(column.name))).map((column) => context.nullable.has(alias) ? this.nullableColumn(column) : column));
+    }
+    return { context, aliases };
+  }
+
+  private branchRows(sql: string, environment: Map<string, Binding>, active: Set<Binding | string>, note: (r: Resolved) => Resolved, parent?: ScopeContext): ScopeColumn[] {
+    const tokens = significant(tokenize(sql));
+    if (isKeyword(tokens[0], "values")) {
+      const outputs = this.engine.columns(this.scopeProbe(sql, environment));
+      let result: ScopeColumn[] | undefined;
+      for (let i = 1; i < tokens.length; i++) {
+        if (tokens[i]!.text !== "(" || tokens[i]!.depth !== 0) continue;
+        const start = i + 1;
+        while (++i < tokens.length && !(tokens[i]!.text === ")" && tokens[i]!.depth === 0)) {}
+        const expressions = splitAtCommas(sql, tokens, start, i);
+        // SELECT probes reuse expression inference; the runtime keeps VALUES.
+        const row = this.branchRows(`select ${expressions.map((expr, j) => `${expr.text} as ${quoteIdent(outputs[j]!.name)}`).join(", ")}`, environment, active, note, parent);
+        result = result ? result.map((column, j) => this.mergeColumn(column, row[j]!, sql)) : row;
+      }
+      if (!result) throw new BuildError("VALUES needs at least one row", sql);
+      return result;
+    }
+    const { context, aliases } = this.sourceContext(sql, environment, active, note, parent);
+    const probe = this.detachedProbe(sql, context);
+    const outputs = this.engine.columns(probe);
+    const items = selectItems(sql);
+    if (!items) throw new BuildError("VALUES query scopes need an explicit SELECT", sql);
+    const expanded: ({ column: ScopeColumn } | { item: NonNullable<ReturnType<typeof selectItems>>[number] })[] = [];
+    for (const item of items) {
+      const tokens = significant(tokenize(item.expr));
+      if (tokens.length === 1 && tokens[0]!.text === "*") {
+        expanded.push(...context.visible.map((column) => ({ column })));
+      } else if (tokens.length === 3 && tokens[1]!.text === "." && tokens[2]!.text === "*") {
+        const alias = sqliteName(unquote(tokens[0]!.text));
+        const rows = context.rows.get(alias);
+        if (!rows) throw new BuildError(`unknown wildcard source ${tokens[0]!.text}`, sql);
+        expanded.push(...rows.filter((column) => !column.hidden).map((column) => ({ column: context.nullable.has(alias) ? this.nullableColumn(column) : column })));
+      } else expanded.push({ item });
+    }
+    if (expanded.length !== outputs.length) throw new BuildError("query scope does not match SQLite's output columns", sql);
+    const affinities = this.engine.affinities(probe);
+    return expanded.map((entry, i) => {
+      const out = outputs[i]!;
+      if ("column" in entry) return { ...entry.column, name: out.name };
+      const item = entry.item;
+      const expr = stripParens(item.expr);
+      const ref = columnRef(expr);
+      const resolved = ref ? this.scopedReference(ref, context) : null;
+      if (resolved) return { name: out.name, type: resolved.type, json: resolved.json };
+      if (/^(?:select|with|values)\b/i.test(expr)) {
+        const inner = this.scopeRows(expr, environment, active, note, context);
+        if (inner.length !== 1) throw new BuildError("a scalar subquery must return one column", sql);
+        return { ...this.nullableColumn(inner[0]!), name: out.name };
+      }
+      const literal = literalType(expr);
+      if (literal !== null) return { name: out.name, type: literal, json: false };
+      // The expression resolver owns CAST and JSON semantics. A column origin
+      // alone cannot resolve a scalar subquery or a binding from another scope.
+      return this.outputColumn(probe, { ...out, table: null, column: null }, { ...item, expr }, aliases, context.nullable, affinities, note, context);
+    });
+  }
+
   private outputColumn(
     sql: string,
     out: OutputColumn,
@@ -171,36 +381,42 @@ export class Typer {
     nullableAliases: Set<string>,
     affinities: Map<string, string>,
     note: (r: Resolved) => Resolved,
+    scope?: ScopeContext,
   ): Analysis["columns"][number] {
     if (out.table && out.column) {
       const r = note(this.column(out.table, out.column, sql));
       const ref = item ? columnRef(item.expr) : null;
       const alias = ref?.alias ?? (ref ? this.aliasOfBareColumn(aliases, ref.column) : null);
-      const joinNull = alias !== null && nullableAliases.has(alias);
+      const unresolved = item !== null && (alias === null || aliases.get(alias) !== out.table);
+      const joinNull = unresolved || (alias !== null && nullableAliases.has(alias));
       return { name: out.name, type: r.nullable || joinNull ? `${r.type} | null` : r.type, json: false };
     }
     // The outer JSON call is the one that starts first in the text; the
     // other may sit inside it, or inside a subquery of it.
-    const array = item ? findCall(item.expr, "json_group_array") : null;
-    const object = item ? findCall(item.expr, "json_object") : null;
+    const array = item && !/^cast\s*\(/i.test(item.expr) ? findCall(item.expr, "json_group_array") : null;
+    const object = item && !/^cast\s*\(/i.test(item.expr) ? findCall(item.expr, "json_object") : null;
     if (item && array && (!object || array.open < object.open)) {
-      return { name: out.name, type: this.jsonArrayType(sql, item, aliases, nullableAliases, note), json: true };
+      return { name: out.name, type: this.jsonArrayType(sql, item, aliases, nullableAliases, note, scope), json: true };
     }
     if (item && object) {
-      return { name: out.name, type: this.jsonObjectType(sql, item.expr, item, aliases, nullableAliases, note, false), json: true };
+      return { name: out.name, type: this.jsonObjectType(sql, item.expr, item, aliases, nullableAliases, note, false, scope), json: true };
     }
     const affinity = affinities.get(out.name) ?? "";
     const scalar = affinityType(affinity);
     if (scalar === null) {
       throw new BuildError(`column "${out.name}" is an expression with no type. Wrap it in cast(... as integer), cast(... as real), or cast(... as text).`, sql);
     }
-    const notNull = item !== null && castNeverNull(item.expr, (ref) => this.refNullable(ref, aliases, nullableAliases, sql));
+    const notNull = item !== null && castNeverNull(item.expr, (ref) => this.refNullable(ref, aliases, nullableAliases, sql, scope));
     return { name: out.name, type: notNull ? scalar : `${scalar} | null`, json: false };
   }
 
   // Whether a column reference can be null here: its declaration, or the
   // outer side of a join. Null when the reference does not resolve.
-  private refNullable(ref: { alias: string | null; column: string }, aliases: Map<string, string | null>, nullableAliases: Set<string>, sql: string): boolean | null {
+  private refNullable(ref: { alias: string | null; column: string }, aliases: Map<string, string | null>, nullableAliases: Set<string>, sql: string, scope?: ScopeContext): boolean | null {
+    if (scope) {
+      const column = this.scopedReference(ref, scope, nullableAliases);
+      if (column) return unionType(column.type, "null") === column.type || column.type === "SqlValue";
+    }
     const alias = ref.alias ?? this.aliasOfBareColumn(aliases, ref.column);
     const table = alias === null ? null : aliases.get(alias) ?? null;
     if (!table) return null;
@@ -223,6 +439,7 @@ export class Typer {
     aliases: Map<string, string | null>,
     nullableAliases: Set<string>,
     note: (r: Resolved) => Resolved,
+    scope?: ScopeContext,
   ): string {
     const call = findCall(item.expr, "json_group_array")!;
     if (call.args.length !== 1) throw new BuildError(`json_group_array takes one argument`, sql);
@@ -236,10 +453,11 @@ export class Typer {
         sql,
       );
     }
-    // Inside the array the filter has removed the rows the join added.
-    const insideNullable = new Set([...nullableAliases].filter((a) => !usedAliases.has(a)));
-    if (findCall(inner, "json_object")) return `Array<${this.jsonObjectType(sql, inner, item, aliases, insideNullable, note, true)}>`;
-    const element = this.valueType(sql, inner, aliases, insideNullable, note);
+    // A FILTER clause alone does not prove that it removes the join rows.
+    const excludedAlias = nonNullFilterAlias(item.expr.slice(call.close));
+    const insideNullable = new Set([...nullableAliases].filter((a) => a !== excludedAlias));
+    if (findCall(inner, "json_object")) return `Array<${this.jsonObjectType(sql, inner, item, aliases, insideNullable, note, true, scope)}>`;
+    const element = this.valueType(sql, inner, aliases, insideNullable, note, scope);
     return `Array<${element}>`;
   }
 
@@ -260,6 +478,7 @@ export class Typer {
     nullableAliases: Set<string>,
     note: (r: Resolved) => Resolved,
     insideArray: boolean,
+    scope?: ScopeContext,
   ): string {
     const call = findCall(expr, "json_object")!;
     if (call.args.length % 2 !== 0) throw new BuildError(`json_object needs key, value pairs`, sql);
@@ -270,7 +489,7 @@ export class Typer {
       if (!m) throw new BuildError(`json_object key must be a string literal, got ${key}`, sql);
       const name = m[1]!.replace(/''/g, "'");
       const value = call.args[i + 1]!.text;
-      fields.push(`${JSON.stringify(name)}: ${this.valueType(sql, value, aliases, nullableAliases, note)}`);
+      fields.push(`${JSON.stringify(name)}: ${this.valueType(sql, value, aliases, nullableAliases, note, scope)}`);
     }
     const type = `{ ${fields.join("; ")} }`;
     void item;
@@ -282,11 +501,15 @@ export class Typer {
   // a column reference resolves through the tables, a CAST through a probe
   // query, a `json((select json_group_array(...) ...))` subquery through
   // its own analysis, and anything else is an error.
-  private valueType(sql: string, expr: string, aliases: Map<string, string | null>, nullableAliases: Set<string>, note: (r: Resolved) => Resolved): string {
-    const nested = this.nestedJsonType(sql, expr, aliases, note);
+  private valueType(sql: string, expr: string, aliases: Map<string, string | null>, nullableAliases: Set<string>, note: (r: Resolved) => Resolved, scope?: ScopeContext): string {
+    const literal = literalType(stripParens(expr));
+    if (literal !== null) return literal;
+    const nested = this.nestedJsonType(sql, expr, aliases, note, scope);
     if (nested !== null) return nested;
     const ref = columnRef(expr);
     if (ref) {
+      const resolved = scope ? this.scopedReference(ref, scope, nullableAliases) : null;
+      if (resolved) return resolved.json ? "string" : resolved.type;
       const alias = ref.alias ?? this.aliasOfBareColumn(aliases, ref.column);
       const table = alias === null ? null : aliases.get(alias) ?? null;
       if (!table) throw new BuildError(`cannot find the table of ${expr}`, sql);
@@ -299,7 +522,7 @@ export class Typer {
       const m = /\bas\s+([A-Za-z]+)\s*$/i.exec(cast.args[0]!.text);
       if (m) {
         const scalar = scalarType(m[1]!);
-        if (scalar !== "unknown") return castNeverNull(expr, (r) => this.refNullable(r, aliases, nullableAliases, sql)) ? scalar : `${scalar} | null`;
+        if (scalar !== "unknown") return castNeverNull(expr, (r) => this.refNullable(r, aliases, nullableAliases, sql, scope)) ? scalar : `${scalar} | null`;
       }
     }
     throw new BuildError(`value "${expr}" inside json has no type. Use a column reference, cast(... as integer | real | text), or json((select json_group_array(...) ...)).`, sql);
@@ -311,7 +534,7 @@ export class Typer {
   // replaced by NULL, which prepares the same and changes no type. The json()
   // call is required: a subquery's text has no JSON subtype, so without it
   // the array would nest as a string.
-  private nestedJsonType(sql: string, expr: string, aliases: Map<string, string | null>, note: (r: Resolved) => Resolved): string | null {
+  private nestedJsonType(sql: string, expr: string, aliases: Map<string, string | null>, note: (r: Resolved) => Resolved, scope?: ScopeContext): string | null {
     const bare = /^\(\s*select\b/i.test(expr.trim());
     const call = findCall(expr, "json");
     const wrapped = call !== null && /^\s*json\s*\(/i.test(expr) && call.args.length === 1 && /^\(\s*select\b/i.test(call.args[0]!.text.trim());
@@ -324,6 +547,10 @@ export class Typer {
     const isObject = !isArray && findCall(item.expr, "json_object") !== null;
     if (!isArray && !isObject) return null;
     if (!wrapped) throw new BuildError(`the subquery "${expr}" inside json yields JSON text. Wrap it in json(...) so it nests as JSON, not as a string.`, sql);
+    if (scope) {
+      const rows = this.scopeRows(subquery, scope.environment, scope.active, note, scope);
+      return isArray ? rows[0]!.type : unionType(rows[0]!.type, "null");
+    }
     // Outer alias references become NULL, so the subquery prepares alone.
     const innerAliases = aliasMap(subquery);
     const tokens = tokenize(subquery);
@@ -351,12 +578,52 @@ export class Typer {
     return `${this.jsonObjectType(detached, innerItem.expr, innerItem, innerAliases, innerNullable, note, false)} | null`;
   }
 
+  private parameterScopes(sql: string, offset: number): { start: number; end: number; depth: number }[] {
+    const tokens = significant(tokenize(sql));
+    const scopes: { start: number; end: number; depth: number }[] = [];
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i]!;
+      if (!isKeyword(token, "select") || token.start > offset) continue;
+      let end = sql.length;
+      for (let j = i + 1; j < tokens.length; j++) {
+        const next = tokens[j]!;
+        if (next.depth < token.depth || (next.depth === token.depth && ["union", "intersect", "except"].some(word => isKeyword(next, word)))) {
+          end = next.start;
+          break;
+        }
+      }
+      if (offset < end) scopes.push({ start: token.start, end, depth: token.depth });
+    }
+    return scopes.sort((a, b) => a.depth - b.depth);
+  }
+
+  private parameterContext(sql: string, offset: number, note: (r: Resolved) => Resolved): ScopeContext | undefined {
+    const tokens = significant(tokenize(sql));
+    let context: ScopeContext | undefined;
+    for (const scope of this.parameterScopes(sql, offset)) {
+      let environment = new Map<string, Binding>();
+      // Each enclosing SELECT keeps its own WITH environment. A nested WITH
+      // must not change the sources of a correlated outer reference.
+      for (const token of tokens) {
+        if (!isKeyword(token, "with") || token.start > scope.start) continue;
+        const end = tokens.find(next => next.start > token.start && next.depth < token.depth)?.start ?? sql.length;
+        if (scope.start >= end) continue;
+        const bindings = queryScope(sql.slice(token.start, end), true);
+        environment = new Map(environment);
+        for (const cte of bindings.ctes) environment.set(sqliteName(cte.name), { ...cte, environment });
+      }
+      context = this.sourceContext(sql.slice(scope.start, scope.end), environment, new Set(), note, context).context;
+    }
+    return context;
+  }
+
   // The type of one named parameter, from where it sits in the statement.
   // Sites that name a column must agree on the base type. The parameter
   // allows null when every such site does, or when `:p is null` appears.
   // CASE lists union their literals. json_each sites union their keys.
   private paramType(sql: string, name: string, aliases: Map<string, string | null>, note: (r: Resolved) => Resolved): { type: string; encode: boolean } {
-    const sites = paramSites(sql).get(name) ?? [];
+    const sites = paramSites(sql, true).get(name) ?? [];
+    let context: ScopeContext | undefined;
     const types = new Set<string>();
     const columnSites: Resolved[] = [];
     const literals: string[] = [];
@@ -367,11 +634,20 @@ export class Typer {
     let nullable = false;
     const withNull = (r: Resolved) => (r.nullable ? `${note(r).type} | null` : note(r).type);
     const ofRef = (alias: string | null, column: string): Resolved | null => {
+      const resolved = context ? this.scopedReference({ alias, column }, context) : null;
+      if (resolved) {
+        const members = unionMembers(resolved.type);
+        const nullable = members.includes("null") || resolved.type === "SqlValue";
+        const type = resolved.json ? "string" : members.filter(member => member !== "null").join(" | ") || "null";
+        return { type, nullable, brand: null };
+      }
+      if (context && isSelect(sql)) return null;
       const a = alias ?? this.aliasOfBareColumn(aliases, column);
       const table = a === null ? null : aliases.get(a) ?? null;
-      return table ? this.column(table, column, sql) : null;
+      return table && this.tables.has(table) ? this.column(table, column, sql) : null;
     };
     for (const site of sites) {
+      context = this.parameterContext(sql, site.offset ?? 0, note);
       let r: Resolved | null = null;
       if (site.kind === "compare") {
         r = ofRef(site.alias, site.column);
@@ -383,7 +659,7 @@ export class Typer {
       } else if (site.kind === "in_json") {
         const e = ofRef(site.alias, site.column);
         if (e) {
-          types.add(`readonly ${note(e).type}[]`);
+          types.add(`readonly ${unionMembers(note(e).type).length > 1 ? `(${e.type})` : e.type}[]`);
           encode = true;
         }
         continue;
@@ -489,6 +765,31 @@ function updateTarget(sql: string): string | null {
 }
 
 function isSelect(sql: string): boolean {
-  const first = significant(tokenize(sql))[0];
-  return isKeyword(first, "select") || isKeyword(first, "with") || isKeyword(first, "values");
+  const tokens = significant(tokenize(sql));
+  const first = isKeyword(tokens[0], "with")
+    ? tokens.find((token) => token.depth === 0 && ["select", "values", "insert", "update", "delete", "replace"].some((verb) => isKeyword(token, verb)))
+    : tokens[0];
+  return isKeyword(first, "select") || isKeyword(first, "values");
+}
+
+
+function stripParens(expr: string): string {
+  for (;;) {
+    const tokens = significant(tokenize(expr));
+    if (tokens[0]?.text !== "(" || tokens[tokens.length - 1]?.text !== ")") return expr.trim();
+    const closing = tokens.findIndex((token, i) => i > 0 && token.text === ")" && token.depth === 0);
+    if (closing !== tokens.length - 1) return expr.trim();
+    expr = expr.slice(tokens[0]!.end, tokens[closing]!.start);
+  }
+}
+
+function literalType(expr: string): string | null {
+  const tokens = significant(tokenize(expr));
+  if (tokens.length === 1) {
+    if (isKeyword(tokens[0], "null")) return "null";
+    if (tokens[0]!.type === "string") return "string";
+    if (tokens[0]!.type === "number" || isKeyword(tokens[0], "true") || isKeyword(tokens[0], "false")) return "number";
+  }
+  if (tokens.length === 2 && ["-", "+"].includes(tokens[0]!.text) && tokens[1]!.type === "number") return "number";
+  return null;
 }

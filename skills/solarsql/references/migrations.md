@@ -5,7 +5,7 @@ npx solarsql migration <name>
 ```
 
 The command writes `migrations/NNNN_<name>.sql` with the difference between the migration files applied in order and the declared schema, and rewrites `migrations/index.ts`, the same files as one module for a Durable Object.
-`npx solarsql build` refuses to pass while the files and the schema differ, and prints the statements the migration would hold.
+`npx solarsql build` reports pending or blocked migrations after generating types; `npx solarsql build --check` fails while the files and schema differ.
 Every build keeps `index.ts` in step with the `.sql` files.
 
 ## What a migration holds

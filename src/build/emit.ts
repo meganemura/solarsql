@@ -36,7 +36,7 @@ export function emitGenerated(input: GeneratedInput): string {
   // Import only what the file uses, so a project with noUnusedLocals compiles.
   const names = ["Meta"];
   if (input.ownBrands.length > 0) names.unshift("Id");
-  if (input.entries.some((e) => e.analysis.params.some((p) => p.type === "SqlValue"))) names.push("SqlValue");
+  if (input.entries.some((e) => [...e.analysis.params, ...e.analysis.columns].some((p) => /\bSqlValue\b/.test(p.type)))) names.push("SqlValue");
   lines.push(`import type { ${names.join(", ")} } from ${JSON.stringify(input.library)};`);
   for (const imp of input.importedBrands) {
     lines.push(`import type { ${[...imp.names].sort().join(", ")} } from ${JSON.stringify(imp.specifier)};`);

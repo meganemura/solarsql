@@ -45,26 +45,48 @@ The build finds the type from where the parameter sits. One parameter may sit in
 | anywhere else | `SqlValue` |
 
 An array parameter is encoded as JSON by the adapter; the SQL sees text and reads it with `json_each`.
-A parameter compared with a column of a view is `SqlValue`; compare with the table's column when the type matters.
+Parameters compared with CTE, view, or derived-table columns use those columns' inferred types.
+Unqualified columns resolve in the local SELECT before an enclosing SELECT.
+Each SELECT retains its own WITH bindings, including for correlated references.
+A decoded JSON column takes SQL text as a comparison parameter.
+Unrecognized parameter expressions retain the `SqlValue` fallback.
 
 ## The type of a column
 
-A column of the select list that is not a column reference (a column of a table or a view, or `t.*`) is an expression, and an expression needs `cast(... as integer | real | text)`, whatever SQLite would return for it. The one exception is a JSON shape: `json_group_array(...)`, `json_object(...)`, and `coalesce(json_group_array(...) ..., '[]')` need no cast, and the rows below say how the build types them.
+The build follows column references through tables, views, CTEs, and derived tables.
+Literals, scalar SELECTs, and the JSON shapes below have inferred types.
+Other expressions need `cast(... as integer | real | text)`.
 
 | Column of the select list | Type |
 |---|---|
-| a column of a table, or `t.*` | the declared type ([schema.md](schema.md)); `\| null` on the outer side of a `left join` |
-| a column of a view | the type of the column the view selects |
-| an expression: `count(*)`, `sum(x)`, `a + b`, `bm25(t)`, a window function, a `case`, a subquery | needs `cast(... as integer \| real \| text)`; the build refuses it without one |
+| a column of a table, or `t.*` | the declared type ([schema.md](schema.md)); `\| null` when an outer join can omit its source |
+| a column through a view, CTE, or derived table | its defining query's type, including its nullability and JSON shape |
+| a scalar SELECT | its single output type, with `\| null` for an empty result |
+| a string, number, or NULL literal | the literal's type |
+| an expression: `count(*)`, `sum(x)`, `a + b`, `bm25(t)`, a window function, a `case` | needs `cast(... as integer \| real \| text)`; the build refuses it without one |
 | `cast(expr as T)` | `T \| null` |
 | `cast(<shape> as T)` where the whole `<shape>` is `count(...)`, `total(...)`, `row_number()`, `rank()`, `dense_rank()`, `ntile(...)`, `exists (...)`, `not exists (...)`, `coalesce(x, <literal>)`, or `coalesce(x, <not null column>)`, such as `cast(coalesce(b.n, 0) as integer)` | `T`, never null |
 | `json_group_array(json_object('k', c, ...))` | `{ k: T; ... }[]`, parsed by the adapter |
 | `json_group_array(c)` | `T[]` |
 | `json_object('k', c, ...)` | `{ k: T; ... }` |
 | `json((select json_group_array(...) from child where child.parent_id = o.id))` inside a `json_object` | a nested array; without the `json()` the column holds JSON text |
-| the branches of a `union` | the first branch's types |
+| `VALUES` | union of all row types by column position |
+| `UNION` or `UNION ALL` | union of branch types by column position |
+| `INTERSECT` or `EXCEPT` | the left input's types |
+| `RIGHT JOIN` or `FULL JOIN` | source types with nullability for each side that can be absent |
 
 A `json_group_array` over the outer side of a `left join` needs `filter (where l.id is not null)`, or a parent with no children gets one null element. `coalesce(..., '[]')` gives the empty array.
+Only an exact `filter (where alias.column is not null)` removes that alias's outer nullability from the generated array element type.
+Other predicates retain conservative nullability; filtering one alias does not narrow another alias.
+
+Each catalog query contains one SELECT or VALUES statement, optionally preceded by WITH.
+The build refuses writes and multiple statements in a query entry; put writes in command plan items.
+Each output column needs a distinct name; use AS to distinguish columns with the same name.
+Wildcards expand their source columns, including CTEs and derived tables.
+Recursive CTEs with a SELECT or VALUES seed and UNION branches are supported when their result types stabilize.
+Unresolved structural forms fail with a build error.
+A compound output that mixes decoded JSON and ordinary SQL values requires a common decoding policy.
+CAST the JSON branch AS TEXT to return SQL text from that output.
 
 ## Recipes: dynamic needs as static SQL
 

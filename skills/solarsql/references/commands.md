@@ -41,10 +41,11 @@ export const orderCommands = commands(generated, {
 
 ## The parts
 
-- `plan`: one or more statements (`insert`, `update`, `delete`, `insert ... on conflict do update`, `insert or ignore`, `replace into`) and asserts, in order.
+- `plan`: SQL statements (`select`, `values`, `insert`, `update`, `delete`, `replace`, including WITH forms) and asserts, in order. Each SQL item contains one statement.
 - `assert(name, predicate)`: any SQL expression that yields 0 or 1, with the parameters of the command: a comparison, `exists (...)`, `not exists (...)` over a join. When it yields 0 the whole plan rolls back, and the result names the assert.
 - `changes()` in an assert counts the rows of the statement right before it. The build refuses an assert with `changes()` elsewhere.
-- `returns`: optional, one `select` that runs last in the same transaction and gives the rows of the result. Without it, `rows` is empty.
+- `returns`: optional, one `select` or `values` statement that runs last in the same transaction and gives the rows of the result. Without it, `rows` is empty.
+- The build refuses writes in `returns`, multiple statements per item, transaction control, PRAGMA, and schema changes. The adapter owns the transaction.
 - Parameters are shared across the plan: `:id` is one value with one type. Two statements that give it two types are refused; the message names both.
 
 ## The result

@@ -1,6 +1,6 @@
 # ADR 0026: The build checks migrations, and a separate command writes one
 
-Status: accepted (2026-09-06)
+Status: accepted (2026-09-06). Build exit behavior superseded by [ADR 0043](0043-build-generates-and-check-verifies.md); migrations remain explicit.
 
 ## Context
 

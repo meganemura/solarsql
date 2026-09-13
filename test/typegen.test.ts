@@ -213,7 +213,7 @@ describe("Typer.analyze", () => {
 
   test("a full-text search table: text columns, a numeric rank, and a string match parameter", () => {
     const a = t.analyze("select order_id, note, rank, cast(bm25(note_search) as real) as score from note_search where note_search match :q order by rank", "orders");
-    assert.deepEqual(a.columns.map((c) => [c.name, c.type]), [["order_id", "string | null"], ["note", "string | null"], ["rank", "number"], ["score", "number | null"]]);
+    assert.deepEqual(a.columns.map((c) => [c.name, c.type]), [["order_id", "string | null"], ["note", "string | null"], ["rank", "number | null"], ["score", "number | null"]]);
     assert.deepEqual(a.params, [{ name: "q", type: "string", encode: false }]);
     assert.deepEqual(a.scans, []);
     const b = t.analyze("insert into note_search (order_id, note) values (:id, :note)", "orders");
@@ -225,4 +225,65 @@ describe("Typer.analyze", () => {
     assert.equal(a.returnsRows, true);
     assert.deepEqual(a.columns, [{ name: "id", type: "CustomersId", json: false }, { name: "name", type: "string", json: false }]);
   });
+});
+
+describe("row type soundness", () => {
+  test("compound JSON decoding requires compatible branch values", () => {
+    const engine = new Engine(["create table a(id text primary key, n integer not null) strict"]);
+    try {
+      const t = new Typer(engine, new Map());
+      assert.throws(() => t.analyze("select json_object('n', n) as value from a union all select 'text'", "m"), /mixes decoded JSON/);
+      assert.deepEqual(t.analyze("select cast(json_object('n', n) as text) as value from a union all select 'text'", "m").columns, [{ name: "value", type: "string | null", json: false }]);
+      assert.doesNotThrow(() => t.analyze("select cast('union right join' as text) as value from a /* full join */", "m"));
+      assert.doesNotThrow(() => t.analyze('select n as "union" from a', "m"));
+      assert.throws(() => t.analyze("with recursive x(n) as (select 1 union all select n+1 from x where n<3) select n from x", "m"), /expression with no type/);
+    } finally { engine.close(); }
+  });
+
+  test("JSON filters narrow only the outer alias whose NULL rows they exclude", () => {
+    const engine = new Engine([
+      "create table a(id text primary key, n integer not null) strict",
+      "create table b(id text primary key, n integer not null) strict",
+      "create table c(id text primary key, n integer not null) strict",
+    ]);
+    try {
+      engine.db.exec("insert into a values ('a',1); insert into b values ('a',2)");
+      const t = new Typer(engine, new Map());
+      for (const predicate of ["a.id is not null", "b.id is not null or 1", "b.n is null"]) {
+        const sql = `select json_group_array(json_object('n', c.n)) filter(where ${predicate}) as value from a left join b on a.id=b.id left join c on a.id=c.id`;
+        assert.equal(t.analyze(sql, "m").columns[0]!.type, 'Array<{ "n": number | null }>');
+        assert.deepEqual(JSON.parse(engine.db.prepare(sql).get()!.value as string), predicate === "b.n is null" ? [] : [{ n: null }]);
+      }
+      const sql = "select json_group_array(json_object('bn', b.n, 'cn', c.n)) filter(where b.id is not null) as value from a left join b on a.id=b.id left join c on a.id=c.id";
+      assert.equal(t.analyze(sql, "m").columns[0]!.type, 'Array<{ "bn": number; "cn": number | null }>');
+      assert.deepEqual(JSON.parse(engine.db.prepare(sql).get()!.value as string), [{ bn: 2, cn: null }]);
+    } finally {
+      engine.close();
+    }
+  });
+});
+
+test("origin columns retain NULL from views, query scopes, scalar subqueries, and wildcard joins", () => {
+  const engine = new Engine([
+    "create table a(id integer primary key not null) strict",
+    "create table b(id integer primary key not null) strict",
+    "create view v as select b.id from a left join b on a.id=b.id",
+  ]);
+  try {
+    engine.db.exec("insert into a values (1)");
+    const t = new Typer(engine, new Map());
+    for (const sql of [
+      "select v.id from v", "select id from v",
+      "select x.id from (select b.id from a left join b on a.id=b.id) x",
+      "with x as (select b.id from a left join b on a.id=b.id) select x.id from x",
+      "with b as (select inner_b.id from a left join main.b inner_b on a.id=inner_b.id) select b.id from b",
+      "select b.* from a left join b on a.id=b.id",
+      "select (select id from b) as id",
+    ]) {
+      assert.equal(engine.db.prepare(sql).get()!.id, null, sql);
+      assert.equal(t.analyze(sql, "m").columns[0]!.type, "number | null", sql);
+    }
+    assert.throws(() => t.analyze("select * from a left join b on a.id=b.id", "m"), /duplicate output column.*id/);
+    assert.throws(() => t.analyze("select a.id, b.id from a left join b on a.id=b.id", "m"), /duplicate output column.*id/);
+  } finally { engine.close(); }
 });

@@ -2,6 +2,23 @@
 
 The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0, a minor version may change the API; the entry says what changed.
 
+## Unreleased
+
+
+- Added: parameters inherit CTE, view, and derived-table column types. Nested references use their local scope (ADR 0052).
+- Added: VALUES rows and recursive seeds use generated result types without changes to runtime SQL (ADR 0050).
+- Fixed: parameter aliases resolve within their SELECT scopes and compound branches (ADR 0051).
+- Added: recursive CTE inference with a SELECT seed and stable UNION result types (ADR 0049).
+- Fixed: parent rebuilds with incoming ON DELETE actions now block automatic migration generation, preventing cascading child-row loss (ADR 0046).
+- Changed: queries and `returns` require SELECT or VALUES; each plan item contains one SELECT, VALUES, or DML statement. Transaction control and schema statements are refused (ADR 0045).
+- Added: query scope inference for CTEs, views, derived tables, compound SELECTs, RIGHT JOIN, and FULL JOIN. SQL text stays unchanged (ADR 0048).
+- Fixed: JSON aggregate filters narrow only the outer alias they prove present; other aliases retain nullability.
+- Fixed: result types follow source scopes and join nullability. Scalar subqueries allow null; non-null CTE and view outputs retain their precision. Wildcards expand before later expressions. Duplicate output names are refused.
+- Changed: `solarsql build` exits 0 after valid generation even when a migration is pending or blocked, and reports the required action. Use `build --check` for CI and release gates; it still fails for stale files and pending or blocked migrations (ADR 0043).
+- Added: statement errors identify `module.ts`, the exported catalog and entry, and the command plan position, assert name, or `returns`. Shared SQL reports all its locations (ADR 0044).
+- Fixed: recovery commands preserve a custom configuration path.
+- Docs: the verification workflow includes generation, migration, `build --check`, the TypeScript check, and project tests. DDL edits with unchanged SQL require the build check to detect stale types.
+
 ## 0.3.0 (2026-09-11)
 
 - Added: `changes` in the result of `db.run`: `{ ok: true; rows; changes }`, the rows the plan's statements inserted, updated, or deleted, their triggers' rows included, as D1's `meta.changes` counts them; an assert and `returns` add nothing (ADR 0042). The deployed example Worker reports it after a redeploy.
