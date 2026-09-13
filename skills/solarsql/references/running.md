@@ -74,6 +74,10 @@ const db = d1(env.DB, { observe: (e) => console.log(e.kind, e.name, e.outcome, `
 //   absent on a Durable Object, on node:sqlite, and when the call threw
 ```
 
+Observation is best-effort and cannot change the database result.
+The adapter contains synchronous throws and rejected observer promises, and does not await telemetry completion.
+An observer that needs failure reporting must handle and report its own delivery errors.
+
 D1 bills on `rows_read` and `rows_written`, so a cost tracer reads `e.meta`.
 
 ## Ids

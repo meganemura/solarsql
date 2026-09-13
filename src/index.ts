@@ -224,6 +224,7 @@ export type Observed = {
 };
 
 export type AdapterOptions = {
+  // Telemetry failures cannot change a committed operation's outcome.
   observe?: (event: Observed) => void;
 };
 

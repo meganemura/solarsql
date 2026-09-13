@@ -4,6 +4,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: observer failures cannot replace database results or notify twice after a committed command (ADR 0081).
+
 - Fixed: numeric literals retain hexadecimal prefixes, digit separators, and decimal exponent spellings (ADR 0080).
 
 - Added: DISTINCT and local ORDER BY inside JSON aggregates without SQL rewriting (ADR 0079).

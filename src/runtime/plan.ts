@@ -113,14 +113,17 @@ export async function observed<T>(hook: ((event: Event) => void) | undefined, ki
   if (!hook) return body(report);
   const start = performance.now();
   const event = (outcome: string): Event => ({ kind, name, ms: performance.now() - start, outcome, ...(meta ? { meta } : {}) });
-  try {
-    const value = await body(report);
-    hook(event(outcomeOf(value)));
-    return value;
-  } catch (e) {
-    hook(event("error"));
-    throw e;
-  }
+  const notify = (outcome: string) => {
+    // Telemetry runs after the database outcome. Its failure must not make
+    // a committed command appear to fail or replace an engine error.
+    try { void Promise.resolve(hook(event(outcome))).catch(() => {}); }
+    catch { /* The observer owns telemetry error reporting. */ }
+  };
+  let value: T;
+  try { value = await body(report); }
+  catch (e) { notify("error"); throw e; }
+  notify(outcomeOf(value));
+  return value;
 }
 
 // The meta of one reply or of a batch of replies, as D1 reports it: the
