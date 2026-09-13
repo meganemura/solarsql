@@ -8,7 +8,7 @@
 // for a Worker; this file imports node:sqlite.
 import type { DatabaseSync } from "node:sqlite";
 import type { AdapterOptions, Database } from "./index.ts";
-import { durable, migrate as migrateStorage, type MigrationFile, type StorageLike } from "./durable.ts";
+import { durable, migrate as migrateStorage, type MigrationFile, type MigrationOptions, type StorageLike } from "./durable.ts";
 import { namedParams } from "./build/scan.ts";
 
 export function node(db: DatabaseSync, options: AdapterOptions = {}): Database {
@@ -17,8 +17,8 @@ export function node(db: DatabaseSync, options: AdapterOptions = {}): Database {
 
 // Apply the migration files this database has not applied yet, in name
 // order. Returns the names applied now.
-export function migrate(db: DatabaseSync, files: readonly MigrationFile[]): string[] {
-  return migrateStorage(storageOf(db), files);
+export function migrate(db: DatabaseSync, files: readonly MigrationFile[], options: MigrationOptions = {}): string[] {
+  return migrateStorage(storageOf(db), files, options);
 }
 
 // node:sqlite binds a named parameter by its name only, so the values the
@@ -51,3 +51,5 @@ export function storageOf(db: DatabaseSync): StorageLike {
     },
   };
 }
+
+export { MigrationHistoryError, type MigrationOptions } from "./durable.ts";

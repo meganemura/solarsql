@@ -8,7 +8,7 @@
 // runtime/plan.ts defines.
 import type { AdapterOptions, BatchRows, Command, CommandResult, Database, Entry, GeneratedMap, ParamsArg, PlanShape, Query, Read, Row, SqlValue, StatementMeta } from "./index.ts";
 import { assertFailure, assertStatement, bindValues, constraintFailure, observed, outcomeOf, parseJson } from "./runtime/plan.ts";
-import { splitStatements } from "./build/scan.ts";
+import { significant, splitStatements, tokenize } from "./build/scan.ts";
 
 // The part of DurableObjectStorage this adapter uses. Structural, so no
 // type package is needed.
@@ -69,21 +69,65 @@ function totalChanges(storage: StorageLike): number {
 }
 
 export type MigrationFile = { name: string; sql: string };
+export type MigrationOptions = {
+  // The caller has checked the legacy files and accepts them as the baseline.
+  adoptLegacyHistory?: boolean;
+};
+
+export class MigrationHistoryError extends Error {
+  readonly code: string;
+  readonly migration: string | null;
+  constructor(code: string, message: string, migration: string | null = null) {
+    super(message);
+    this.name = "MigrationHistoryError";
+    this.code = code;
+    this.migration = migration;
+  }
+}
 
 const HISTORY = "solarsql_migrations";
 
-// Apply the migration files this object has not applied yet, in name order,
-// one transaction per file. Call it inside blockConcurrencyWhile() from the
-// constructor of the Durable Object. Returns the names applied now.
-export function migrate(storage: StorageLike, files: readonly MigrationFile[]): string[] {
-  storage.sql.exec(`create table if not exists ${HISTORY} (name text primary key not null, applied_at text not null) strict`);
-  const done = new Set(storage.sql.exec(`select name from ${HISTORY}`).toArray().map((r) => r.name as string));
-  const applied: string[] = [];
-  for (const file of [...files].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
-    if (done.has(file.name)) continue;
+// Store the complete SQL to compare content without a hash implementation in
+// the synchronous Worker path. A name-only legacy record requires explicit trust.
+export function migrate(storage: StorageLike, files: readonly MigrationFile[], options: MigrationOptions = {}): string[] {
+  const ordered = [...files].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  for (let i = 0; i < ordered.length; i++) {
+    if (ordered[i]!.name === ordered[i - 1]?.name) throw new MigrationHistoryError("DUPLICATE_MIGRATION", `Duplicate migration: ${ordered[i]!.name}`, ordered[i]!.name);
+    for (const sql of splitStatements(ordered[i]!.sql)) {
+      const first = significant(tokenize(sql))[0]?.text.toUpperCase();
+      if (first && ["BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE"].includes(first)) {
+        throw new MigrationHistoryError("MIGRATION_TRANSACTION", "The migration runner owns the transaction. Remove transaction control statements.", ordered[i]!.name);
+      }
+    }
+  }
+  storage.sql.exec(`create table if not exists ${HISTORY} (name text primary key not null, applied_at text not null, sql text not null) strict`);
+  const hasSql = storage.sql.exec(`pragma table_info(${HISTORY})`).toArray().some(c => c.name === "sql");
+  // Use one ordering for both inputs; SQLite BINARY and JavaScript order
+  // supplementary Unicode characters differently.
+  const history = storage.sql.exec(`select name${hasSql ? ", sql" : ""} from ${HISTORY}`).toArray()
+    .sort((a, b) => String(a.name) < String(b.name) ? -1 : String(a.name) > String(b.name) ? 1 : 0);
+  for (const [i, row] of history.entries()) {
+    const name = String(row.name);
+    const file = ordered.find(f => f.name === name);
+    if (!file) throw new MigrationHistoryError("MISSING_MIGRATION", `Applied migration is missing: ${name}. Supply the full history.`, name);
+    if (ordered[i]!.name !== name) throw new MigrationHistoryError("MIGRATION_ORDER", `A new migration precedes applied migration ${name}. Append a new file instead.`, name);
+    if (row.sql === undefined || row.sql === null) {
+      if (!options.adoptLegacyHistory) throw new MigrationHistoryError("LEGACY_HISTORY", `Migration ${name} has no recorded SQL. Verify the legacy files before using adoptLegacyHistory.`, name);
+    } else if (row.sql !== file.sql) throw new MigrationHistoryError("MIGRATION_CHANGED", `Applied migration changed: ${name}. Restore it and append a new migration.`, name);
+  }
+  if (!hasSql || history.some(r => r.sql === null || r.sql === undefined)) {
     storage.transactionSync(() => {
-      for (const statement of splitStatements(file.sql)) storage.sql.exec(statement);
-      storage.sql.exec(`insert into ${HISTORY} (name, applied_at) values (?, ?)`, file.name, new Date().toISOString());
+      if (!hasSql) storage.sql.exec(`alter table ${HISTORY} add column sql text`);
+      for (const row of history) {
+        storage.sql.exec(`update ${HISTORY} set sql = ? where name = ?`, ordered.find(f => f.name === row.name)!.sql, row.name);
+      }
+    });
+  }
+  const applied: string[] = [];
+  for (const file of ordered.slice(history.length)) {
+    storage.transactionSync(() => {
+      for (const statement of splitStatements(file.sql)) storage.sql.exec(statement).toArray();
+      storage.sql.exec(`insert into ${HISTORY} (name, applied_at, sql) values (?, ?, ?)`, file.name, new Date().toISOString(), file.sql);
     });
     applied.push(file.name);
   }

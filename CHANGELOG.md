@@ -5,6 +5,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 ## Unreleased
 
 - Added: `inspect` and `build --json` expose operation contracts, accesses, freshness, and structured diagnostics (ADR 0055).
+- Changed: Node and Durable Object migration history records exact SQL and rejects changed, missing, duplicate, or out-of-order files. Legacy history requires explicit adoption (ADR 0056).
 - Fixed: integer and BLOB primary keys retain their scalar types; identity brands require text storage (ADR 0053).
 - Fixed: adapters normalize BLOB results to `Uint8Array`, including D1 byte arrays, before JSON decoding (ADR 0054).
 

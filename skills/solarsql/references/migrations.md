@@ -62,3 +62,17 @@ ctx.blockConcurrencyWhile(async () => {
 On node:sqlite, `migrate(db, migrations)` from `solarsql/node` does the same, and returns the names applied now.
 
 There is no down migration. A change back is the next migration.
+
+## Migration history integrity
+
+The Node and Durable Object runners require the full ordered file history.
+They store the applied SQL and reject changed contents, missing files, duplicate names, and a new file before an applied file.
+An error has `name: "MigrationHistoryError"`, a `code`, and the relevant `migration` name when available.
+Restore the applied files and append a new file to repair a history conflict.
+A file runs in one transaction; transaction control statements inside files are rejected.
+
+An older database can have name-only history. The runner rejects it with `LEGACY_HISTORY` before new migrations execute.
+After checking the original files against your deployment records and database, call `migrate(db, files, { adoptLegacyHistory: true })` once.
+Use the same option with Durable Object storage. This records the supplied SQL as a trusted baseline; it cannot prove the original SQL.
+Subsequent calls compare exact SQL, including comments and whitespace.
+D1 migrations applied through wrangler retain wrangler's history behavior; this check does not wrap that workflow.

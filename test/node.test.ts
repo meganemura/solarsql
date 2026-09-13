@@ -103,3 +103,73 @@ test("Node rejects an integer read outside the safe number range", async () => {
     await assert.rejects(node(raw).all(query), /too large|safely|range/i);
   } finally { raw.close(); }
 });
+
+test('migration history rejects changes, gaps, duplicates and insertion before an applied file', () => {
+  const raw = new DatabaseSync(':memory:');
+  const first = { name: '0002_initial.sql', sql: 'create table saved(value text); insert into saved values (\'retained\')' };
+  try {
+    migrate(raw, [first]);
+    for (const [files, code] of [
+      [[{ ...first, sql: first.sql + '; delete from saved' }], 'MIGRATION_CHANGED'],
+      [[], 'MISSING_MIGRATION'],
+      [[first, first], 'DUPLICATE_MIGRATION'],
+      [[{name:'0001_earlier.sql', sql:'delete from saved'}, first], 'MIGRATION_ORDER'],
+    ] as const) {
+      assert.throws(() => migrate(raw, files), (e: unknown) => (e as {code: string}).code === code);
+      assert.equal(raw.prepare('select value from saved').get()!.value, 'retained');
+    }
+    const bad = { name:'0003_bad.sql', sql:"delete from saved; insert into absent values (1)" };
+    assert.throws(() => migrate(raw, [first, bad]));
+    assert.equal(raw.prepare('select value from saved').get()!.value, 'retained');
+    assert.equal(raw.prepare('select count(*) as n from solarsql_migrations').get()!.n, 1);
+  } finally { raw.close(); }
+});
+
+test('legacy migration history requires explicit adoption before new SQL', () => {
+  const raw = new DatabaseSync(':memory:');
+  const first = { name:'0001_initial.sql', sql:'create table saved(value text)' };
+  const second = { name:'0002_value.sql', sql:"insert into saved values ('new')" };
+  try {
+    raw.exec("create table solarsql_migrations(name text primary key not null, applied_at text not null) strict; insert into solarsql_migrations values ('0001_initial.sql','old'); create table saved(value text)");
+    assert.throws(() => migrate(raw, [first, second]), (e: unknown) => (e as {code: string}).code === 'LEGACY_HISTORY');
+    assert.equal(raw.prepare('select count(*) as n from saved').get()!.n, 0);
+    assert.deepEqual(migrate(raw, [first, second], { adoptLegacyHistory: true }), [second.name]);
+    assert.deepEqual(migrate(raw, [first, second]), []);
+    assert.equal(raw.prepare('select sql from solarsql_migrations where name = ?').get(first.name)!.sql, first.sql);
+  } finally { raw.close(); }
+});
+
+test('reapplying migration files preserves their data effects', async () => {
+  const { test: property } = await import('@hegeldev/hegel');
+  const gs = await import('@hegeldev/hegel/generators');
+  property(tc => {
+    const values = tc.draw(gs.arrays(gs.integers()));
+    const raw = new DatabaseSync(':memory:');
+    const files = [{name:'0001.sql',sql:'create table totals(n integer not null) strict'}, ...values.map((v,i) => ({name:`${String(i+2).padStart(6,'0')}.sql`,sql:`insert into totals values (${v})`}))];
+    // Keep the creation first under the runner's lexicographic ordering.
+    files[0]!.name = '000001.sql';
+    try {
+      migrate(raw, files);
+      assert.deepEqual(migrate(raw, files), []);
+      assert.deepEqual(raw.prepare('select n from totals order by rowid').all().map(r => r.n), values);
+    } finally { raw.close(); }
+  });
+});
+
+test('migration files cannot escape their transaction', () => {
+  const raw = new DatabaseSync(':memory:');
+  try {
+    for (const sql of ['commit', '-- comment\nBEGIN', 'savepoint x', 'end', 'rollback', 'release x']) {
+      assert.throws(() => migrate(raw, [{name:'0001.sql',sql}]), (e: unknown) => (e as {code: string}).code === 'MIGRATION_TRANSACTION');
+    }
+  } finally { raw.close(); }
+});
+
+test('migration history uses the same ordering for Unicode names', () => {
+  const raw = new DatabaseSync(':memory:');
+  const files = [{name:'\uE000.sql',sql:'select 1'}, {name:'\u{10000}.sql',sql:'select 2'}];
+  try {
+    assert.deepEqual(migrate(raw, files), ['\u{10000}.sql', '\uE000.sql']);
+    assert.deepEqual(migrate(raw, files), []);
+  } finally { raw.close(); }
+});
