@@ -55,9 +55,43 @@ test("npm pack, install, and run the CLI from node_modules", { timeout: 180_000 
 
     const cli = join(dir, "consumer/node_modules/.bin/solarsql");
     checkDiscovery([cli], JSON.parse(readFileSync(join(dir, "consumer/node_modules/solarsql/package.json"), "utf8")).version);
+    const machine = (...args: string[]) => {
+      const result = spawnSync(cli, args, { cwd: join(dir, "consumer"), encoding: "utf8", timeout: 10_000 });
+      assert.ifError(result.error);
+      assert.equal(result.signal, null);
+      assert.equal(result.stdout.trim().split("\n").length, 1, result.stdout);
+      return { result, report: JSON.parse(result.stdout) as { ok: boolean; diagnostics: { code: string; timeoutMs?: number; message?: string }[] } };
+    };
     const built = spawnSync(cli, ["build", "example/solarsql.config.ts"], { cwd: join(dir, "consumer"), encoding: "utf8" });
     assert.equal(built.status, 0, built.stdout + built.stderr);
     assert.match(built.stdout, /migrations are current/);
+    for (const args of [["inspect"], ["build", "--json"]]) {
+      const defaultResult = machine(...args, "example/solarsql.config.ts");
+      assert.equal(defaultResult.result.status, 0, defaultResult.result.stderr);
+      assert.equal(defaultResult.report.ok, true);
+      const override = machine(...args, "--timeout-ms", "60000", "example/solarsql.config.ts");
+      assert.equal(override.result.status, 0, override.result.stderr);
+      assert.equal(override.report.ok, true);
+    }
+    const hanging = "hanging.config.ts";
+    writeFileSync(join(dir, "consumer", hanging), "console.error('packed deadline import'); process.stdout.write('packed deadline stdout\\n'); await new Promise<void>(() => { setInterval(() => {}, 1000); });\n");
+    for (const args of [["inspect"], ["build", "--json"]]) {
+      const timed = machine(...args, "--timeout-ms", "500", hanging);
+      assert.equal(timed.result.status, 1, timed.result.stderr);
+      assert.match(timed.result.stderr, /packed deadline import/);
+      assert.match(timed.result.stderr, /packed deadline stdout/);
+      assert.equal(timed.report.diagnostics[0]!.code, "BUILD_TIMEOUT");
+      assert.equal(timed.report.diagnostics[0]!.timeoutMs, 500);
+    }
+    const invalid = "invalid-timeout.config.ts";
+    writeFileSync(join(dir, "consumer", invalid), "console.error('packed invalid deadline import'); throw new Error('invalid deadline imported');\n");
+    for (const args of [["inspect"], ["build", "--json"]]) {
+      const rejected = machine(...args, "--timeout-ms", "0", invalid);
+      assert.equal(rejected.result.status, 1);
+      assert.doesNotMatch(rejected.result.stderr, /packed invalid deadline import/);
+      assert.equal(rejected.report.diagnostics[0]!.code, "BUILD_FAILED");
+      assert.match(rejected.report.diagnostics[0]!.message!, /requires an integer/);
+    }
 
     // The generated file names the package, and is otherwise the committed one.
     const generated = readFileSync(join(dir, "consumer/example/modules/orders/solarsql.generated.ts"), "utf8");

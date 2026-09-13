@@ -223,6 +223,50 @@ test('machine imports report exceptions and premature successful exits as failur
   }
 });
 
+test('machine builds bound configuration imports before they run', t => {
+  const f = fixture(t);
+  const commands = [['inspect'], ['build', '--json']];
+  const oneReport = (result: ReturnType<typeof f.run>) => {
+    assert.equal(result.stdout.trim().split('\n').length, 1, result.stdout);
+    return JSON.parse(result.stdout) as { ok: boolean; diagnostics: { code: string; timeoutMs?: number; action?: string; message?: string }[] };
+  };
+  for (const args of commands) {
+    const defaultResult = f.run(...args);
+    assert.equal(defaultResult.status, 0, defaultResult.stderr);
+    assert.equal(oneReport(defaultResult).ok, true);
+    const override = f.run(...args, '--timeout-ms', '60000');
+    assert.equal(override.status, 0, override.stderr);
+    assert.equal(oneReport(override).ok, true);
+  }
+  f.edit('update orders set note = :note where id = :id', "update orders set note = :note where id = :id and status = 'draft'");
+  const generated = f.run('build', '--json', '--timeout-ms', '60000');
+  assert.equal(generated.status, 0, generated.stderr);
+  assert.equal(oneReport(generated).ok, true);
+  assert.match(readFileSync(f.generated, 'utf8'), /status = 'draft'/);
+  const path = join(f.dir, config);
+  writeFileSync(path, "console.error('deadline import started'); process.stdout.write('deadline import stdout\\n'); await new Promise<void>(() => { setInterval(() => {}, 1000); });\n");
+  for (const args of commands) {
+    const timed = f.run(...args, '--timeout-ms', '500');
+    assert.equal(timed.status, 1, timed.stderr);
+    assert.match(timed.stderr, /deadline import started/);
+    assert.match(timed.stderr, /deadline import stdout/);
+    const report = oneReport(timed);
+    assert.equal(report.ok, false);
+    assert.equal(report.diagnostics[0]!.code, 'BUILD_TIMEOUT');
+    assert.equal(report.diagnostics[0]!.timeoutMs, 500);
+    assert.match(report.diagnostics[0]!.action!, /--timeout-ms/);
+  }
+  writeFileSync(path, "console.error('invalid deadline imported'); throw new Error('the deadline parser imported this config');\n");
+  for (const args of commands) {
+    const invalid = f.run(...args, '--timeout-ms', '0');
+    assert.equal(invalid.status, 1);
+    assert.doesNotMatch(invalid.stderr, /invalid deadline imported/);
+    const report = oneReport(invalid);
+    assert.equal(report.diagnostics[0]!.code, 'BUILD_FAILED');
+    assert.match(report.diagnostics[0]!.message!, /requires an integer/);
+  }
+});
+
 test('machine report transport flushes large diagnostics before exit', t => {
   const f = fixture(t);
   const message = 'failure: ' + 'x'.repeat(250_000);

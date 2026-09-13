@@ -24,8 +24,8 @@ const usage = `usage:
   solarsql build [solarsql.config.ts]
   solarsql build --check [solarsql.config.ts]   writes nothing; exit 1 when a generated file or a migration is stale
   solarsql rehearse <database.sqlite> <change.sql> [checks.json] [--timeout-ms 30000]   validate a disposable snapshot
-  solarsql inspect [solarsql.config.ts]        JSON contracts, accesses and freshness; writes no build artifacts
-  solarsql build --json [solarsql.config.ts]   machine-readable generation result (combine with --check)
+  solarsql inspect [--timeout-ms 30000] [solarsql.config.ts]        JSON contracts, accesses and freshness; writes no build artifacts
+  solarsql build --json [--timeout-ms 30000] [solarsql.config.ts]   machine-readable generation result (combine with --check)
   solarsql migration <name> [solarsql.config.ts]
   solarsql init <module> [dir]                  writes solarsql.config.ts and modules/<module>/, then builds and writes the first migration`;
 
@@ -72,6 +72,25 @@ function rehearsalArguments(args: string[]): { paths: string[]; timeoutMs: numbe
   }
   if (paths.length < 2 || paths.length > 3) throw new BuildError("Use solarsql rehearse <database.sqlite> <change.sql> [checks.json] [--timeout-ms 30000].");
   return { paths, timeoutMs };
+}
+
+// Parse the deadline in the parent so an invalid budget cannot load project code.
+function machineArguments(args: string[]): { args: string[]; timeoutMs: number } {
+  const workerArgs: string[] = [];
+  let timeoutMs = 30_000;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg !== "--timeout-ms") {
+      workerArgs.push(arg);
+      continue;
+    }
+    const value = args[++i];
+    if (!value || !/^\d+$/.test(value) || Number(value) < 1 || Number(value) > 2_147_483_647) {
+      throw new BuildError("--timeout-ms requires an integer from 1 to 2147483647 milliseconds.");
+    }
+    timeoutMs = Number(value);
+  }
+  return { args: workerArgs, timeoutMs };
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -205,7 +224,11 @@ try {
   const code = discovery(args) ?? (args[0] === "rehearse" && !isReportWorker()
     ? await runRehearsalProcess(import.meta.filename, args, rehearsalArguments(args.slice(1)).timeoutMs)
     : machineBuild && !isReportWorker()
-    ? await runMachine(import.meta.filename, args)
+    ? await (() => {
+      const machine = machineArguments(args);
+      return runMachine(import.meta.filename, machine.args, { timeoutMs: machine.timeoutMs, timeoutCode: "BUILD_TIMEOUT",
+        action: "Inspect the configuration import and build work. Set --timeout-ms to a larger positive budget if the work requires more time." });
+    })()
     : await main(args));
   process.exit(code);
 } catch (e) {

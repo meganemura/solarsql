@@ -78,5 +78,6 @@ async function collectReport(cli: string, args: string[], options: ProcessOption
   }
   return { code: 1, report: { version: 1, ok: false, diagnostics: [{ code: timedOut ? options.timeoutCode ?? "WORKER_TIMEOUT" : options.failureCode ?? "BUILD_WORKER_FAILED",
     message: timedOut ? `The operation exceeded its ${options.timeoutMs}ms time budget.` : failure?.message ?? `The process ended without one valid report (exit ${code}, signal ${signal}).`,
+    timeoutMs: timedOut ? options.timeoutMs : undefined,
     action: options.action ?? "Check stderr for application import output and premature process termination." }] } };
 }

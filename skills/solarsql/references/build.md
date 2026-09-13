@@ -121,6 +121,8 @@ The report identifies the local SQLite version and states that deployment compat
 `inspect` and `build --json` emit one JSON document on stdout.
 Application import logs go to stderr. A premature import exit produces `BUILD_WORKER_FAILED`; inspect stderr to locate the cause.
 Inspection writes no build artifacts. Configuration and module imports still execute application JavaScript; inspection is not a sandbox.
+Both commands give the report worker a 30,000 millisecond deadline. Use `--timeout-ms <positive integer>` to set a different finite deadline; the parent validates it before it imports the configuration.
+`BUILD_TIMEOUT` has the expired `timeoutMs` and tells the caller to use a larger budget after it inspects the import and build work.
 A missing generated file requires a build first. A stale file or pending migration produces exit 1 and diagnostics with a recovery action.
 `build --json` provides machine-readable generation results; combine it with `--check` for verification.
 `BUILD_FAILED` preserves the error message, SQL when available, and catalog locations when available.
