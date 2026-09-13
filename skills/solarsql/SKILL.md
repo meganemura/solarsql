@@ -43,7 +43,7 @@ After an edit, complete the [verification workflow](references/build.md#verifica
 - A statement, a view, or a trigger body of a module touches the tables of that module, the primary keys its foreign keys reference, and the foreign key columns of tables that reference its own. A module with `readsAll` may read every table. A write into another module's table is always refused.
 - An index sits on a table of its module, and a trigger on a table or a view of its module.
 - A file of a module imports another module only through that module's `public.ts`.
-- An expression column has a `cast(... as integer | real | text)`.
+- An expression column has a `cast(... as integer | real | text | blob)`.
 - A `json_group_array` over an outer join has a `filter (where ... is not null)`.
 - A parameter has one type across a command, and `changes()` in an assert follows the statement it counts.
 - The migration files reproduce the schema; otherwise the build asks for `solarsql migration <name>`.
