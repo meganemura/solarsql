@@ -2,6 +2,7 @@
 // Boundary: deployment ordering and arbitrary data meaning remain caller checks.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { subscribe, unsubscribe } from 'node:diagnostics_channel';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -41,15 +42,25 @@ test('rehearsal checks data and old queries without changing the source', async 
 });
 
 test('rehearsal snapshots committed WAL data and rejects broken foreign keys', async t => {
+  const events: { phase: string; event: string; ms?: number }[] = [];
+  const observe = (message: unknown) => events.push(message as typeof events[number]);
+  subscribe('solarsql.rehearse', observe);
+  t.after(() => { unsubscribe('solarsql.rehearse', observe); });
   const dir = mkdtempSync(join(tmpdir(), 'solarsql-rehearsal-wal-'));
   t.after(() => rmSync(dir, {recursive:true,force:true}));
   const path = join(dir,'source.sqlite');
   const db = new DatabaseSync(path);
   t.after(() => db.close());
   db.exec('pragma journal_mode = wal; create table parents(id integer primary key); create table children(p integer references parents(id)); insert into parents values (1); insert into children values (1)');
-  const report = await rehearse(path,'alter table children add column note text');
+  db.exec("create table identities(value text); insert into identities(rowid,value) values (42,'kept')");
+  const report = await rehearse(path,'alter table children add column note text', {
+    assertions: { identity: "select count(*) = 1 and min(rowid) = 42 and min(value) = 'kept' from identities" },
+  });
   assert.equal(report.ok,true,JSON.stringify(report));
-  assert.deepEqual(report.before,{children:1,parents:1});
+  assert.deepEqual(report.before,{children:1,identities:1,parents:1});
+  assert.deepEqual(events.filter(e => e.event === 'start').map(e => e.phase), ['open-source','backup','close-source','open-copy','validate','close-copy','cleanup']);
+  assert.deepEqual(events.filter(e => e.event === 'end').map(e => e.phase), events.filter(e => e.event === 'start').map(e => e.phase));
+  assert.ok(events.filter(e => e.event === 'end').every(e => Number.isFinite(e.ms) && e.ms! >= 0));
   const failed = await rehearse(path,'pragma defer_foreign_keys = on; delete from parents');
   assert.equal(failed.ok,false);
   assert.equal(db.prepare('select count(*) as n from parents').get()!.n,1);

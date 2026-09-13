@@ -1,12 +1,23 @@
 // Responsibility: rehearse one SQL transition on a disposable database snapshot.
 // Boundary: local SQLite evidence only; this does not deploy or certify data meaning.
-import { setImmediate } from 'node:timers/promises';
 import { backup, constants, DatabaseSync } from 'node:sqlite';
+import { channel } from 'node:diagnostics_channel';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { quoteIdent, significant, splitStatements, tokenize } from './scan.ts';
 import { catalogStatement } from './statements.ts';
+
+const lifecycle = channel('solarsql.rehearse');
+
+// The last start event identifies a blocked native operation without a timer
+// that could change the scheduling behavior under investigation.
+function phase(name: string): () => void {
+  if (!lifecycle.hasSubscribers) return () => {};
+  const start = performance.now();
+  lifecycle.publish({ phase: name, event: 'start' });
+  return () => lifecycle.publish({ phase: name, event: 'end', ms: performance.now() - start });
+}
 
 export type RehearsalChecks = { queries?: Record<string, string>; assertions?: Record<string, string> };
 export type RehearsalResult = {
@@ -48,23 +59,36 @@ export async function rehearse(database: string, sql: string, checks: RehearsalC
   const stage = 'SNAPSHOT_FAILED';
   const result: RehearsalResult = { version: 1, ok: false, sql, before: {}, after: {}, queries: [], assertions: [], diagnostics: [] };
   try {
+    let end = phase('open-source');
     source = new DatabaseSync(database, { readOnly: true });
+    end();
     const path = join(dir, 'snapshot.sqlite');
+    end = phase('backup');
     await backup(source, path);
-    // Yield before closure; repeated backup tests stalled without this turn.
-    await setImmediate();
+    end();
+    end = phase('close-source');
     source.close();
+    end();
+    end = phase('open-copy');
     copy = new DatabaseSync(path);
-    return rehearseSnapshot(copy, sql, checks);
+    end();
+    end = phase('validate');
+    const report = rehearseSnapshot(copy, sql, checks);
+    end();
+    return report;
   } catch (e) {
     result.diagnostics.push({code:stage, message:e instanceof Error ? e.message : String(e)});
   } finally {
     if (copy?.isOpen) {
+      const end = phase('close-copy');
       if (copy.isTransaction) copy.exec('rollback');
       copy.close();
+      end();
     }
     if (source?.isOpen) source.close();
+    const end = phase('cleanup');
     rmSync(dir, {recursive:true, force:true});
+    end();
   }
   return result;
 }

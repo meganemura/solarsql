@@ -110,3 +110,6 @@ This detects structural incompatibility, not every semantic or nullability chang
 Assertions execute after migration and must each return one row with one value equal to 1. They take no parameters.
 Use assertions for application-specific data requirements. Row counts alone do not prove value preservation.
 The command rehearses proposed SQL, not migration history adoption or a remote deployment.
+
+For a slow local snapshot, run `node spike/11-backup-lifecycle.ts` from a source checkout.
+It measures each backup phase, checks WAL rows and implicit row identities, and stops after 20 seconds (ADR 0063).
