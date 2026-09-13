@@ -65,6 +65,7 @@ export const orderCommands = commands(generated, {
 
 An expression-index UNIQUE failure reports `unique_index` and the decoded index name.
 A table-column UNIQUE failure reports `unique` with its table and columns.
+SQLite error text cannot separate table and column names that contain dots; the adapter preserves that engine error instead of reporting an incorrect target.
 
 A failed assert and a rejected row are values with one `kind`, and nothing of the plan stays written. Every other engine error is thrown.
 The adapter gives each command invocation a private guard identity, so a user trigger that raises the same public name remains an engine error.

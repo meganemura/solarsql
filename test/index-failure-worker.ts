@@ -5,17 +5,26 @@ import { d1, type D1Like } from '../src/d1.ts';
 import { durable } from '../src/durable.ts';
 import { ddl, conflict } from './index-failure-fixture.ts';
 import { ddl as collisionDdl, ddlStatements as collisionDdlStatements, collisions } from './assert-collision-fixture.ts';
+import { ddl as ambiguousDdl, ddlStatements as ambiguousDdlStatements, ambiguousFailures } from './ambiguous-constraint-fixture.ts';
 export class IndexFailure extends DurableObject {
   async fetch(){this.ctx.storage.sql.exec(ddl);return Response.json(await conflict(durable(this.ctx.storage)));}
 }
 export class AssertCollision extends DurableObject {
   async fetch(){this.ctx.storage.sql.exec(collisionDdl);return Response.json(await collisions(durable(this.ctx.storage)));}
 }
+export class AmbiguousConstraint extends DurableObject {
+  async fetch(){this.ctx.storage.sql.exec(ambiguousDdl);return Response.json(await ambiguousFailures(durable(this.ctx.storage)));}
+}
 export default {
-  async fetch(request:Request,env:{DB:D1Like & {exec(sql:string):Promise<unknown>};INDEX:{idFromName(name:string):unknown;get(id:unknown):{fetch(url:string):Promise<Response>}};COLLISION:{idFromName(name:string):unknown;get(id:unknown):{fetch(url:string):Promise<Response>}}}) {
+  async fetch(request:Request,env:{DB:D1Like & {exec(sql:string):Promise<unknown>};INDEX:{idFromName(name:string):unknown;get(id:unknown):{fetch(url:string):Promise<Response>}};COLLISION:{idFromName(name:string):unknown;get(id:unknown):{fetch(url:string):Promise<Response>}};AMBIGUOUS:{idFromName(name:string):unknown;get(id:unknown):{fetch(url:string):Promise<Response>}}}) {
     const path=new URL(request.url).pathname;
     if(path==='/do')return env.INDEX.get(env.INDEX.idFromName('index')).fetch('http://local');
     if(path==='/collision-do')return env.COLLISION.get(env.COLLISION.idFromName('collision')).fetch('http://local');
+    if(path==='/ambiguous-do')return env.AMBIGUOUS.get(env.AMBIGUOUS.idFromName('ambiguous')).fetch('http://local');
+    if(path==='/ambiguous') {
+      await env.DB.batch(ambiguousDdlStatements.map(sql=>env.DB.prepare(sql)));
+      return Response.json(await ambiguousFailures(d1(env.DB)));
+    }
     if(path==='/collision') {
       await env.DB.batch(collisionDdlStatements.map(sql=>env.DB.prepare(sql)));
       return Response.json(await collisions(d1(env.DB)));

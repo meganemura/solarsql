@@ -188,8 +188,9 @@ export function commands<G extends GeneratedMap, const C extends Record<string, 
   return { kind: "commands", entries, ...entries } as unknown as Commands<G, C>;
 }
 
-// A constraint of the DDL that a statement of the plan violated. The engine
-// reports it, and the adapter turns the message into this value.
+// A constraint of the DDL that a statement of the plan violated. The adapter
+// returns this value when the engine message identifies its target without
+// ambiguity. It preserves other engine errors as thrown values.
 export type ConstraintFailure =
   | { kind: "unique"; table: string; columns: string[] }
   | { kind: "unique_index"; index: string }

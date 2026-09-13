@@ -4,6 +4,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: ambiguous dotted constraint targets remain engine errors instead of naming incorrect schema objects (ADR 0087).
+
 - Fixed: user trigger messages cannot impersonate command assertion failures (ADR 0086).
 
 - Added: CLI help and installed-version discovery without loading application configuration (ADR 0085).

@@ -104,13 +104,15 @@ export function constraintFailure(error: unknown): ConstraintFailure | null {
   if ((match = /^UNIQUE constraint failed: index '((?:[^']|'')*)'$/.exec(m))) return { kind: "unique_index", index: match[1]!.replaceAll("''", "'") };
   if ((match = /^UNIQUE constraint failed: (.+)$/.exec(m))) {
     const refs = match[1]!.split(",").map((r) => r.trim().split("."));
-    const table = refs[0]?.[0] ?? "";
-    return { kind: "unique", table, columns: refs.map((r) => r[1] ?? r[0] ?? "") };
+    if (refs.some(ref => ref.length !== 2 || ref.some(name => name.length === 0))) return null;
+    const table = refs[0]![0]!;
+    if (refs.some(ref => ref[0] !== table)) return null;
+    return { kind: "unique", table, columns: refs.map((ref) => ref[1]!) };
   }
   if ((match = /^CHECK constraint failed: (.+)$/.exec(m))) return { kind: "check", constraint: match[1]! };
-  if ((match = /^NOT NULL constraint failed: ([^.]+)\.(.+)$/.exec(m))) return { kind: "not_null", table: match[1]!, column: match[2]! };
+  if ((match = /^NOT NULL constraint failed: ([^.]+)\.([^.]+)$/.exec(m))) return { kind: "not_null", table: match[1]!, column: match[2]! };
   if (/^FOREIGN KEY constraint failed$/.test(m)) return { kind: "foreign_key" };
-  if ((match = /^cannot store (\w+) value in (\w+) column ([^.]+)\.(.+)$/.exec(m))) {
+  if ((match = /^cannot store (\w+) value in (\w+) column ([^.]+)\.([^.]+)$/.exec(m))) {
     return { kind: "datatype", table: match[3]!, column: match[4]!, stored: match[1]!, declared: match[2]! };
   }
   return null;

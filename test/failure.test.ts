@@ -31,6 +31,9 @@ describe("constraintFailure", () => {
         stored: "TEXT",
         declared: "INTEGER",
       });
+      assert.equal(constraintFailure(new Error(w(`UNIQUE constraint failed: ${table}.part.${columns[0]}`, "UNIQUE"))), null);
+      assert.equal(constraintFailure(new Error(w(`NOT NULL constraint failed: ${table}.part.${columns[0]}`, "NOTNULL"))), null);
+      assert.equal(constraintFailure(new Error(w(`cannot store TEXT value in INTEGER column ${table}.part.${columns[0]}`, "DATATYPE"))), null);
     });
   });
 
@@ -119,6 +122,7 @@ test('generated command callers receive index targets on Node, D1, and Durable O
   const {node}=await import('../src/node.ts');
   const {ddl,conflict}=await import('./index-failure-fixture.ts');
   const {ddl:collisionDdl,collisions}=await import('./assert-collision-fixture.ts');
+  const {ddl:ambiguousDdl,ambiguousFailures}=await import('./ambiguous-constraint-fixture.ts');
   const {workerMiniflare}=await import('./worker.ts');
   const {resolve}=await import('node:path');
   const expected={result:{ok:false,kind:'unique_index',index:"lower'email"},index:"lower'email"};
@@ -136,13 +140,39 @@ test('generated command callers receive index targets on Node, D1, and Durable O
     assert.deepEqual(result.messages.map(message=>message.includes('same_name')),[true,true]);
     assert.equal(result.count,0);
   }finally{collisionRaw.close();}
+  const ambiguousRaw=new DatabaseSync(':memory:');
+  try {
+    ambiguousRaw.exec(ambiguousDdl);
+    const result=await ambiguousFailures(node(ambiguousRaw));
+    assert.match(result.messages[0]!,/UNIQUE constraint failed: a\.b\.c\.d/);
+    assert.match(result.messages[1]!,/NOT NULL constraint failed: a\.b\.n\.x/);
+    assert.match(result.messages[2]!,/cannot store TEXT value in INTEGER column a\.b\.n\.x/);
+    assert.equal(result.count,1);
+    assert.deepEqual(result.ordinary,[
+      {ok:false,kind:'unique',table:'ordinary',columns:['value']},
+      {ok:false,kind:'not_null',table:'ordinary',column:'value'},
+      {ok:false,kind:'datatype',table:'ordinary',column:'value',stored:'TEXT',declared:'INTEGER'},
+    ]);
+  }finally{ambiguousRaw.close();}
   const root=resolve(import.meta.dirname,'..');
-  const mf=workerMiniflare(resolve(root,'test/index-failure-worker.ts'),root,{durableObjects:{INDEX:'IndexFailure',COLLISION:'AssertCollision'}});
+  const mf=workerMiniflare(resolve(root,'test/index-failure-worker.ts'),root,{durableObjects:{INDEX:'IndexFailure',COLLISION:'AssertCollision',AMBIGUOUS:'AmbiguousConstraint'}});
   t.after(()=>mf.dispose());
   for(const path of ['/','/do']) assert.deepEqual(await (await mf.dispatchFetch('http://localhost'+path)).json(),expected);
   for(const path of ['/collision','/collision-do']) {
     const result=await (await mf.dispatchFetch('http://localhost'+path)).json() as {messages:string[];count:number};
     assert.deepEqual(result.messages.map(message=>message.includes('same_name')),[true,true]);
     assert.equal(result.count,0);
+  }
+  for(const path of ['/ambiguous','/ambiguous-do']) {
+    const result=await (await mf.dispatchFetch('http://localhost'+path)).json() as {messages:string[];count:number;ordinary:unknown[]};
+    assert.match(result.messages[0]!,/UNIQUE constraint failed: a\.b\.c\.d/);
+    assert.match(result.messages[1]!,/NOT NULL constraint failed: a\.b\.n\.x/);
+    assert.match(result.messages[2]!,/cannot store TEXT value in INTEGER column a\.b\.n\.x/);
+    assert.equal(result.count,1);
+    assert.deepEqual(result.ordinary,[
+      {ok:false,kind:'unique',table:'ordinary',columns:['value']},
+      {ok:false,kind:'not_null',table:'ordinary',column:'value'},
+      {ok:false,kind:'datatype',table:'ordinary',column:'value',stored:'TEXT',declared:'INTEGER'},
+    ]);
   }
 });
