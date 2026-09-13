@@ -2,6 +2,13 @@
 
 For schema DDL and a query catalog without application modules, use [analyze](analyze.md).
 
+`npx solarsql --help` lists commands; `npx solarsql --version` prints the installed package version.
+Both write to stdout and exit 0 without loading application configuration or writing files.
+Use `npx solarsql help build` or `npx solarsql build --help` for one command.
+The aliases are `-h` for help and `-v` for version.
+Help accepts only the command name; omit application paths and execution options.
+Unknown help targets and extra discovery arguments print usage to stderr and exit 2.
+
 ```
 npx solarsql init <module> [dir]
 npx solarsql build [solarsql.config.ts]

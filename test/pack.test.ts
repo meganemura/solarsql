@@ -7,6 +7,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { checkDiscovery } from "./cli-discovery.ts";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -53,6 +54,7 @@ test("npm pack, install, and run the CLI from node_modules", { timeout: 180_000 
     assert.ok(existsSync(join(dir, "consumer/node_modules/solarsql/skills/solarsql/SKILL.md")));
 
     const cli = join(dir, "consumer/node_modules/.bin/solarsql");
+    checkDiscovery([cli], JSON.parse(readFileSync(join(dir, "consumer/node_modules/solarsql/package.json"), "utf8")).version);
     const built = spawnSync(cli, ["build", "example/solarsql.config.ts"], { cwd: join(dir, "consumer"), encoding: "utf8" });
     assert.equal(built.status, 0, built.stdout + built.stderr);
     assert.match(built.stdout, /migrations are current/);

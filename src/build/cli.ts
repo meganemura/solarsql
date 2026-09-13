@@ -16,6 +16,9 @@ import { shellArgument } from "./shell.ts";
 import { BuildError } from "./typegen.ts";
 
 const usage = `usage:
+  solarsql --help                             show commands without loading a project
+  solarsql --version                          show the installed package version
+  solarsql help [command]                     show all commands or one command
   solarsql analyze --database <database.sqlite> <queries.json> [--out generated.ts] [--check] [--library specifier]
   solarsql analyze <schema.sql> <queries.json> [--out generated.ts] [--check] [--library specifier]
   solarsql build [solarsql.config.ts]
@@ -25,6 +28,28 @@ const usage = `usage:
   solarsql build --json [solarsql.config.ts]   machine-readable generation result (combine with --check)
   solarsql migration <name> [solarsql.config.ts]
   solarsql init <module> [dir]                  writes solarsql.config.ts and modules/<module>/, then builds and writes the first migration`;
+
+function discovery(argv: string[]): number | undefined {
+  const commands = ["analyze", "build", "rehearse", "inspect", "migration", "init"];
+  const [command, ...rest] = argv;
+  const help = command === "help" || argv.some(arg => arg === "--help" || arg === "-h");
+  const version = command === "--version" || command === "-v";
+  if (!help && !version) return undefined;
+  if (version && rest.length === 0) {
+    const metadata = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
+    console.log(metadata.version);
+    return 0;
+  }
+  const all = argv.length === 1 && ["help", "--help", "-h"].includes(command!);
+  const selected = argv.length === 2 && command === "help" ? rest[0]
+    : argv.length === 2 && ["--help", "-h"].includes(rest[0]!) ? command : undefined;
+  if (all || (selected && commands.includes(selected))) {
+    console.log(all ? usage : `usage:\n${usage.split("\n").filter(line => line.startsWith(`  solarsql ${selected} `)).join("\n")}`);
+    return 0;
+  }
+  console.error(usage);
+  return 2;
+}
 
 // One line of SQL, enough to recognize the statement.
 function oneLine(sql: string): string {
@@ -176,11 +201,12 @@ async function main(argv: string[]): Promise<number> {
 const args = process.argv.slice(2);
 const machineBuild = args[0] === "inspect" || (args[0] === "build" && args.includes("--json"));
 try {
-  const code = args[0] === "rehearse" && !isReportWorker()
+  // Discovery must precede worker dispatch and application configuration imports.
+  const code = discovery(args) ?? (args[0] === "rehearse" && !isReportWorker()
     ? await runRehearsalProcess(import.meta.filename, args, rehearsalArguments(args.slice(1)).timeoutMs)
     : machineBuild && !isReportWorker()
     ? await runMachine(import.meta.filename, args)
-    : await main(args);
+    : await main(args));
   process.exit(code);
 } catch (e) {
   if (args.includes("--json") || ["inspect", "rehearse", "analyze"].includes(args[0] ?? "")) {
