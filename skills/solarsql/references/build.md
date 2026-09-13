@@ -111,6 +111,8 @@ Run `npx solarsql inspect solarsql.config.ts` for JSON with format `version: 1`.
 Types combine engine metadata with static scope and expression rules. Column origins are evidence, not a complete proof of the result type.
 The report identifies the local SQLite version and states that deployment compatibility was not verified.
 
+`inspect` and `build --json` emit one JSON document on stdout.
+Application import logs go to stderr. A premature import exit produces `BUILD_WORKER_FAILED`; inspect stderr to locate the cause.
 Inspection writes no build artifacts. Configuration and module imports still execute application JavaScript; inspection is not a sandbox.
 A missing generated file requires a build first. A stale file or pending migration produces exit 1 and diagnostics with a recovery action.
 `build --json` provides machine-readable generation results; combine it with `--check` for verification.

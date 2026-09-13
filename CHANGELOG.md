@@ -4,6 +4,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: machine build reports retain valid JSON when application imports write logs, throw, or exit early (ADR 0062).
+
 - Fixed: CHECK-derived types respect stored value classes, complete predicates, collations, and literal whitespace (ADR 0061).
 
 - Fixed: migration generation appends after sequence gaps, refuses ambiguous replay order, and preserves existing files during competing generation (ADR 0060).

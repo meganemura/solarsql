@@ -174,3 +174,60 @@ test('JSON failures retain SQL and source locations', t => {
   }
   assert.deepEqual(snapshot(f.dir), before);
 });
+
+test('machine build reports survive configuration and module output', t => {
+  const f = fixture(t);
+  const path = join(f.dir, config);
+  writeFileSync(path, `console.log('config log'); process.stdout.write('config direct\\n');\n` + readFileSync(path, 'utf8'));
+  f.edit('import {', `console.log('module log'); process.stdout.write('module direct\\n');\nimport {`);
+  const parse = (...args: string[]) => {
+    const result = f.run(...args);
+    for (const text of ['config log', 'config direct', 'module log', 'module direct']) assert.ok(result.stderr.includes(text), result.stderr);
+    return { result, report: JSON.parse(result.stdout) };
+  };
+  for (const args of [['inspect'], ['build', '--json']]) {
+    const { result, report } = parse(...args);
+    assert.equal(result.status, 0);
+    assert.equal(report.ok, true);
+  }
+  f.edit('update orders set note = :note where id = :id', "update orders set note = :note where id = :id and status = 'draft'");
+  for (const args of [['inspect'], ['build', '--check', '--json']]) {
+    const { result, report } = parse(...args);
+    assert.equal(result.status, 1);
+    assert.ok(report.diagnostics.some((d: {code: string}) => d.code === 'GENERATED_STALE'));
+  }
+  f.edit('update orders set note = :note', 'update orders set missing_column = :note');
+  for (const args of [['inspect'], ['build', '--json']]) {
+    const { result, report } = parse(...args);
+    assert.equal(result.status, 1);
+    assert.equal(report.diagnostics[0].code, 'BUILD_FAILED');
+    assert.match(report.diagnostics[0].message, /missing_column/);
+  }
+});
+
+test('machine imports report exceptions and premature successful exits as failures', t => {
+  for (const ending of ["throw new Error('import exploded')", 'process.exit(0)']) {
+    const f = fixture(t);
+    const path = join(f.dir, config);
+    writeFileSync(path, `console.log('before termination'); process.stdout.write('direct termination\\n'); ${ending};\n` + readFileSync(path, 'utf8'));
+    for (const args of [['inspect'], ['build', '--json']]) {
+      const result = f.run(...args);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /before termination/);
+      assert.match(result.stderr, /direct termination/);
+      const report = JSON.parse(result.stdout);
+      assert.equal(report.ok, false);
+      assert.equal(report.diagnostics[0].code, ending.startsWith('throw') ? 'BUILD_FAILED' : 'BUILD_WORKER_FAILED');
+    }
+  }
+});
+
+test('machine report transport flushes large diagnostics before exit', t => {
+  const f = fixture(t);
+  const message = 'failure: ' + 'x'.repeat(250_000);
+  const path = join(f.dir, config);
+  writeFileSync(path, `throw new Error(${JSON.stringify(message)});\n` + readFileSync(path, 'utf8'));
+  const result = f.run('inspect');
+  assert.equal(result.status, 1);
+  assert.equal(JSON.parse(result.stdout).diagnostics[0].message, message);
+});

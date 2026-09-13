@@ -11,6 +11,7 @@ import { analyzeSchema } from "./analyze.ts";
 import { rehearse } from "./rehearse.ts";
 import { build, migration } from "./build.ts";
 import { init } from "./init.ts";
+import { isReportWorker, printReport, runMachine } from "./machine.ts";
 import { shellArgument } from "./shell.ts";
 import { BuildError } from "./typegen.ts";
 
@@ -58,15 +59,15 @@ async function main(argv: string[]): Promise<number> {
     const changed = out !== undefined && (!existsSync(out) || readFileSync(out, "utf8") !== result.generated);
     if (out && !check && changed) writeFileSync(out, result.generated);
     const ok = !(check && changed);
-    console.log(JSON.stringify({ ...result, generated: out ? undefined : result.generated, ok, output: out, changed,
-      diagnostics: ok ? [] : [{ code: "GENERATED_STALE", action: "Repeat analyze with the same inputs and --out, without --check." }] }));
+    await printReport({ ...result, generated: out ? undefined : result.generated, ok, output: out, changed,
+      diagnostics: ok ? [] : [{ code: "GENERATED_STALE", action: "Repeat analyze with the same inputs and --out, without --check." }] });
     return ok ? 0 : 1;
   }
   if (command === "rehearse") {
     if (rest.length < 2 || rest.length > 3) throw new BuildError("Use solarsql rehearse <database.sqlite> <change.sql> [checks.json].");
     const checks = rest[2] ? JSON.parse(readFileSync(rest[2], "utf8")) : {};
     const report = await rehearse(rest[0]!, readFileSync(rest[1]!, "utf8"), checks);
-    console.log(JSON.stringify(report));
+    await printReport(report);
     return report.ok ? 0 : 1;
   }
   if (command === "build" || command === "inspect") {
@@ -84,8 +85,8 @@ async function main(argv: string[]): Promise<number> {
           action: result.migration.reason ? "Write a manual migration and run build." : `npx solarsql migration <name>${configArgument}` }] : []),
       ];
       const ok = !check || diagnostics.length === 0;
-      console.log(JSON.stringify({ version: 1, ok, mode: inspect ? "inspect" : check ? "check" : "build", diagnostics,
-        contract: { types: "engine-metadata-and-static-inference", execution: "local-node-sqlite", imports: "application-modules-execute", deploymentVerified: false }, result }));
+      await printReport({ version: 1, ok, mode: inspect ? "inspect" : check ? "check" : "build", diagnostics,
+        contract: { types: "engine-metadata-and-static-inference", execution: "local-node-sqlite", imports: "application-modules-execute", deploymentVerified: false }, result });
       return ok ? 0 : 1;
     }
     for (const m of result.modules) {
@@ -151,12 +152,17 @@ async function main(argv: string[]): Promise<number> {
   return 2;
 }
 
-main(process.argv.slice(2)).then(
-  (code) => process.exit(code),
-  (e) => {
-    if (process.argv.includes("--json") || ["inspect", "rehearse", "analyze"].includes(process.argv[2] ?? "")) console.log(JSON.stringify({ version: 1, ok: false, diagnostics: [{ code: "BUILD_FAILED", message: e instanceof Error ? e.message : String(e), sql: e instanceof BuildError ? e.sql : undefined, locations: e instanceof BuildError ? e.locations : [] }] }));
-    else if (e instanceof BuildError) console.error(`error: ${e.message}`);
-    else console.error(e);
-    process.exit(1);
-  },
-);
+const args = process.argv.slice(2);
+const machineBuild = args[0] === "inspect" || (args[0] === "build" && args.includes("--json"));
+try {
+  const code = machineBuild && !isReportWorker()
+    ? await runMachine(import.meta.filename, args)
+    : await main(args);
+  process.exit(code);
+} catch (e) {
+  if (args.includes("--json") || ["inspect", "rehearse", "analyze"].includes(args[0] ?? "")) {
+    await printReport({ version: 1, ok: false, diagnostics: [{ code: "BUILD_FAILED", message: e instanceof Error ? e.message : String(e), sql: e instanceof BuildError ? e.sql : undefined, locations: e instanceof BuildError ? e.locations : [] }] });
+  } else if (e instanceof BuildError) console.error(`error: ${e.message}`);
+  else console.error(e);
+  process.exit(1);
+}
