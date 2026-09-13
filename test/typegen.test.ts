@@ -501,3 +501,34 @@ test('decoded JSON object keys use the last value contract', async () => {
     assert.throws(()=>new Typer(engine,new Map()).analyze("select json_object(cast('key' as text),1)",''),/key must be a string literal/);
   }finally{engine.close();}
 });
+
+test('ordered JSON aggregates retain value types and SQLite ordering', async () => {
+  const {test:property}=await import('@hegeldev/hegel');
+  const gs=await import('@hegeldev/hegel/generators');
+  const engine=new Engine(['create table items(value integer) strict']);
+  try {
+    const insert=engine.db.prepare('insert into items values(?)');
+    property(tc=>{
+      const values:(number|null)[]=tc.draw(gs.arrays(gs.integers({minValue:-10000,maxValue:10000})));
+      if(tc.draw(gs.booleans())) values.push(null);
+      const distinct=tc.draw(gs.booleans());
+      const desc=tc.draw(gs.booleans());
+      engine.db.exec('delete from items');for(const value of values) insert.run(value);
+      const sql=`select json_group_array(${distinct?'distinct ':''}value order by value ${desc?'desc':'asc'}) as result from items`;
+      const analysis=new Typer(engine,new Map()).analyze(sql,'');
+      assert.deepEqual(analysis.columns,[{name:'result',type:'Array<number | null>',json:true}]);
+      assert.equal(analysis.sql,sql);
+      const expected=(distinct?[...new Set(values)]:[...values]).sort((a,b)=>{const cmp=a===b?0:a===null?-1:b===null?1:a-b;return desc?-cmp:cmp;});
+      assert.deepEqual(JSON.parse(engine.db.prepare(sql).get()!.result as string),expected);
+    },{testCases:1000});
+    engine.db.exec('delete from items;insert into items values(1),(2),(null)');
+    for(const sql of [
+      "select json_group_array(json_object('n',value) order by coalesce(value,0) desc, cast(value as text) collate binary) filter(where value is not null) as result from items",
+      "select json_group_array(distinct json_object('n',value) order by value desc) filter(where value is not null) as result from items",
+    ]) {
+      assert.equal(new Typer(engine,new Map()).analyze(sql,'').columns[0]!.type,'Array<{ "n": number | null }>');
+      assert.deepEqual(JSON.parse(engine.db.prepare(sql).get()!.result as string),[{n:2},{n:1}]);
+    }
+    assert.throws(()=>new Typer(engine,new Map()).analyze('select json_group_array(value order by) from items',''));
+  }finally{engine.close();}
+});

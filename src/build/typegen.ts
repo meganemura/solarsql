@@ -483,8 +483,13 @@ export class Typer {
     scope?: ScopeContext,
   ): string {
     const call = findCall(item.expr, "json_group_array")!;
-    if (call.args.length !== 1) throw new BuildError(`json_group_array takes one argument`, sql);
-    const inner = call.args[0]!.text;
+    // Aggregate ORDER BY terms belong to the call, not its value. SQLite
+    // validates arity and ordering syntax before this structural type step.
+    const body = item.expr.slice(call.open + 1, call.close);
+    const tokens = significant(tokenize(body));
+    const start = isKeyword(tokens[0], "distinct") ? tokens[0]!.end : 0;
+    const order = tokens.findIndex((token, i) => token.depth === 0 && isKeyword(token, "order") && isKeyword(tokens[i + 1], "by"));
+    const inner = body.slice(start, order >= 0 ? tokens[order]!.start : body.length).trim();
     const hasFilter = /\bfilter\s*\(\s*where\b/i.test(item.expr.slice(call.close));
     const usedAliases = this.aliasesIn(inner, aliases);
     const outer = [...usedAliases].filter((a) => nullableAliases.has(a));

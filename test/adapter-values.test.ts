@@ -129,14 +129,14 @@ export default {async fetch(request,env){if(new URL(request.url).pathname==='/do
   }
 });
 
-test('generated BLOB literal contracts compile and execute on Node, D1, and Durable Objects', async t => {
+test('generated binary, scalar, and ordered JSON contracts compile and execute on Node, D1, and Durable Objects', async t => {
   const root=resolve(import.meta.dirname,'..');
   const dir=realpathSync(mkdtempSync(join(tmpdir(),'solarsql-literals-')));
   let mf:ReturnType<typeof workerMiniflare>|undefined;
   t.after(async()=>{await mf?.dispose();rmSync(dir,{recursive:true,force:true});});
   const library=relative(dir,join(root,'src/index.ts'));
   const bytes=Uint8Array.from({length:256},(_,i)=>i);
-  const sql=`select x'${Buffer.from(bytes).toString('hex')}' as value, cast(length(json_object('a',1)) as integer) as n, cast(json_object('a',1) || 'suffix' as text) as text union all select x'',null,null`;
+  const sql=`select x'${Buffer.from(bytes).toString('hex')}' as value, cast(length(json_object('a',1)) as integer) as n, cast(json_object('a',1) || 'suffix' as text) as text, (select json_group_array(distinct json_object('n',value) order by value desc) from (select 1 as value union all select 2 union all select 1)) as ordered union all select x'',null,null,null`;
   const report=analyzeSchema('',{query:sql},library);
   writeFileSync(join(dir,'package.json'),'{"type":"module"}');
   writeFileSync(join(dir,'generated.ts'),report.generated);
@@ -145,10 +145,10 @@ import {queries, type Row} from ${JSON.stringify(library)};
 import {generated,statements} from './generated.ts';
 export const q=queries(generated,statements);
 export const params={};
-export const row:Row<typeof q.query>={value:new Uint8Array(),n:7,text:'example'};
+export const row:Row<typeof q.query>={value:new Uint8Array(),n:7,text:'example',ordered:null};
 // @ts-expect-error BLOB literals return bytes.
-export const wrong:Row<typeof q.query>={value:'00ff',n:7,text:'example'};
-export function serialize(rows:Row<typeof q.query>[]){return rows.map(r=>({bytes:Array.from(r.value),typed:r.value instanceof Uint8Array,n:r.n,text:r.text}));}
+export const wrong:Row<typeof q.query>={value:'00ff',n:7,text:'example',ordered:null};
+export function serialize(rows:Row<typeof q.query>[]){return rows.map(r=>({bytes:Array.from(r.value),typed:r.value instanceof Uint8Array,n:r.n,text:r.text,ordered:r.ordered}));}
 `);
   const typed=spawnSync(join(root,'node_modules/.bin/tsc'),['--ignoreConfig','--noEmit','--strict','--skipLibCheck','--target','esnext','--module','nodenext','--allowImportingTsExtensions',join(dir,'consumer.ts')],{encoding:'utf8',timeout:30_000});
   assert.equal(typed.status,0,typed.stdout+typed.stderr);
@@ -157,7 +157,7 @@ import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {node} from ${JSON.stringify(relative(dir,join(root,'src/node.ts')))};
 import {q,params,serialize} from './consumer.ts';
-const raw=new DatabaseSync(':memory:');try{assert.deepEqual(serialize(await node(raw).all(q.query,params)),[{bytes:Array.from({length:256},(_,i)=>i),typed:true,n:7,text:'{"a":1}suffix'},{bytes:[],typed:true,n:null,text:null}]);}finally{raw.close();}
+const raw=new DatabaseSync(':memory:');try{assert.deepEqual(serialize(await node(raw).all(q.query,params)),[{bytes:Array.from({length:256},(_,i)=>i),typed:true,n:7,text:'{"a":1}suffix',ordered:[{n:2},{n:1}]},{bytes:[],typed:true,n:null,text:null,ordered:null}]);}finally{raw.close();}
 `);
   const executed=spawnSync(process.execPath,[join(dir,'execute.mjs')],{encoding:'utf8',timeout:30_000});
   assert.equal(executed.status,0,executed.stdout+executed.stderr);
@@ -172,6 +172,6 @@ export default {async fetch(request,env){if(new URL(request.url).pathname==='/do
   mf=workerMiniflare(join(dir,'worker.ts'),resolve('/'),{durableObjects:{SLOTS:'Slots'}});
   for(const path of ['/','/do']) {
     const response=await mf.dispatchFetch('http://localhost'+path);
-    assert.deepEqual(await response.json(),[{bytes:Array.from(bytes),typed:true,n:7,text:'{"a":1}suffix'},{bytes:[],typed:true,n:null,text:null}]);
+    assert.deepEqual(await response.json(),[{bytes:Array.from(bytes),typed:true,n:7,text:'{"a":1}suffix',ordered:[{n:2},{n:1}]},{bytes:[],typed:true,n:null,text:null,ordered:null}]);
   }
 });

@@ -90,6 +90,10 @@ SQLite can decode valid JSONB into objects, arrays, scalars, or null.
 Invalid binary content can still cause a SQLite error.
 An ordinary BLOB query returns `Uint8Array`; an explicit TEXT conversion inside JSON keeps its text type.
 
+`json_group_array` accepts DISTINCT and aggregate-local ORDER BY terms, such as `json_group_array(distinct c order by c desc)`.
+These clauses change the result values and order; they retain the inferred element type.
+SQLite validates combinations with FILTER and OVER.
+
 A `json_group_array` over the outer side of a `left join` needs `filter (where l.id is not null)`, or a parent with no children gets one null element. `coalesce(..., '[]')` gives the empty array.
 Only an exact `filter (where alias.column is not null)` removes that alias's outer nullability from the generated array element type.
 Other predicates retain conservative nullability; filtering one alias does not narrow another alias.
