@@ -95,6 +95,7 @@ function bareMessage(error: unknown): string {
 export function constraintFailure(error: unknown): ConstraintFailure | null {
   const m = bareMessage(error);
   let match: RegExpExecArray | null;
+  if ((match = /^UNIQUE constraint failed: index '((?:[^']|'')*)'$/.exec(m))) return { kind: "unique_index", index: match[1]!.replaceAll("''", "'") };
   if ((match = /^UNIQUE constraint failed: (.+)$/.exec(m))) {
     const refs = match[1]!.split(",").map((r) => r.trim().split("."));
     const table = refs[0]?.[0] ?? "";

@@ -56,11 +56,15 @@ export const orderCommands = commands(generated, {
 { ok: true; rows: Row[]; changes: number }                   // rows of `returns`, or [], and rows changed
 | { ok: false; kind: "assert"; assert: "has_lines" | "was_draft" }
 | { ok: false; kind: "unique"; table: string; columns: string[] }
+| { ok: false; kind: "unique_index"; index: string }
 | { ok: false; kind: "check"; constraint: string }
 | { ok: false; kind: "not_null"; table: string; column: string }
 | { ok: false; kind: "foreign_key" }
 | { ok: false; kind: "datatype"; table: string; column: string; stored: string; declared: string }
 ```
+
+An expression-index UNIQUE failure reports `unique_index` and the decoded index name.
+A table-column UNIQUE failure reports `unique` with its table and columns.
 
 A failed assert and a rejected row are values with one `kind`, and nothing of the plan stays written. Every other engine error is thrown.
 `kind: "assert"` carries the union of the plan's assert names, so a `switch` on it is exhaustive.

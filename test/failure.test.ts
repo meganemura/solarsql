@@ -78,3 +78,42 @@ test('public command adapters rethrow unrecognized values unchanged', async () =
     }
   }
 });
+
+test('unique expression-index failures retain their actual index names', async () => {
+  const {DatabaseSync}=await import('node:sqlite');
+  const raw=new DatabaseSync(':memory:');
+  try {
+    raw.exec("create table items(value text);insert into items values('A')");
+    hegel.test(tc=>{
+      // Prefix avoids SQLite's reserved index namespace; SQL source excludes NUL.
+      const name='user_'+tc.draw(gs.text()).replaceAll('\0','');
+      const quoted='"'+name.replaceAll('"','""')+'"';
+      raw.exec(`create unique index ${quoted} on items(lower(value))`);
+      try {
+        let error:unknown;
+        try{raw.exec("insert into items values('a')");assert.fail('Expected index conflict');}catch(e){error=e;}
+        assert.deepEqual(constraintFailure(error),{kind:'unique_index',index:name});
+      }finally{raw.exec(`drop index ${quoted}`);}
+    },{testCases:1000});
+  }finally{raw.close();}
+});
+
+test('generated command callers receive index targets on Node, D1, and Durable Objects', async t => {
+  const {DatabaseSync}=await import('node:sqlite');
+  const {node}=await import('../src/node.ts');
+  const {ddl,conflict}=await import('./index-failure-fixture.ts');
+  const {workerMiniflare}=await import('./worker.ts');
+  const {resolve}=await import('node:path');
+  const expected={result:{ok:false,kind:'unique_index',index:"lower'email"},index:"lower'email"};
+  const raw=new DatabaseSync(':memory:');
+  try {
+    raw.exec(ddl);const outcomes:string[]=[];
+    assert.deepEqual(await conflict(node(raw,{observe:e=>outcomes.push(e.outcome)})),expected);
+    assert.deepEqual(outcomes,['ok','unique_index']);
+    assert.equal(raw.prepare('select count(*) as n from customers').get()!.n,1);
+  }finally{raw.close();}
+  const root=resolve(import.meta.dirname,'..');
+  const mf=workerMiniflare(resolve(root,'test/index-failure-worker.ts'),root,{durableObjects:{INDEX:'IndexFailure'}});
+  t.after(()=>mf.dispose());
+  for(const path of ['/','/do']) assert.deepEqual(await (await mf.dispatchFetch('http://localhost'+path)).json(),expected);
+});

@@ -192,6 +192,7 @@ export function commands<G extends GeneratedMap, const C extends Record<string, 
 // reports it, and the adapter turns the message into this value.
 export type ConstraintFailure =
   | { kind: "unique"; table: string; columns: string[] }
+  | { kind: "unique_index"; index: string }
   | { kind: "check"; constraint: string }
   | { kind: "not_null"; table: string; column: string }
   | { kind: "foreign_key" }
