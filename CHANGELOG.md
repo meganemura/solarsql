@@ -4,6 +4,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: migration generation appends after sequence gaps, refuses ambiguous replay order, and preserves existing files during competing generation (ADR 0060).
+
 - Added: `analyze` generates types and metadata from schema DDL and a JSON query catalog, without module imports or identity rules (ADR 0058).
 - Added: `inspect` and `build --json` expose operation contracts, accesses, freshness, and structured diagnostics (ADR 0055).
 - Added: `rehearse` checks a populated SQLite snapshot with integrity checks, old queries, and data assertions (ADRs 0057 and 0059).

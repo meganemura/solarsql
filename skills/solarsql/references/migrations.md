@@ -8,6 +8,14 @@ The command writes `migrations/NNNN_<name>.sql` with the difference between the 
 `npx solarsql build` reports pending or blocked migrations after generating types; `npx solarsql build --check` fails while the files and schema differ.
 Every build keeps `index.ts` in step with the `.sql` files.
 
+Generation appends after the highest numeric sequence, including gaps.
+History names use at least four digits followed by `_name.sql`; sequences must be unique and increase in filename order.
+Generation rejects a new name that would replay before existing history, including an unsafe digit-width rollover.
+Keep applied filenames unchanged when resolving a conflict.
+New SQL files use exclusive creation and generation holds `.solarsql-generation.lock` while comparing and writing history.
+If another generator holds the lock, retry after it finishes.
+If a crash leaves the lock, check that its recorded process has exited before removing it.
+
 ## What a migration holds
 
 | Change | Statements |

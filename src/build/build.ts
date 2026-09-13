@@ -12,7 +12,8 @@ import type { Command, Config, Index, ModuleConfig, PlanItem, Query, Search, Tab
 import { GUARD_DDL, GUARD_TABLE, assertStatement } from "../runtime/plan.ts";
 import { GENERATED_FILE, emitGenerated, emitMigrationsIndex, emitStub } from "./emit.ts";
 import { Engine, type Access, type OutputColumn } from "./facts.ts";
-import { applied, diff, introspect, open, render } from "./migration.ts";
+import { applied, diff, introspect, open } from "./migration.ts";
+import { migrationSequence, nextMigrationFile, withMigrationLock, writeNewMigration } from "./migration-files.ts";
 import { created, indexTarget, quoteIdent, triggerTarget } from "./scan.ts";
 import { shellArgument } from "./shell.ts";
 import { BuildError, Typer, brandName, type Analysis, type Brand } from "./typegen.ts";
@@ -598,18 +599,20 @@ function migrationStatus(configDir: string, config: Config, modules: readonly Mo
 export async function migration(configPath: string, name: string): Promise<{ filename: string | null; reason: string | null }> {
   if (!/^[a-z0-9_]+$/.test(name)) throw new BuildError(`migration name must match [a-z0-9_]+: ${name}`);
   const { config, configDir, modules } = await load(configPath);
-  const status = migrationStatus(configDir, config, modules);
-  if (status.reason) return { filename: null, reason: status.reason };
   const dir = resolve(configDir, config.migrations);
   mkdirSync(dir, { recursive: true });
-  let filename: string | null = null;
-  if (status.pending) {
+  return withMigrationLock(dir, () => {
     const files = migrationFiles(dir);
-    const next = files.length + 1;
-    const file = render(next, name, status.statements);
-    writeFileSync(join(dir, file.filename), file.sql);
-    filename = file.filename;
-  }
-  writeFileSync(join(dir, "index.ts"), emitMigrationsIndex(migrationFiles(dir)));
-  return { filename, reason: null };
+    migrationSequence(files.map(file => file.name));
+    const status = migrationStatus(configDir, config, modules);
+    if (status.reason) return { filename: null, reason: status.reason };
+    let filename: string | null = null;
+    if (status.pending) {
+      const file = nextMigrationFile(files.map(file => file.name), name, status.statements);
+      writeNewMigration(dir, file);
+      filename = file.filename;
+    }
+    writeFileSync(join(dir, "index.ts"), emitMigrationsIndex(migrationFiles(dir)));
+    return { filename, reason: null };
+  });
 }

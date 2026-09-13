@@ -3,11 +3,13 @@
 // shapes the design rules out. Each case works on a copy of the example.
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { cpSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { build, migration } from "../src/build/build.ts";
 import { BuildError } from "../src/build/typegen.ts";
+import { nextMigrationFile, withMigrationLock, writeNewMigration } from "../src/build/migration-files.ts";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -381,5 +383,70 @@ describe("solarsql build", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+test('migration generation appends after gaps without replacing history', async t => {
+  const dir = copy(); t.after(() => rmSync(dir, {recursive:true,force:true}));
+  const migrations = join(dir,'example/migrations');
+  const existing = join(migrations,'0006_collision.sql');
+  renameSync(join(migrations,'0005_customer_name_not_empty.sql'),existing);
+  const before = readFileSync(existing,'utf8');
+  const source = join(dir,'example/modules/orders/module.ts');
+  writeFileSync(source,readFileSync(source,'utf8').replace('updated_at text\n','updated_at text,\n    extra integer not null default 0\n'));
+  const config = join(dir,'example/solarsql.config.ts');
+  const result = await migration(config,'collision');
+  assert.equal(result.filename,'0007_collision.sql');
+  assert.equal(readFileSync(existing,'utf8'),before);
+  assert.equal((await build(config)).migration.pending,false);
+  assert.equal(existsSync(join(migrations,'.solarsql-generation.lock')),false);
+});
+
+test('migration file publication is exclusive and generation locks are released', t => {
+  const dir = mkdtempSync(join(tmpdir(),'solarsql-migration-lock-'));
+  t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const file = {filename:'0001_initial.sql',sql:'create table t(n integer) strict;'};
+  writeNewMigration(dir,file);
+  assert.throws(()=>writeNewMigration(dir,{...file,sql:'drop table t;'}),/already exists/);
+  assert.equal(readFileSync(join(dir,file.filename),'utf8'),file.sql);
+  withMigrationLock(dir,()=>assert.throws(()=>withMigrationLock(dir,()=>{}),/generation is locked/));
+  assert.throws(()=>withMigrationLock(dir,()=>{throw new Error('fixture failure')}),/fixture failure/);
+  withMigrationLock(dir,()=>{});
+  assert.equal(existsSync(join(dir,'.solarsql-generation.lock')),false);
+});
+
+test('migration numbering rejects ambiguous history and unsafe lexical rollover', () => {
+  for (const names of [['custom.sql'],['0001_a.sql','0001_b.sql'],['9999_a.sql','10000_b.sql']]) {
+    assert.throws(()=>nextMigrationFile(names,'next',[]),/invalid or ambiguous/);
+  }
+  assert.throws(()=>nextMigrationFile(['9999_last.sql'],'next',[]),/replay before/);
+  assert.equal(nextMigrationFile(['00001_a.sql','00009_b.sql'],'next',[]).filename,'00010_next.sql');
+});
+
+test('a competing CLI generator reports the held lock and preserves history', async t => {
+  const dir = copy(); t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const migrations = join(dir,'example/migrations');
+  const existing = join(migrations,'0005_customer_name_not_empty.sql');
+  const before = readFileSync(existing,'utf8');
+  const config = join(dir,'example/solarsql.config.ts');
+  withMigrationLock(migrations,()=>{
+    const child = spawnSync(process.execPath,[join(root,'src/build/cli.ts'),'migration','competing',config],{encoding:'utf8',timeout:10_000});
+    assert.equal(child.status,1,child.stdout+child.stderr);
+    assert.match(child.stderr,/generation is locked/);
+    assert.equal(readFileSync(existing,'utf8'),before);
+  });
+  assert.equal((await migration(config,'after_lock')).filename,null);
+});
+
+test('new migration names sort after every generated history with gaps', async () => {
+  const {test:property} = await import('@hegeldev/hegel');
+  const gs = await import('@hegeldev/hegel/generators');
+  property(tc => {
+    const values = [...new Set(tc.draw(gs.arrays(gs.integers({minValue:0,maxValue:9998}),{maxSize:30})))];
+    const history = values.map(n=>`${String(n).padStart(4,'0')}_history.sql`);
+    const generated = nextMigrationFile(history,'next',[]);
+    assert.ok(history.every(name=>name<generated.filename));
+    assert.ok(!history.includes(generated.filename));
+    assert.equal(Number(generated.filename.split('_')[0]), Math.max(0,...values)+1);
   });
 });
