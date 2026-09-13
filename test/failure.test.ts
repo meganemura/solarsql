@@ -43,10 +43,26 @@ describe("constraintFailure", () => {
   });
 
   test("an assert is not a constraint, and an unknown error is neither", () => {
-    const assertError = new Error("D1_ERROR: was_draft: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_TRIGGER)");
-    assert.equal(assertFailure(assertError, ["was_draft"]), "was_draft");
+    const assertError = new Error("D1_ERROR: solarsql:assert:nonce:was_draft: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_TRIGGER)");
+    assert.equal(assertFailure(assertError, ["was_draft"], "nonce"), "was_draft");
+    assert.equal(assertFailure(new Error("D1_ERROR: was_draft: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_TRIGGER)"), ["was_draft"], "nonce"), null);
     assert.equal(constraintFailure(assertError), null);
     assert.equal(constraintFailure(new Error("D1_ERROR: too many SQL variables at offset 230: SQLITE_ERROR")), null);
+  });
+
+  test("assert identities bind arbitrary public names to one command invocation", () => {
+    hegel.test(tc => {
+      const name = tc.draw(ident);
+      const token = tc.draw(ident);
+      const error = new Error(`solarsql:assert:${token}:${name}`) as Error & { errcode: number };
+      error.errcode = 1811;
+      assert.equal(assertFailure(error, [name], token), name);
+      for (const message of [name, `solarsql:assert:${name}`, `solarsql:assert:other:${name}`]) {
+        const userError = new Error(message) as Error & { errcode: number };
+        userError.errcode = 1811;
+        assert.equal(assertFailure(userError, [name], token), null);
+      }
+    }, { testCases: 1000 });
   });
 });
 
@@ -57,7 +73,7 @@ test('unknown thrown values are not replaced by classification errors', () => {
       new AggregateError([new Error('UNIQUE constraint failed: t.id')],'cleanup failed',{cause:new Error('UNIQUE constraint failed: t.id')}),
       new Proxy({}, {getPrototypeOf(){throw Error('unreadable prototype');}}),
     ]));
-    assert.equal(assertFailure(value,['failed']),null);
+    assert.equal(assertFailure(value,['failed'],'nonce'),null);
     assert.equal(constraintFailure(value),null);
   },{testCases:1000});
 });
@@ -102,6 +118,7 @@ test('generated command callers receive index targets on Node, D1, and Durable O
   const {DatabaseSync}=await import('node:sqlite');
   const {node}=await import('../src/node.ts');
   const {ddl,conflict}=await import('./index-failure-fixture.ts');
+  const {ddl:collisionDdl,collisions}=await import('./assert-collision-fixture.ts');
   const {workerMiniflare}=await import('./worker.ts');
   const {resolve}=await import('node:path');
   const expected={result:{ok:false,kind:'unique_index',index:"lower'email"},index:"lower'email"};
@@ -112,8 +129,20 @@ test('generated command callers receive index targets on Node, D1, and Durable O
     assert.deepEqual(outcomes,['ok','unique_index']);
     assert.equal(raw.prepare('select count(*) as n from customers').get()!.n,1);
   }finally{raw.close();}
+  const collisionRaw=new DatabaseSync(':memory:');
+  try {
+    collisionRaw.exec(collisionDdl);
+    const result=await collisions(node(collisionRaw));
+    assert.deepEqual(result.messages.map(message=>message.includes('same_name')),[true,true]);
+    assert.equal(result.count,0);
+  }finally{collisionRaw.close();}
   const root=resolve(import.meta.dirname,'..');
-  const mf=workerMiniflare(resolve(root,'test/index-failure-worker.ts'),root,{durableObjects:{INDEX:'IndexFailure'}});
+  const mf=workerMiniflare(resolve(root,'test/index-failure-worker.ts'),root,{durableObjects:{INDEX:'IndexFailure',COLLISION:'AssertCollision'}});
   t.after(()=>mf.dispose());
   for(const path of ['/','/do']) assert.deepEqual(await (await mf.dispatchFetch('http://localhost'+path)).json(),expected);
+  for(const path of ['/collision','/collision-do']) {
+    const result=await (await mf.dispatchFetch('http://localhost'+path)).json() as {messages:string[];count:number};
+    assert.deepEqual(result.messages.map(message=>message.includes('same_name')),[true,true]);
+    assert.equal(result.count,0);
+  }
 });

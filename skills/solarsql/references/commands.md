@@ -67,6 +67,7 @@ An expression-index UNIQUE failure reports `unique_index` and the decoded index 
 A table-column UNIQUE failure reports `unique` with its table and columns.
 
 A failed assert and a rejected row are values with one `kind`, and nothing of the plan stays written. Every other engine error is thrown.
+The adapter gives each command invocation a private guard identity, so a user trigger that raises the same public name remains an engine error.
 `kind: "assert"` carries the union of the plan's assert names, so a `switch` on it is exhaustive.
 `changes` counts the rows the plan's statements inserted, updated, or deleted, the rows their triggers wrote included, as D1's `meta.changes` counts them, where an assert's `changes()` leaves a trigger's rows out; an assert and `returns` add nothing, and a plan that changed nothing gives 0.
 

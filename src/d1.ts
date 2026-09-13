@@ -8,7 +8,7 @@
 // runtime/plan.ts defines. Types come from the generated file through the
 // query and command objects.
 import type { AdapterOptions, BatchRows, Command, CommandResult, Database, Entry, GeneratedMap, ParamsArg, PlanShape, Query, Read, Row, SqlValue, StatementMeta } from "./index.ts";
-import { assertFailure, assertStatement, bindValues, constraintFailure, engineMeta, observed, outcomeOf, parseJson } from "./runtime/plan.ts";
+import { assertFailure, assertStatement, assertToken, bindValues, constraintFailure, engineMeta, observed, outcomeOf, parseJson } from "./runtime/plan.ts";
 
 // The part of the D1 binding this adapter uses. Structural, so no type
 // package is needed.
@@ -47,8 +47,9 @@ export function d1(binding: D1Like, options: AdapterOptions = {}): Database {
     run: <C extends Command<GeneratedMap, PlanShape<GeneratedMap>>>(command: C, ...args: ParamsArg<C>): Promise<CommandResult<C>> =>
       observed(options.observe, "command", command.name, async (report) => {
         const params = (args[0] ?? {}) as Record<string, SqlValue>;
+        const token = assertToken();
         const statements = command.plan.map((item, i) => {
-          const sql = typeof item === "string" ? item : assertStatement(item.name, item.predicate);
+          const sql = typeof item === "string" ? item : assertStatement(item.name, item.predicate, token);
           return prepared(sql, command.meta.statements[i]!, params);
         });
         if (command.returns !== null) statements.push(prepared(command.returns, command.meta.returns!, params));
@@ -57,7 +58,7 @@ export function d1(binding: D1Like, options: AdapterOptions = {}): Database {
           results = await binding.batch(statements);
           report(engineMeta(results));
         } catch (e) {
-          const failed = assertFailure(e, command.meta.asserts);
+          const failed = assertFailure(e, command.meta.asserts, token);
           if (failed !== null) return { ok: false, kind: "assert", assert: failed } as CommandResult<C>;
           const constraint = constraintFailure(e);
           if (constraint !== null) return { ok: false, ...constraint } as CommandResult<C>;

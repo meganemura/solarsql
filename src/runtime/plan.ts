@@ -18,8 +18,15 @@ begin
 end`,
 ];
 
-export function assertStatement(name: string, predicate: string): string {
-  return `insert into ${GUARD_TABLE} (name, ok) select '${name}', (${predicate})`;
+const ASSERT_IDENTITY = "solarsql:assert:";
+
+export function assertToken(): string {
+  return crypto.randomUUID();
+}
+
+export function assertStatement(name: string, predicate: string, token?: string): string {
+  const identity = token === undefined ? name : `${ASSERT_IDENTITY}${token}:${name}`;
+  return `insert into ${GUARD_TABLE} (name, ok) select '${identity}', (${predicate})`;
 }
 
 // Values in the order SQLite numbers the named parameters. A missing value
@@ -39,16 +46,15 @@ export function bindValues(meta: StatementMeta, params: Record<string, unknown>)
 // node:sqlite reports the raise message alone with errcode 1811. D1 and a
 // Durable Object report `<name>: SQLITE_CONSTRAINT (extended:
 // SQLITE_CONSTRAINT_TRIGGER)`, and D1 adds a `D1_ERROR: ` prefix.
-export function assertFailure(error: unknown, asserts: readonly string[]): string | null {
+export function assertFailure(error: unknown, asserts: readonly string[], token: string): string | null {
   const e = errorDetails(error);
-  const message = e.message;
-  const isTrigger = e.errcode === 1811 || message.includes("SQLITE_CONSTRAINT_TRIGGER");
+  const isTrigger = e.errcode === 1811 || e.message.includes("SQLITE_CONSTRAINT_TRIGGER");
   if (!isTrigger) return null;
-  const body = message.replace(/^D1_ERROR:\s*/, "");
-  for (const name of asserts) {
-    if (body === name || body.startsWith(`${name}:`)) return name;
-  }
-  return null;
+  const prefix = `${ASSERT_IDENTITY}${token}:`;
+  const body = bareMessage(error);
+  if (!body.startsWith(prefix)) return null;
+  const name = body.slice(prefix.length);
+  return asserts.includes(name) ? name : null;
 }
 
 // JSON columns arrive as text from the engine. The generated meta says which.

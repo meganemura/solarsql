@@ -7,7 +7,7 @@
 // Boundary: no SQL is composed here beyond the assert statement that
 // runtime/plan.ts defines.
 import type { AdapterOptions, BatchRows, Command, CommandResult, Database, Entry, GeneratedMap, ParamsArg, PlanShape, Query, Read, Row, SqlValue, StatementMeta } from "./index.ts";
-import { assertFailure, assertStatement, bindValues, constraintFailure, observed, outcomeOf, parseJson } from "./runtime/plan.ts";
+import { assertFailure, assertStatement, assertToken, bindValues, constraintFailure, observed, outcomeOf, parseJson } from "./runtime/plan.ts";
 import { significant, splitStatements, tokenize } from "./build/scan.ts";
 
 // The part of DurableObjectStorage this adapter uses. Structural, so no
@@ -36,11 +36,12 @@ export function durable(storage: StorageLike, options: AdapterOptions = {}): Dat
     run: <C extends Command<GeneratedMap, PlanShape<GeneratedMap>>>(command: C, ...args: ParamsArg<C>): Promise<CommandResult<C>> =>
       observed(options.observe, "command", command.name, async () => {
         const params = (args[0] ?? {}) as Record<string, SqlValue>;
+        const token = assertToken();
         try {
           const out = storage.transactionSync(() => {
             let changes = 0;
             command.plan.forEach((item, i) => {
-              const sql = typeof item === "string" ? item : assertStatement(item.name, item.predicate);
+              const sql = typeof item === "string" ? item : assertStatement(item.name, item.predicate, token);
               const before = totalChanges(storage);
               storage.sql.exec(sql, ...bindValues(command.meta.statements[i]!, params)).toArray();
               if (typeof item === "string") changes += totalChanges(storage) - before;
@@ -50,7 +51,7 @@ export function durable(storage: StorageLike, options: AdapterOptions = {}): Dat
           });
           return { ok: true, ...out } as CommandResult<C>;
         } catch (e) {
-          const failed = assertFailure(e, command.meta.asserts);
+          const failed = assertFailure(e, command.meta.asserts, token);
           if (failed !== null) return { ok: false, kind: "assert", assert: failed } as CommandResult<C>;
           const constraint = constraintFailure(e);
           if (constraint !== null) return { ok: false, ...constraint } as CommandResult<C>;
