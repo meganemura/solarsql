@@ -60,7 +60,7 @@ A caller that picks a data source by table, or drops a cache by table, reads it 
 |---|---|---|
 | `d1(env.DB, options?)` from `solarsql/d1` | a D1 binding, or a session: `env.DB.withSession("first-primary")` fits the same shape | one `batch()`, one transaction |
 | `durable(ctx.storage, options?)` from `solarsql/durable` | a Durable Object's SQLite storage | one `transactionSync` |
-| `node(db, options?)` from `solarsql/node` | a `DatabaseSync` of node:sqlite | one `begin ... commit` |
+| `node(db, options?)` from `solarsql/node` | a `DatabaseSync` of node:sqlite | one savepoint; an enclosing transaction remains owned by its caller |
 
 `options.observe` is a hook for a logger or a tracer, called once per call:
 
@@ -83,7 +83,7 @@ D1 bills on `rows_read` and `rows_written`, so a cost tracer reads `e.meta`.
 ## Ids
 
 `newId<OrdersId>()` makes a UUID v7: the first 48 bits are the millisecond, and ids made in one millisecond stay in order.
-`Id<"orders">` is the brand of a table's primary key; the generated file exports it as `OrdersId`, and `public.ts` re-exports it.
+`Id<"orders">` brands a table's single TEXT primary key; the generated file exports it as `OrdersId`, and `public.ts` re-exports it.
 A brand is a string at runtime.
 
 ## A module's test

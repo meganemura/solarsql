@@ -54,8 +54,8 @@ export const orderSearch = search(`create virtual table order_search using fts5(
 | `any` | `SqlValue` | `string \| number \| bigint \| null \| Uint8Array` |
 | a column without `not null` | `T \| null` | |
 | `check (c in ('a', 'b'))` | `"a" \| "b"` | matching storage classes with BINARY collation; integer `check (flag in (0, 1))` is `0 \| 1` |
-| the primary key `id` of table `orders` | `OrdersId` | a branded string; `Id<"orders">` |
-| a column that references `customers(id)` | `CustomersId` | the brand of the referenced key |
+| the single TEXT primary key `id` of table `orders` | `OrdersId` | a branded string; `Id<"orders">` |
+| a TEXT column that references the single TEXT primary key `customers(id)` | `CustomersId` | the brand of the referenced key |
 | a generated column | as declared | read like any other; a migration never sets it |
 | a column of a search table | `string \| null` | `rank` is `number` |
 
