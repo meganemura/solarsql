@@ -112,6 +112,9 @@ export class Typer {
   }
 
   private brandOf(t: TableFact, c: ColumnFact): Brand | null {
+    // SQLite compares foreign keys using the parent's affinity. The child
+    // can still store a different class, so a reference alone proves no brand.
+    if (scalarType(c.type) !== "string") return null;
     const own = this.brands.get(t.name);
     if (own && own.column === c.name) return own;
     const fk = t.foreignKeys.find((f) => f.from === c.name);

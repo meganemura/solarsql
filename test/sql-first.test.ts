@@ -92,3 +92,57 @@ try {
   assert.ifError(executed.error);
   assert.equal(executed.status, 0, executed.stdout + executed.stderr);
 });
+
+test("integer and blob keys retain runtime types while text references retain brands", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "solarsql-key-types-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, "keys"));
+  symlinkSync(join(root, "node_modules"), join(dir, "node_modules"), "dir");
+  writeFileSync(join(dir, "package.json"), '{"type":"module"}');
+  const library = join(root, "src/index.ts");
+  const ddl = [
+    'create table counters(id integer primary key not null) strict',
+    'create table chunks(id blob primary key not null) strict',
+    'create table names(id text primary key not null) strict',
+    'create table refs(id text primary key not null, numeric_ref integer references names(id), text_ref text references names(id)) strict',
+  ];
+  writeFileSync(join(dir, "config.ts"), `export default { modules: ["keys"], migrations: "migrations", library: ${JSON.stringify(library)} };`);
+  writeFileSync(join(dir, "keys/module.ts"), `
+import { table, queries } from ${JSON.stringify(library)};
+import { generated } from './solarsql.generated.ts';
+${ddl.map((sql, i) => `export const t${i} = table(${JSON.stringify(sql)});`).join('\n')}
+export const q = queries(generated, { counters: 'select id from counters where id = :id', chunks: 'select id from chunks', refs: 'select numeric_ref, text_ref from refs' });
+`);
+  await build(join(dir, "config.ts"));
+  writeFileSync(join(dir, "consumer.ts"), `
+import { newId, type Row, type Params, type Id } from ${JSON.stringify(library)};
+import { q } from './keys/module.ts';
+type Equal<A,B> = (<T>()=>T extends A?1:2) extends (<T>()=>T extends B?1:2) ? true : false;
+type Assert<T extends true> = T;
+export type Counter = Assert<Equal<Row<typeof q.counters>, {id: number}>>;
+export type Parameter = Assert<Equal<Params<typeof q.counters>, {id: number}>>;
+export type Chunk = Assert<Equal<Row<typeof q.chunks>, {id: Uint8Array}>>;
+export type References = Assert<Equal<Row<typeof q.refs>, {numeric_ref: number | null; text_ref: Id<'names'> | null}>>;
+// @ts-expect-error UUID generation requires a text identity.
+newId<Row<typeof q.counters>['id']>();
+newId<Id<'names'>>();
+`);
+  const compiled = spawnSync(join(root, "node_modules/.bin/tsc"), ['--ignoreConfig', '--noEmit', '--strict', '--skipLibCheck', '--target', 'esnext', '--module', 'nodenext', '--allowImportingTsExtensions', join(dir, 'consumer.ts')], { encoding: 'utf8', timeout: 30_000 });
+  assert.equal(compiled.status, 0, compiled.stdout + compiled.stderr);
+  writeFileSync(join(dir, 'execute.mjs'), `
+import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
+import { node } from ${JSON.stringify(join(root, 'src/node.ts'))};
+import { q } from './keys/module.ts';
+const db = new DatabaseSync(':memory:');
+db.exec(${JSON.stringify(ddl.join(';'))});
+db.exec("insert into counters values (42); insert into chunks values (x'0011'); insert into names values ('42'); insert into refs values ('r',42,'42')");
+const adapter = node(db);
+assert.deepEqual(await adapter.all(q.counters, {id:42}), [{id:42}]);
+assert.deepEqual(await adapter.all(q.chunks), [{id:new Uint8Array([0,17])}]);
+assert.deepEqual(await adapter.all(q.refs), [{numeric_ref:42,text_ref:'42'}]);
+db.close();
+`);
+  const executed = spawnSync(process.execPath, [join(dir, 'execute.mjs')], { encoding: 'utf8', timeout: 30_000 });
+  assert.equal(executed.status, 0, executed.stdout + executed.stderr);
+});

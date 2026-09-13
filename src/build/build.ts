@@ -308,7 +308,8 @@ export async function build(configPath: string, options: BuildOptions = {}): Pro
       if (!t.strict) {
         throw new BuildError(`table ${t.name} is not STRICT. Add \`strict\` after the closing parenthesis, so the engine rejects a value that does not match the declared type.`);
       }
-      if (pk.length === 1) brands.set(t.name, { table: t.name, column: pk[0]!.name, typeName: brandName(t.name), module: m.name });
+      // Id is a string contract. Other primary keys retain their storage type.
+      if (pk.length === 1 && pk[0]!.type.toUpperCase() === "TEXT") brands.set(t.name, { table: t.name, column: pk[0]!.name, typeName: brandName(t.name), module: m.name });
     }
     for (const m of modules) {
       for (const sql of m.views) checkBoundary(engine, m, owner, `select * from ${quoteIdent(created(sql)!.name)}`, `view ${created(sql)!.name}`);

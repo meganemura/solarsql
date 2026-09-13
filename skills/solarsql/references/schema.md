@@ -95,3 +95,7 @@ Three files and one line: `modules/<name>/module.ts`, `modules/<name>/public.ts`
 export type { OrdersId } from "./solarsql.generated.ts";
 export { orderQueries, orderCommands } from "./module.ts";
 ```
+
+A single TEXT primary key receives an `Id<T>` brand. INTEGER and BLOB keys retain `number` and `Uint8Array`.
+A reference inherits a text brand only when the child column also stores text.
+Use `newId()` for text identities.
