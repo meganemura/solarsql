@@ -92,7 +92,7 @@ const shared = "select cast(:value as text) as value";
 export const itemQueries = queries(generated, { echo: shared });
 export const first = commands(generated, { text: { plan: [shared, "select id from items where id = :value"] } });
 export const second = commands(generated, { number: { plan: [shared, "select count from items where count = :value"] } });`, (error, source) => {
-    assert.match(error.message, /parameter :value/);
+    assert.match(error.message, /parameter "value"/);
     for (const location of [
       "query itemQueries.echo",
       "command first.text, plan item 1",

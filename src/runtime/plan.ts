@@ -27,7 +27,7 @@ export function assertStatement(name: string, predicate: string): string {
 // parameter that json_each reads is encoded as JSON text.
 export function bindValues(meta: StatementMeta, params: Record<string, unknown>): SqlValue[] {
   const missing = meta.params.filter((n) => params[n] === undefined);
-  if (missing.length > 0) throw new Error(`missing parameter${missing.length > 1 ? "s" : ""}: ${missing.map((n) => `:${n}`).join(", ")}`);
+  if (missing.length > 0) throw new Error(`missing parameter${missing.length > 1 ? "s" : ""}: ${missing.map((n) => JSON.stringify(n)).join(", ")}`);
   return meta.params.map((n) => {
     const v = params[n];
     if (meta.encode.includes(n) && typeof v !== "string") return JSON.stringify(v);

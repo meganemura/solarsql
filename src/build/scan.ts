@@ -87,9 +87,21 @@ export function tokenize(sql: string): Token[] {
       continue;
     }
     if (ch === ":" || ch === "@" || ch === "$") {
-      const m = /^[:@$][A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(i));
-      if (m) {
-        push("param", i + m[0].length);
+      // SQLite permits digit and Unicode names, namespace separators, and
+      // a parenthesized suffix. Keep each engine slot as one token.
+      let end = i + 1, letters = 0;
+      while (end < sql.length) {
+        if (/[A-Za-z0-9_$\u0080-\uFFFF]/.test(sql[end]!)) { letters++; end++; }
+        else if (sql.slice(end, end + 2) === "::") end += 2;
+        else if (sql[end] === "(" && letters > 0) {
+          end++;
+          while (end < sql.length && !/[\t\n\f\r )]/.test(sql[end]!)) end++;
+          if (sql[end] === ")") end++;
+          break;
+        } else break;
+      }
+      if (letters > 0) {
+        push("param", end);
         continue;
       }
     }
@@ -146,19 +158,20 @@ export function isKeyword(token: Token | undefined, word: string): boolean {
 // Named parameters in order of first appearance, which is the order SQLite
 // numbers them. Anonymous "?" and numbered "?NNN" parameters are rejected,
 // because a name is what the generated types are keyed on.
-export function namedParams(sql: string): { names: string[]; anonymous: Token[] } {
-  const names: string[] = [];
-  const anonymous: Token[] = [];
-  for (const t of tokenize(sql)) {
-    if (t.type !== "param") continue;
-    if (t.text.startsWith("?")) {
-      anonymous.push(t);
-      continue;
-    }
-    const name = t.text.slice(1);
-    if (!names.includes(name)) names.push(name);
+export function namedSlots(sql: string): { sqlName: string; key: string }[] {
+  const names = [...new Set(tokenize(sql).filter(t => t.type === "param" && !t.text.startsWith("?")).map(t => t.text))];
+  const slots = names.map(sqlName => ({ sqlName, key: sqlName.slice(1) }));
+  // A bare name can itself start with '$'. Promotion must also resolve
+  // collisions between that name and another slot's qualified key.
+  for (;;) {
+    const duplicate = new Set(slots.filter(slot => slots.filter(other => other.key === slot.key).length > 1).map(slot => slot.key));
+    if (duplicate.size === 0) return slots;
+    for (const slot of slots) if (duplicate.has(slot.key)) slot.key = slot.sqlName;
   }
-  return { names, anonymous };
+}
+
+export function namedParams(sql: string): { names: string[]; anonymous: Token[] } {
+  return { names: namedSlots(sql).map(slot => slot.key), anonymous: tokenize(sql).filter(t => t.type === "param" && t.text.startsWith("?")) };
 }
 
 // The documentation of a statement: its leading "--" comment lines.
@@ -441,6 +454,8 @@ const compareOps = new Set(["=", "==", "<>", "!=", "<", ">", "<=", ">=", "like",
 
 export function paramSites(sql: string, locate = false): Map<string, (ParamSite & { offset?: number })[]> {
   const t = significant(tokenize(sql));
+  const keys = new Map(namedSlots(sql).map(slot => [slot.sqlName, slot.key]));
+  const key = (token: Token) => keys.get(token.text)!;
   const sites = new Map<string, (ParamSite & { offset?: number })[]>();
   let offset = 0;
   const add = (name: string, site: ParamSite, at = offset) => sites.set(name, [...(sites.get(name) ?? []), locate ? { ...site, offset: at } : site]);
@@ -494,8 +509,8 @@ export function paramSites(sql: string, locate = false): Map<string, (ParamSite 
         const ends = !cur || (cur.depth === tok.depth && (cur.text === "," || isKeyword(cur, "from") || cur.text === ";"));
         if (!ends) continue;
         const column = insertColumns[index];
-        if (k - itemStart === 1 && t[itemStart]!.type === "param" && t[itemStart]!.text.startsWith(":") && column) {
-          add(t[itemStart]!.text.slice(1), { kind: "insert", table: insertTable, column }, t[itemStart]!.start);
+        if (k - itemStart === 1 && t[itemStart]!.type === "param" && !t[itemStart]!.text.startsWith("?") && column) {
+          add(key(t[itemStart]!), { kind: "insert", table: insertTable, column }, t[itemStart]!.start);
           // Mark the token so the generic pass below skips it.
           (t[itemStart] as { handled?: boolean }).handled = true;
         }
@@ -510,10 +525,10 @@ export function paramSites(sql: string, locate = false): Map<string, (ParamSite 
       // ... from json_each(:rows)
       if (isKeyword(t[k], "from") && isKeyword(t[k + 1], "json_each") && t[k + 2]?.text === "(" && t[k + 3]?.type === "param" && t[k + 4]?.text === ")") {
         if (keys.length > 0) {
-          add(t[k + 3]!.text.slice(1), { kind: "rows_json", table: insertTable, keys }, t[k + 3]!.start);
+          add(key(t[k + 3]!), { kind: "rows_json", table: insertTable, keys }, t[k + 3]!.start);
           (t[k + 3] as { handled?: boolean }).handled = true;
         } else if (scalar !== null) {
-          add(t[k + 3]!.text.slice(1), { kind: "json_each", keys: [], scalar: { table: insertTable, column: scalar } }, t[k + 3]!.start);
+          add(key(t[k + 3]!), { kind: "json_each", keys: [], scalar: { table: insertTable, column: scalar } }, t[k + 3]!.start);
           (t[k + 3] as { handled?: boolean }).handled = true;
         }
       }
@@ -521,8 +536,8 @@ export function paramSites(sql: string, locate = false): Map<string, (ParamSite 
     }
     if (valuesDepth !== -1 && tok.text === "," && tok.depth === valuesDepth) valueIndex++;
     if (valuesDepth !== -1 && tok.text === ")" && tok.depth === valuesDepth - 1) valuesDepth = -1;
-    if (tok.type !== "param" || !tok.text.startsWith(":") || (tok as { handled?: boolean }).handled) continue;
-    const name = tok.text.slice(1);
+    if (tok.type !== "param" || tok.text.startsWith("?") || (tok as { handled?: boolean }).handled) continue;
+    const name = key(tok);
     const prev = t[i - 1];
     const next = t[i + 1];
     if (valuesDepth !== -1 && tok.depth === valuesDepth && insertTable && insertColumns[valueIndex]) {

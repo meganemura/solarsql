@@ -137,3 +137,9 @@ Fragments and string composition are not part of solarsql: a query is one static
 ## What the build reports
 
 `scan <module>: <tables> read in full by: <sql>` names a statement with a WHERE clause that the engine still scans in full. The build passes; add an index, or accept the scan.
+
+Named parameters can use `:`, `@`, or `$`. A single `:id` or `@id` uses the caller key `id`.
+When a statement contains both `:id` and `@id`, supply `{ ":id": 1, "@id": "text" }` with the generated types.
+Colliding keys retain their prefixes until each key is distinct. Repeated full names share one value.
+These keys belong to each statement contract; changing a collision requires updating its callers.
+SQL text and SQLite slot order stay unchanged (ADR 0071).

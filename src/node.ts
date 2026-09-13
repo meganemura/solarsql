@@ -9,7 +9,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { AdapterOptions, Database } from "./index.ts";
 import { durable, migrate as migrateStorage, type MigrationFile, type MigrationOptions, type StorageLike } from "./durable.ts";
-import { namedParams } from "./build/scan.ts";
+import { namedSlots } from "./build/scan.ts";
 
 export function node(db: DatabaseSync, options: AdapterOptions = {}): Database {
   return durable(storageOf(db), options);
@@ -21,18 +21,16 @@ export function migrate(db: DatabaseSync, files: readonly MigrationFile[], optio
   return migrateStorage(storageOf(db), files, options);
 }
 
-// node:sqlite binds a named parameter by its name only, so the values the
-// adapters pass by position are matched to the names in the order they
-// first appear, which is the order the build numbered them in. A statement
-// with `?` parameters, such as the migration history's own insert, binds
-// by position.
+// Bind full SQLite names so distinct prefixes cannot collide in Node's
+// bare-name lookup. Positional values follow the build's slot order.
 export function storageOf(db: DatabaseSync): StorageLike {
   return {
     sql: {
       exec(sql: string, ...bindings: unknown[]) {
         const statement = db.prepare(sql);
-        const names = bindings.length === 0 ? [] : namedParams(sql).names;
-        const rows = names.length > 0 ? statement.all(Object.fromEntries(names.map((n, i) => [n, bindings[i]])) as Record<string, never>) : statement.all(...(bindings as never[]));
+        const slots = bindings.length === 0 ? [] : namedSlots(sql);
+        statement.setAllowBareNamedParameters(false);
+        const rows = slots.length > 0 ? statement.all(Object.fromEntries(slots.map((slot, i) => [slot.sqlName, bindings[i]])) as Record<string, never>) : statement.all(...(bindings as never[]));
         // node:sqlite rows have no prototype; a plain object compares equal
         // to a literal in a test.
         return { toArray: () => rows.map((r) => ({ ...r })) };

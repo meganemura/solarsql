@@ -7,7 +7,7 @@ import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { build } from "../src/build/build.ts";
 
-async function project(body: string, rejects: boolean): Promise<void> {
+async function project(body: string, rejects: boolean | RegExp): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), "solarsql-role-"));
   try {
     mkdirSync(join(dir, "items"));
@@ -17,7 +17,7 @@ export const items = table("create table items(id text primary key not null, val
 ${body}`);
     const config = join(dir, "solarsql.config.ts");
     writeFileSync(config, 'export default { modules: ["./items"], migrations: "./migrations" };');
-    if (rejects) await assert.rejects(build(config), /module\.ts:.*(?:query|command)/s);
+    if (rejects) await assert.rejects(build(config), rejects instanceof RegExp ? rejects : /module\.ts:.*(?:query|command)/s);
     else await build(config);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
@@ -39,3 +39,9 @@ export const c = commands(generated, { good: { plan: [
   "select id from items",
   "with x as (select id from items) update items set value='a;b' where id in (select id from x); /* ; */"
 ], returns: "select id from items" } });`, false));
+
+test('cross-statement type conflicts quote the generated parameter key', () => project(`
+export const c=commands(generated,{ change:{ plan:[
+  "update items set value=@id where :id=1",
+  "update items set value=:id where @id=1"
+]}});`, /parameter ":id" is number in one statement and string in another/));

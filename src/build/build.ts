@@ -512,7 +512,7 @@ function checkCommands(m: Module, entries: readonly { key: string; analysis: Ana
           if (seen && seen.type !== p.type) {
             failureKeys = [seen.sql, key];
             throw new BuildError(
-              `command ${m.name}.${c.name}: parameter :${p.name} is ${seen.type} in one statement and ${p.type} in another.\n  ${seen.sql}\n  ${key}`,
+              `command ${m.name}.${c.name}: parameter ${JSON.stringify(p.name)} is ${seen.type} in one statement and ${p.type} in another.\n  ${seen.sql}\n  ${key}`,
             );
           }
           types.set(p.name, { type: p.type, encode: p.encode, sql: key });
@@ -525,7 +525,7 @@ function checkCommands(m: Module, entries: readonly { key: string; analysis: Ana
           const earlier = refined.get(key)?.get(p.name);
           if (earlier && earlier.type !== t.type) {
             failureKeys = [key, t.sql];
-            throw new BuildError(`parameter :${p.name} of this statement is ${earlier.type} in command ${m.name}.${earlier.command} and ${t.type} in command ${m.name}.${c.name}. Give the statement a type of its own, or split it.`, key);
+            throw new BuildError(`parameter ${JSON.stringify(p.name)} of this statement is ${earlier.type} in command ${m.name}.${earlier.command} and ${t.type} in command ${m.name}.${c.name}. Give the statement a type of its own, or split it.`, key);
           }
           p.type = t.type;
           p.encode = t.encode;

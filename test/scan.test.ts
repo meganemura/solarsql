@@ -160,3 +160,15 @@ describe("shapes", () => {
     assert.deepEqual(d.constraints, ["constraint u unique(n)", "foreign key(n) references o(id)"]);
   });
 });
+
+test('named slots preserve prefixes, repeated slots, and qualified-key collisions', () => {
+  assert.deepEqual(namedParams('select :id,@id,$other,:id').names,[':id','@id','other']);
+  assert.deepEqual(namedParams('select $id,@id,:$id').names,['$id','@id',':$id']);
+  for(const name of [':1',':名前','$id::suffix(key)','@id::suffix(key)',':id$next']) {
+    assert.deepEqual(namedParams(`select ${name}`).names,[name.slice(1)]);
+  }
+  const sites=paramSites('insert into t(a,b,c) select :id,@id,$other');
+  assert.deepEqual([...sites].map(([name,sites])=>[name,sites[0]]),[
+    [':id',{kind:'insert',table:'t',column:'a'}],['@id',{kind:'insert',table:'t',column:'b'}],['other',{kind:'insert',table:'t',column:'c'}],
+  ]);
+});

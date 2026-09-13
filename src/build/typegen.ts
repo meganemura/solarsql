@@ -727,7 +727,7 @@ export class Typer {
     }
     if (columnSites.length > 0) {
       const bases = new Set(columnSites.map((r) => r.type));
-      if (bases.size > 1) throw new BuildError(`parameter :${name} is used with two different types: ${[...bases].join(" and ")}`, sql);
+      if (bases.size > 1) throw new BuildError(`parameter ${JSON.stringify(name)} is used with two different types: ${[...bases].join(" and ")}`, sql);
       const base = [...bases][0]!;
       types.add(columnSites.every((r) => r.nullable) ? `${base} | null` : base);
     }
@@ -737,7 +737,7 @@ export class Typer {
       else if (jsonScalar !== null) types.add(`readonly ${jsonScalar}[]`);
       else types.add("readonly SqlValue[]");
     }
-    if (types.size > 1) throw new BuildError(`parameter :${name} is used with two different types: ${[...types].join(" and ")}`, sql);
+    if (types.size > 1) throw new BuildError(`parameter ${JSON.stringify(name)} is used with two different types: ${[...types].join(" and ")}`, sql);
     let type = types.size === 1 ? [...types][0]! : "SqlValue";
     if (nullable && type !== "SqlValue" && !/\| null$/.test(type)) type = `${type} | null`;
     return { type, encode };

@@ -173,3 +173,31 @@ test('migration history uses the same ordering for Unicode names', () => {
     assert.deepEqual(migrate(raw, files), []);
   } finally { raw.close(); }
 });
+
+test('named parameter slots retain SQLite values for every prefix and repeated reference', async () => {
+  const {test:property}=await import('@hegeldev/hegel');
+  const gs=await import('@hegeldev/hegel/generators');
+  const {namedSlots}=await import('../src/build/scan.ts');
+  const {storageOf}=await import('../src/node.ts');
+  property(tc=>{
+    const names=tc.draw(gs.arrays(gs.sampledFrom([':id','@id','$id',':$id',':名前',':1','$id::suffix(key)']),{minSize:1,maxSize:20}));
+    const sql='select '+names.map((name,i)=>`${name} as c${i}`).join(',');
+    const slots=namedSlots(sql);
+    const values=slots.map(()=>tc.draw(gs.integers({minValue:-10000,maxValue:10000})));
+    const raw=new DatabaseSync(':memory:');
+    try {
+      const oracle=raw.prepare(sql);oracle.setAllowBareNamedParameters(false);
+      const expected=oracle.all(Object.fromEntries(slots.map((slot,i)=>[slot.sqlName,values[i]!]))).map(row=>({...row}));
+      assert.equal(new Set(slots.map(slot=>slot.key)).size,slots.length);
+      const actual=storageOf(raw).sql.exec(sql,...values).toArray();
+      assert.deepEqual(actual,expected);
+      assert.deepEqual(Object.values(actual[0]!),names.map(name=>values[slots.findIndex(slot=>slot.sqlName===name)]));
+    }finally{raw.close();}
+  });
+});
+
+test('missing parameters report the exact generated keys', async () => {
+  const {bindValues}=await import('../src/runtime/plan.ts');
+  assert.throws(()=>bindValues({params:[':id','@id'],encode:[],json:[],reads:[]},{}),{message:'missing parameters: ":id", "@id"'});
+  assert.throws(()=>bindValues({params:['id'],encode:[],json:[],reads:[]},{}),{message:'missing parameter: "id"'});
+});

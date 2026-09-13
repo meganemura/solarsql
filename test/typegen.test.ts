@@ -339,3 +339,11 @@ test('CHECK types admit the values SQLite stores after affinity conversion', asy
     } finally {engine.close();}
   });
 });
+
+test('conflicting parameter types identify the generated qualified key', () => {
+  const engine=new Engine(['create table items(id integer not null,value text not null) strict']);
+  try {
+    const typer=new Typer(engine,new Map());
+    assert.throws(()=>typer.analyze('select id from items where id=:id or value=:id or id=@id',''), /parameter ":id" is used with two different types/);
+  }finally{engine.close();}
+});

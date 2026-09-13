@@ -4,6 +4,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: distinct SQLite named parameters retain their slots and types; ambiguous bare names use prefixed caller keys (ADR 0071).
+
 - Fixed: rebuilds retain AUTOINCREMENT history, including deleted maxima and empty tables (ADR 0070).
 
 - Fixed: schema analysis and migrations retain legal names such as `sqliteCache` (ADR 0069).
