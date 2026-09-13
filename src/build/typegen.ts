@@ -523,16 +523,19 @@ export class Typer {
   ): string {
     const call = findCall(expr, "json_object")!;
     if (call.args.length % 2 !== 0) throw new BuildError(`json_object needs key, value pairs`, sql);
-    const fields: string[] = [];
+    // JSON.parse retains the last occurrence of a repeated key. Preserve
+    // that decoded contract instead of emitting duplicate TypeScript fields.
+    const fields = new Map<string, string>();
     for (let i = 0; i < call.args.length; i += 2) {
       const key = call.args[i]!.text;
-      const m = /^'((?:[^']|'')*)'$/.exec(key);
+      const tokens = significant(tokenize(stripParens(key)));
+      const m = tokens.length === 1 && tokens[0]!.type === "string" ? /^'((?:[^']|'')*)'$/.exec(tokens[0]!.text) : null;
       if (!m) throw new BuildError(`json_object key must be a string literal, got ${key}`, sql);
       const name = m[1]!.replace(/''/g, "'");
       const value = call.args[i + 1]!.text;
-      fields.push(`${JSON.stringify(name)}: ${jsonResultType(this.valueType(sql, value, aliases, nullableAliases, note, scope))}`);
+      fields.set(name, value);
     }
-    const type = `{ ${fields.join("; ")} }`;
+    const type = `{ ${[...fields].map(([name, value]) => `${JSON.stringify(name)}: ${jsonResultType(this.valueType(sql, value, aliases, nullableAliases, note, scope))}`).join("; ")} }`;
     void item;
     void insideArray;
     return type;

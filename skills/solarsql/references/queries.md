@@ -82,6 +82,9 @@ A JSON constructor must span the complete expression, with supported FILTER or O
 An enclosing scalar expression such as `length(json_object(...))` needs an explicit CAST.
 The CAST result keeps its scalar type and skips JSON decoding.
 
+Repeated literal keys in `json_object` use the last value and its type, matching the decoded object.
+Literal keys can include SQL comments and enclosing parentheses; dynamic keys require a different query shape.
+
 Inside JSON constructors, a BLOB or flexible storage value has the recursive `JsonValue` type.
 SQLite can decode valid JSONB into objects, arrays, scalars, or null.
 Invalid binary content can still cause a SQLite error.

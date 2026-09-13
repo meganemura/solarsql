@@ -87,7 +87,7 @@ test('generated JSONB contracts compile and execute on Node, D1, and Durable Obj
   let mf:ReturnType<typeof workerMiniflare>|undefined;
   t.after(async()=>{await mf?.dispose();rmSync(dir,{recursive:true,force:true});});
   const library=relative(dir,join(root,'src/index.ts'));
-  const sql="with payload as (select cast /* JSONB storage */ (jsonb(:input) as blob) as value) select json_object('data',value) as result from payload";
+  const sql="with payload as (select cast /* JSONB storage */ (jsonb(:input) as blob) as value) select json_object('data',1,/* decoded value */ ('data'),value) as result from payload";
   const report=analyzeSchema('',{query:sql},library);
   assert.equal(report.operations[0]!.columns[0]!.type,'{ "data": JsonValue }');
   writeFileSync(join(dir,'package.json'),'{"type":"module"}');

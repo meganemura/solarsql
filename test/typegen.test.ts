@@ -479,3 +479,25 @@ test('complete BLOB casts retain binary values through SQL trivia and scopes', a
     assert.throws(()=>new Typer(engine,new Map()).analyze("select json_object('value',cast(1 as integer) + 2)",''),/cast/);
   }finally{engine.close();}
 });
+
+test('decoded JSON object keys use the last value contract', async () => {
+  const {test:property}=await import('@hegeldev/hegel');
+  const gs=await import('@hegeldev/hegel/generators');
+  const engine=new Engine([]);
+  try {
+    property(tc=>{
+      // SQLite source literals cannot contain NUL; every other drawn character remains.
+      const key=tc.draw(gs.text()).replaceAll('\0','');
+      const literal=`'${key.replaceAll("'","''")}'`;
+      const sql=`select json_object(${literal},length('overwritten'),/* last */ (${literal}), 'last') as value`;
+      const analysis=new Typer(engine,new Map()).analyze(sql,'');
+      assert.equal(analysis.sql,sql);
+      assert.equal(analysis.columns[0]!.type,`{ ${JSON.stringify(key)}: string }`);
+      assert.deepEqual(JSON.parse(engine.db.prepare(sql).get()!.value as string),{[key]:'last'});
+    },{testCases:1000});
+    const sql="select json_object('data',1,'data',json_object('nested',null),'__proto__','safe') as value";
+    assert.equal(new Typer(engine,new Map()).analyze(sql,'').columns[0]!.type,'{ "data": { "nested": null }; "__proto__": string }');
+    assert.deepEqual(JSON.parse(engine.db.prepare(sql).get()!.value as string),{data:{nested:null},['__proto__']:'safe'});
+    assert.throws(()=>new Typer(engine,new Map()).analyze("select json_object(cast('key' as text),1)",''),/key must be a string literal/);
+  }finally{engine.close();}
+});
