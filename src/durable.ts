@@ -7,7 +7,7 @@
 // Boundary: no SQL is composed here beyond the assert statement that
 // runtime/plan.ts defines.
 import type { AdapterOptions, BatchRows, Command, CommandResult, Database, Entry, GeneratedMap, ParamsArg, PlanShape, Query, Read, Row, SqlValue, StatementMeta } from "./index.ts";
-import { assertFailure, assertStatement, assertToken, bindValues, constraintFailure, observed, outcomeOf, parseJson } from "./runtime/plan.ts";
+import { assertFailure, assertStatement, assertToken, bindValues, constraintFailure, observed, outcomeOf, parseJson, validateParams } from "./runtime/plan.ts";
 import { significant, splitStatements, tokenize } from "./build/scan.ts";
 
 // The part of DurableObjectStorage this adapter uses. Structural, so no
@@ -22,7 +22,11 @@ export function durable(storage: StorageLike, options: AdapterOptions = {}): Dat
     parseJson(storage.sql.exec(sql, ...bindValues(meta, params)).toArray(), meta.json);
 
   const all = <Q extends Query<string, Entry>>(query: Q, ...args: ParamsArg<Q>): Promise<Row<Q>[]> =>
-    observed(options.observe, "query", query.name, async () => rows(query.sql, query.meta, (args[0] ?? {}) as Record<string, unknown>) as Row<Q>[], () => "ok");
+    observed(options.observe, "query", query.name, async () => {
+      const params=(args[0] ?? {}) as Record<string,unknown>;
+      validateParams([query.meta], params);
+      return rows(query.sql, query.meta, params) as Row<Q>[];
+    }, () => "ok");
 
   return {
     all,
@@ -32,10 +36,14 @@ export function durable(storage: StorageLike, options: AdapterOptions = {}): Dat
     },
     // The storage is local, so a batch of reads is the reads in order.
     batch: <const R extends readonly Read<Query<string, Entry>>[]>(reads: R): Promise<BatchRows<R>> =>
-      observed(options.observe, "batch", reads.map((r) => r.query.name).join("+"), async () => reads.map((r) => rows(r.query.sql, r.query.meta, r.params)) as unknown as BatchRows<R>, () => "ok"),
+      observed(options.observe, "batch", reads.map((r) => r.query.name).join("+"), async () => {
+        for (const item of reads) validateParams([item.query.meta], item.params);
+        return reads.map((r) => rows(r.query.sql, r.query.meta, r.params)) as unknown as BatchRows<R>;
+      }, () => "ok"),
     run: <C extends Command<GeneratedMap, PlanShape<GeneratedMap>>>(command: C, ...args: ParamsArg<C>): Promise<CommandResult<C>> =>
       observed(options.observe, "command", command.name, async () => {
         const params = (args[0] ?? {}) as Record<string, SqlValue>;
+        validateParams([...command.meta.statements, ...(command.meta.returns ? [command.meta.returns] : [])], params);
         const token = assertToken();
         try {
           const out = storage.transactionSync(() => {

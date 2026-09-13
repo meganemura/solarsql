@@ -32,6 +32,9 @@ const [orders, customers] = await db.batch([read(orderQueries.byId, { id }), rea
 | `db.batch([read(q1, p1), read(q2)])` | the rows of each, by position; one D1 round trip, one `batch()` |
 
 A query without parameters takes none: `db.all(customerQueries.all)`.
+Each call requires exactly its generated own parameter keys before SQL runs.
+An inherited value reports a missing parameter, and an extra enumerable key reports an unexpected parameter.
+A command validates the union of its plan, asserts, and `returns`; each statement then binds its own ordered subset.
 JSON columns arrive parsed, and array parameters go encoded; the module code sees plain values.
 Retry, concurrency, and dependency injection stay in the calling code. A function of a module takes `db: Database`.
 

@@ -123,6 +123,7 @@ test('generated command callers receive index targets on Node, D1, and Durable O
   const {ddl,conflict}=await import('./index-failure-fixture.ts');
   const {ddl:collisionDdl,collisions}=await import('./assert-collision-fixture.ts');
   const {ddl:ambiguousDdl,ambiguousFailures}=await import('./ambiguous-constraint-fixture.ts');
+  const {ddl:parameterDdl,parameterContracts}=await import('./parameter-contract-fixture.ts');
   const {workerMiniflare}=await import('./worker.ts');
   const {resolve}=await import('node:path');
   const expected={result:{ok:false,kind:'unique_index',index:"lower'email"},index:"lower'email"};
@@ -154,8 +155,13 @@ test('generated command callers receive index targets on Node, D1, and Durable O
       {ok:false,kind:'datatype',table:'ordinary',column:'value',stored:'TEXT',declared:'INTEGER'},
     ]);
   }finally{ambiguousRaw.close();}
+  const parameterRaw=new DatabaseSync(':memory:');
+  try {
+    parameterRaw.exec(parameterDdl);
+    assertParameterContracts(await parameterContracts(node(parameterRaw)));
+  }finally{parameterRaw.close();}
   const root=resolve(import.meta.dirname,'..');
-  const mf=workerMiniflare(resolve(root,'test/index-failure-worker.ts'),root,{durableObjects:{INDEX:'IndexFailure',COLLISION:'AssertCollision',AMBIGUOUS:'AmbiguousConstraint'}});
+  const mf=workerMiniflare(resolve(root,'test/index-failure-worker.ts'),root,{durableObjects:{INDEX:'IndexFailure',COLLISION:'AssertCollision',AMBIGUOUS:'AmbiguousConstraint',PARAMETERS:'ParameterContract'}});
   t.after(()=>mf.dispose());
   for(const path of ['/','/do']) assert.deepEqual(await (await mf.dispatchFetch('http://localhost'+path)).json(),expected);
   for(const path of ['/collision','/collision-do']) {
@@ -175,4 +181,17 @@ test('generated command callers receive index targets on Node, D1, and Durable O
       {ok:false,kind:'datatype',table:'ordinary',column:'value',stored:'TEXT',declared:'INTEGER'},
     ]);
   }
+  for(const path of ['/parameters','/parameters-do']) assertParameterContracts(await (await mf.dispatchFetch('http://localhost'+path)).json());
 });
+
+function assertParameterContracts(value:unknown):void {
+  const result=value as {valid:{ok:boolean;rows:unknown[];changes:number};errors:string[];count:number};
+  assert.deepEqual(result.valid,{ok:true,rows:[{label:'done',value:'second'}],changes:2});
+  assert.deepEqual(result.errors,[
+    'unexpected parameter: "stale"',
+    'missing parameter: ":id"',
+    'unexpected parameter: "stale"',
+    'missing parameter: ":id"; unexpected parameter: "stale"',
+  ]);
+  assert.equal(result.count,1);
+}

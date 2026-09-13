@@ -6,6 +6,7 @@ import { durable } from '../src/durable.ts';
 import { ddl, conflict } from './index-failure-fixture.ts';
 import { ddl as collisionDdl, ddlStatements as collisionDdlStatements, collisions } from './assert-collision-fixture.ts';
 import { ddl as ambiguousDdl, ddlStatements as ambiguousDdlStatements, ambiguousFailures } from './ambiguous-constraint-fixture.ts';
+import { ddl as parameterDdl, sharedDdlStatements as parameterDdlStatements, parameterContracts } from './parameter-contract-fixture.ts';
 export class IndexFailure extends DurableObject {
   async fetch(){this.ctx.storage.sql.exec(ddl);return Response.json(await conflict(durable(this.ctx.storage)));}
 }
@@ -15,12 +16,20 @@ export class AssertCollision extends DurableObject {
 export class AmbiguousConstraint extends DurableObject {
   async fetch(){this.ctx.storage.sql.exec(ambiguousDdl);return Response.json(await ambiguousFailures(durable(this.ctx.storage)));}
 }
+export class ParameterContract extends DurableObject {
+  async fetch(){this.ctx.storage.sql.exec(parameterDdl);return Response.json(await parameterContracts(durable(this.ctx.storage)));}
+}
 export default {
-  async fetch(request:Request,env:{DB:D1Like & {exec(sql:string):Promise<unknown>};INDEX:{idFromName(name:string):unknown;get(id:unknown):{fetch(url:string):Promise<Response>}};COLLISION:{idFromName(name:string):unknown;get(id:unknown):{fetch(url:string):Promise<Response>}};AMBIGUOUS:{idFromName(name:string):unknown;get(id:unknown):{fetch(url:string):Promise<Response>}}}) {
+  async fetch(request:Request,env:{DB:D1Like & {exec(sql:string):Promise<unknown>};INDEX:{idFromName(name:string):unknown;get(id:unknown):{fetch(url:string):Promise<Response>}};COLLISION:{idFromName(name:string):unknown;get(id:unknown):{fetch(url:string):Promise<Response>}};AMBIGUOUS:{idFromName(name:string):unknown;get(id:unknown):{fetch(url:string):Promise<Response>}};PARAMETERS:{idFromName(name:string):unknown;get(id:unknown):{fetch(url:string):Promise<Response>}}}) {
     const path=new URL(request.url).pathname;
     if(path==='/do')return env.INDEX.get(env.INDEX.idFromName('index')).fetch('http://local');
     if(path==='/collision-do')return env.COLLISION.get(env.COLLISION.idFromName('collision')).fetch('http://local');
     if(path==='/ambiguous-do')return env.AMBIGUOUS.get(env.AMBIGUOUS.idFromName('ambiguous')).fetch('http://local');
+    if(path==='/parameters-do')return env.PARAMETERS.get(env.PARAMETERS.idFromName('parameters')).fetch('http://local');
+    if(path==='/parameters') {
+      await env.DB.batch(parameterDdlStatements.map(sql=>env.DB.prepare(sql)));
+      return Response.json(await parameterContracts(d1(env.DB)));
+    }
     if(path==='/ambiguous') {
       await env.DB.batch(ambiguousDdlStatements.map(sql=>env.DB.prepare(sql)));
       return Response.json(await ambiguousFailures(d1(env.DB)));

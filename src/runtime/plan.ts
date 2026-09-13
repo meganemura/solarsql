@@ -1,7 +1,7 @@
 // Responsibility: what the build step and the adapters must agree on.
 // The guard table and its trigger, the text of an assert statement, the
-// order of parameter values, the detection of an assert failure in an
-// engine error, and the parsing of JSON columns.
+// operation parameter keys, the order of parameter values, the detection of
+// an assert failure in an engine error, and the parsing of JSON columns.
 // Boundary: no engine access. The adapters call the engine.
 import type { ConstraintFailure, SqlValue, StatementMeta } from "../index.ts";
 
@@ -33,13 +33,25 @@ export function assertStatement(name: string, predicate: string, token?: string)
 // is an error here, because an undefined value would bind as nothing. A
 // parameter that json_each reads is encoded as JSON text.
 export function bindValues(meta: StatementMeta, params: Record<string, unknown>): SqlValue[] {
-  const missing = meta.params.filter((n) => params[n] === undefined);
+  const missing = meta.params.filter((n) => !Object.hasOwn(params, n) || params[n] === undefined);
   if (missing.length > 0) throw new Error(`missing parameter${missing.length > 1 ? "s" : ""}: ${missing.map((n) => JSON.stringify(n)).join(", ")}`);
   return meta.params.map((n) => {
     const v = params[n];
     if (meta.encode.includes(n) && typeof v !== "string") return JSON.stringify(v);
     return v as SqlValue;
   });
+}
+
+export function validateParams(metas: readonly StatementMeta[], params: Record<string, unknown>): void {
+  const keys = [...new Set(metas.flatMap(meta => meta.params))].sort();
+  const wanted = new Set(keys);
+  const missing = keys.filter(key => !Object.hasOwn(params, key) || params[key] === undefined);
+  const unexpected = Object.keys(params).filter(key => !wanted.has(key)).sort();
+  const parts = [
+    ...(missing.length > 0 ? [`missing parameter${missing.length > 1 ? "s" : ""}: ${missing.map(key => JSON.stringify(key)).join(", ")}`] : []),
+    ...(unexpected.length > 0 ? [`unexpected parameter${unexpected.length > 1 ? "s" : ""}: ${unexpected.map(key => JSON.stringify(key)).join(", ")}`] : []),
+  ];
+  if (parts.length > 0) throw new Error(parts.join("; "));
 }
 
 // The assert name when an error is the guard trigger firing, else null.

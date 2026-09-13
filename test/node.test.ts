@@ -197,9 +197,36 @@ test('named parameter slots retain SQLite values for every prefix and repeated r
 });
 
 test('missing parameters report the exact generated keys', async () => {
-  const {bindValues}=await import('../src/runtime/plan.ts');
+  const {bindValues,validateParams}=await import('../src/runtime/plan.ts');
   assert.throws(()=>bindValues({params:[':id','@id'],encode:[],json:[],reads:[]},{}),{message:'missing parameters: ":id", "@id"'});
   assert.throws(()=>bindValues({params:['id'],encode:[],json:[],reads:[]},{}),{message:'missing parameter: "id"'});
+  assert.throws(()=>bindValues({params:['id'],encode:[],json:[],reads:[]},Object.create({id:1})),{message:'missing parameter: "id"'});
+  assert.doesNotThrow(()=>validateParams([{params:['id'],encode:[],json:[],reads:[]}],{id:null}));
+});
+
+test('operation parameter contracts use own exact keys across statement subsets', async () => {
+  const {validateParams}=await import('../src/runtime/plan.ts');
+  const {test:property}=await import('@hegeldev/hegel');
+  const gs=await import('@hegeldev/hegel/generators');
+  const name=gs.fromRegex('[:@$]?[a-z][a-z0-9_]{0,6}');
+  property(tc=>{
+    const expected=[...new Set(tc.draw(gs.arrays(name,{minSize:1,maxSize:8})))];
+    const midpoint=Math.ceil(expected.length/2);
+    const metas=[expected.slice(0,midpoint),expected.slice(midpoint)].map(params=>({params,encode:[],json:[],reads:[]}));
+    const own=expected.filter(()=>tc.draw(gs.booleans()));
+    const extras=[...new Set(tc.draw(gs.arrays(name,{maxSize:4})))].filter(key=>!expected.includes(key));
+    const params=Object.assign(Object.create(Object.fromEntries(expected.map(key=>[key,99]))),Object.fromEntries([...own,...extras].map(key=>[key,1])));
+    const missing=expected.filter(key=>!own.includes(key)).sort();
+    const unexpected=[...extras].sort();
+    if(missing.length===0&&unexpected.length===0)assert.doesNotThrow(()=>validateParams(metas,params));
+    else {
+      const parts=[
+        ...(missing.length?[`missing parameter${missing.length>1?'s':''}: ${missing.map(key=>JSON.stringify(key)).join(', ')}`]:[]),
+        ...(unexpected.length?[`unexpected parameter${unexpected.length>1?'s':''}: ${unexpected.map(key=>JSON.stringify(key)).join(', ')}`]:[]),
+      ];
+      assert.throws(()=>validateParams(metas,params),{message:parts.join('; ')});
+    }
+  },{testCases:1000});
 });
 
 test('public Node commands share a caller-owned transaction with direct SQL', async () => {
