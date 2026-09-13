@@ -3,7 +3,8 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -230,4 +231,51 @@ test('machine report transport flushes large diagnostics before exit', t => {
   const result = f.run('inspect');
   assert.equal(result.status, 1);
   assert.equal(JSON.parse(result.stdout).diagnostics[0].message, message);
+});
+
+test('rehearsal deadlines stop native SQL and remove snapshots while preserving WAL data', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'solarsql-deadline-'));
+  const temporary = join(dir, 'temporary');
+  mkdirSync(temporary);
+  const source = join(dir, 'source.sqlite');
+  const db = new DatabaseSync(source);
+  t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
+  db.exec("pragma journal_mode=wal; create table items(value text); insert into items(rowid,value) values(42,'kept')");
+  const before = [readFileSync(source), readFileSync(source + '-wal')];
+  const change = join(dir, 'change.sql');
+  const checks = join(dir, 'checks.json');
+  writeFileSync(checks, JSON.stringify({ assertions: { retained: "select count(*)=1 and min(rowid)=42 and min(value)='kept' from items" } }));
+  const observe = join(dir, 'observe.mjs');
+  writeFileSync(observe, `import { subscribe } from 'node:diagnostics_channel'; subscribe('solarsql.rehearse', event => { if (event.phase === 'validate' && event.event === 'start') console.error('validation started'); });`);
+  const run = (sql: string, ...options: string[]) => {
+    writeFileSync(change, sql);
+    const result = spawnSync(process.execPath, ['--import', observe, join(root, 'src/build/cli.ts'), 'rehearse', source, change, checks, ...options], {
+      encoding: 'utf8', timeout: 10_000, env: { ...process.env, TMPDIR: temporary, TMP: temporary, TEMP: temporary },
+    });
+    assert.ifError(result.error);
+    assert.equal(result.signal, null);
+    assert.deepEqual(readdirSync(temporary), []);
+    assert.deepEqual([readFileSync(source), readFileSync(source + '-wal')], before);
+    assert.equal(db.prepare('select rowid from items').get()!.rowid, 42);
+    return { result, report: JSON.parse(result.stdout) };
+  };
+  for (const options of [[], ['--timeout-ms', '60000']]) {
+    const { result, report } = run('alter table items add column extra text', ...options);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(report.ok, true);
+  }
+  const failed = run('drop table missing_table');
+  assert.equal(failed.result.status, 1);
+  assert.equal(failed.report.diagnostics[0].code, 'MIGRATION_FAILED');
+  const timed = run('with recursive forever(n) as (values(1) union all select n+1 from forever) select sum(n) from forever', '--timeout-ms', '2000');
+  assert.match(timed.result.stderr, /validation started/);
+  assert.equal(timed.result.status, 1);
+  assert.equal(timed.report.ok, false);
+  assert.equal(timed.report.diagnostics[0].code, 'REHEARSAL_TIMEOUT');
+  assert.match(timed.report.diagnostics[0].action, /--timeout-ms/);
+  for (const budget of ['0', '-1', '1.5', 'invalid', '2147483648']) {
+    const invalid = run('select 1', '--timeout-ms', budget);
+    assert.equal(invalid.result.status, 1);
+    assert.match(invalid.report.diagnostics[0].message, /requires an integer/);
+  }
 });

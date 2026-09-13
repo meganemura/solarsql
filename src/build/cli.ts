@@ -11,7 +11,7 @@ import { analyzeSchema } from "./analyze.ts";
 import { rehearse } from "./rehearse.ts";
 import { build, migration } from "./build.ts";
 import { init } from "./init.ts";
-import { isReportWorker, printReport, runMachine } from "./machine.ts";
+import { isReportWorker, printReport, runMachine, runRehearsalProcess } from "./machine.ts";
 import { shellArgument } from "./shell.ts";
 import { BuildError } from "./typegen.ts";
 
@@ -19,7 +19,7 @@ const usage = `usage:
   solarsql analyze <schema.sql> <queries.json> [--out generated.ts] [--check] [--library specifier]
   solarsql build [solarsql.config.ts]
   solarsql build --check [solarsql.config.ts]   writes nothing; exit 1 when a generated file or a migration is stale
-  solarsql rehearse <database.sqlite> <change.sql> [checks.json]   validate a disposable snapshot
+  solarsql rehearse <database.sqlite> <change.sql> [checks.json] [--timeout-ms 30000]   validate a disposable snapshot
   solarsql inspect [solarsql.config.ts]        JSON contracts, accesses and freshness; writes no build artifacts
   solarsql build --json [solarsql.config.ts]   machine-readable generation result (combine with --check)
   solarsql migration <name> [solarsql.config.ts]
@@ -28,6 +28,24 @@ const usage = `usage:
 // One line of SQL, enough to recognize the statement.
 function oneLine(sql: string): string {
   return sql.replace(/\s+/g, " ").trim().slice(0, 100);
+}
+
+function rehearsalArguments(args: string[]): { paths: string[]; timeoutMs: number } {
+  const paths: string[] = [];
+  let timeoutMs = 30_000;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--timeout-ms") {
+      const value = args[++i];
+      if (!value || !/^\d+$/.test(value) || Number(value) < 1 || Number(value) > 2_147_483_647) {
+        throw new BuildError("--timeout-ms requires an integer from 1 to 2147483647 milliseconds.");
+      }
+      timeoutMs = Number(value);
+    } else if (arg.startsWith("--")) throw new BuildError(`Unknown rehearse option ${arg}.`);
+    else paths.push(arg);
+  }
+  if (paths.length < 2 || paths.length > 3) throw new BuildError("Use solarsql rehearse <database.sqlite> <change.sql> [checks.json] [--timeout-ms 30000].");
+  return { paths, timeoutMs };
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -64,9 +82,9 @@ async function main(argv: string[]): Promise<number> {
     return ok ? 0 : 1;
   }
   if (command === "rehearse") {
-    if (rest.length < 2 || rest.length > 3) throw new BuildError("Use solarsql rehearse <database.sqlite> <change.sql> [checks.json].");
-    const checks = rest[2] ? JSON.parse(readFileSync(rest[2], "utf8")) : {};
-    const report = await rehearse(rest[0]!, readFileSync(rest[1]!, "utf8"), checks);
+    const { paths } = rehearsalArguments(rest);
+    const checks = paths[2] ? JSON.parse(readFileSync(paths[2], "utf8")) : {};
+    const report = await rehearse(paths[0]!, readFileSync(paths[1]!, "utf8"), checks);
     await printReport(report);
     return report.ok ? 0 : 1;
   }
@@ -155,7 +173,9 @@ async function main(argv: string[]): Promise<number> {
 const args = process.argv.slice(2);
 const machineBuild = args[0] === "inspect" || (args[0] === "build" && args.includes("--json"));
 try {
-  const code = machineBuild && !isReportWorker()
+  const code = args[0] === "rehearse" && !isReportWorker()
+    ? await runRehearsalProcess(import.meta.filename, args, rehearsalArguments(args.slice(1)).timeoutMs)
+    : machineBuild && !isReportWorker()
     ? await runMachine(import.meta.filename, args)
     : await main(args);
   process.exit(code);

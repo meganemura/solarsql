@@ -113,3 +113,9 @@ The command rehearses proposed SQL, not migration history adoption or a remote d
 
 For a slow local snapshot, run `node spike/11-backup-lifecycle.ts` from a source checkout.
 It measures each backup phase, checks WAL rows and implicit row identities, and stops after 20 seconds (ADR 0063).
+
+The rehearsal CLI has a 30,000ms default time budget, including startup and snapshot creation.
+Use `--timeout-ms 120000` when the workload needs a larger finite budget.
+A deadline produces exit 1 and `REHEARSAL_TIMEOUT` after the parent removes its snapshots.
+Inspect the workload before increasing the budget. The source database remains unchanged.
+This deadline applies to the CLI; the in-process `rehearse` function does not cancel native backup.
