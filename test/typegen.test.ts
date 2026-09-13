@@ -532,3 +532,38 @@ test('ordered JSON aggregates retain value types and SQLite ordering', async () 
     assert.throws(()=>new Typer(engine,new Map()).analyze('select json_group_array(value order by) from items',''));
   }finally{engine.close();}
 });
+
+test('numeric literal spellings retain their engine type and source', async () => {
+  const {test:property}=await import('@hegeldev/hegel');
+  const gs=await import('@hegeldev/hegel/generators');
+  const {tokenize}=await import('../src/build/scan.ts');
+  const engine=new Engine([]);
+  try {
+    property(tc=>{
+      const n=tc.draw(gs.integers({minValue:0,maxValue:Number.MAX_SAFE_INTEGER}));
+      const hex=tc.draw(gs.booleans());
+      const digits=n.toString(hex?16:10);
+      const separated=tc.draw(gs.booleans())?digits.split('').join('_'):digits;
+      const literal=hex?`${tc.draw(gs.booleans())?'0X':'0x'}${separated}`:separated;
+      assert.deepEqual(tokenize(literal),[{type:'number',text:literal,start:0,end:literal.length,depth:0}]);
+      for(const sql of [`select ${literal} as value`,`values (${literal})`,`with data as (select ${literal} as value) select value from data`]) {
+        const analysis=new Typer(engine,new Map()).analyze(sql,'');
+        assert.equal(analysis.sql,sql);
+        assert.equal(analysis.columns[0]!.type,'number');
+        assert.equal(engine.db.prepare(sql).get()![analysis.columns[0]!.name],n);
+      }
+    },{testCases:1000});
+    for(const literal of ['1.','1.e2','.1_2','1_2.3_4e+0_2','-0Xf_f','+1_000','0XFF']) {
+      const sql=`select json_object('value',${literal}) as result`;
+      assert.equal(new Typer(engine,new Map()).analyze(sql,'').columns[0]!.type,'{ "value": number }');
+      const expected=/^[+-]?0x/i.test(literal)?(literal[0]==='-'?-1:1)*Number(literal.replace(/^[+-]/,'').replaceAll('_','')):Number(literal.replaceAll('_',''));
+      assert.deepEqual(JSON.parse(engine.db.prepare(sql).get()!.result as string),{value:expected});
+    }
+    for(const literal of ['1__2','0X_FF','1_.0','1._0','1e_2']) assert.throws(()=>new Typer(engine,new Map()).analyze(`select ${literal} as value`,''));
+    const sql="select 1_000 + :amount, '0XFF' as quoted";
+    const tokens=tokenize(sql);
+    assert.equal(tokens.map(t=>t.text).join(''),sql);
+    assert.deepEqual(tokens.filter(t=>t.type==='param').map(t=>t.text),[':amount']);
+    for(const token of tokens)assert.equal(sql.slice(token.start,token.end),token.text);
+  }finally{engine.close();}
+});

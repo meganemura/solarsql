@@ -136,7 +136,7 @@ test('generated binary, scalar, and ordered JSON contracts compile and execute o
   t.after(async()=>{await mf?.dispose();rmSync(dir,{recursive:true,force:true});});
   const library=relative(dir,join(root,'src/index.ts'));
   const bytes=Uint8Array.from({length:256},(_,i)=>i);
-  const sql=`select x'${Buffer.from(bytes).toString('hex')}' as value, cast(length(json_object('a',1)) as integer) as n, cast(json_object('a',1) || 'suffix' as text) as text, (select json_group_array(distinct json_object('n',value) order by value desc) from (select 1 as value union all select 2 union all select 1)) as ordered union all select x'',null,null,null`;
+  const sql=`select x'${Buffer.from(bytes).toString('hex')}' as value, cast(length(json_object('a',1)) as integer) as n, cast(json_object('a',1) || 'suffix' as text) as text, (select json_group_array(distinct json_object('n',value) order by value desc) from (select 0X1 as value union all select 2.e0 union all select 0_1)) as ordered union all select x'',null,null,null`;
   const report=analyzeSchema('',{query:sql},library);
   writeFileSync(join(dir,'package.json'),'{"type":"module"}');
   writeFileSync(join(dir,'generated.ts'),report.generated);

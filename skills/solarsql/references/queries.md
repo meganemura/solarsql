@@ -53,6 +53,8 @@ Unrecognized parameter expressions retain the `SqlValue` fallback.
 
 ## The type of a column
 
+Numeric literals retain SQLite spellings such as `0XFF`, `1_000`, and `1.e2`; each has the `number` type.
+
 The build follows column references through tables, views, CTEs, and derived tables.
 Literals, scalar SELECTs, and the JSON shapes below have inferred types.
 Other expressions need `cast(... as integer | real | text | blob)`.

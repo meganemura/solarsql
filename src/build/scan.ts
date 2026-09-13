@@ -19,6 +19,10 @@ export type Token = {
   depth: number;
 };
 
+// A separator belongs between digits. Keep the complete spelling so source
+// spans and names remain SQLite's, including hexadecimal and exponent forms.
+const numericLiteral = /^(?:0[xX][0-9a-fA-F](?:_?[0-9a-fA-F])*|(?:[0-9](?:_?[0-9])*(?:\.(?:[0-9](?:_?[0-9])*)?)?|\.[0-9](?:_?[0-9])*)(?:[eE][+-]?[0-9](?:_?[0-9])*)?)/;
+
 const punct2 = new Set(["<>", "!=", "<=", ">=", "||", "->", "->>"]);
 
 export function tokenize(sql: string): Token[] {
@@ -111,7 +115,7 @@ export function tokenize(sql: string): Token[] {
       continue;
     }
     if (/[0-9]/.test(ch) || (ch === "." && /[0-9]/.test(sql[i + 1] ?? ""))) {
-      const m = /^(?:0x[0-9A-Fa-f]+|[0-9]*\.?[0-9]+(?:[eE][+-]?[0-9]+)?|[0-9]+\.?)/.exec(sql.slice(i))!;
+      const m = numericLiteral.exec(sql.slice(i))!;
       push("number", i + m[0].length);
       continue;
     }
