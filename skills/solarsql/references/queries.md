@@ -75,6 +75,11 @@ Other expressions need `cast(... as integer | real | text)`.
 | `INTERSECT` or `EXCEPT` | the left input's types |
 | `RIGHT JOIN` or `FULL JOIN` | source types with nullability for each side that can be absent |
 
+Inside JSON constructors, a BLOB or flexible storage value has the recursive `JsonValue` type.
+SQLite can decode valid JSONB into objects, arrays, scalars, or null.
+Invalid binary content can still cause a SQLite error.
+An ordinary BLOB query returns `Uint8Array`; an explicit TEXT conversion inside JSON keeps its text type.
+
 A `json_group_array` over the outer side of a `left join` needs `filter (where l.id is not null)`, or a parent with no children gets one null element. `coalesce(..., '[]')` gives the empty array.
 Only an exact `filter (where alias.column is not null)` removes that alias's outer nullability from the generated array element type.
 Other predicates retain conservative nullability; filtering one alias does not narrow another alias.

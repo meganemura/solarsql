@@ -11,6 +11,9 @@
 import { uuidV7 } from "./runtime/id.ts";
 
 export type SqlValue = string | number | bigint | null | Uint8Array;
+// JSONB storage can decode to any JSON shape; binary storage is not the
+// representation returned by a JSON constructor.
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
 declare const idBrand: unique symbol;
 

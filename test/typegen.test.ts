@@ -347,3 +347,41 @@ test('conflicting parameter types identify the generated qualified key', () => {
     assert.throws(()=>typer.analyze('select id from items where id=:id or value=:id or id=@id',''), /parameter ":id" is used with two different types/);
   }finally{engine.close();}
 });
+
+test('JSON constructors describe decoded JSONB and flexible storage values', () => {
+  for (const storage of ['blob', 'any']) {
+    const engine=new Engine([`create table payload(value ${storage}) strict`]);
+    try {
+      const typer=new Typer(engine,new Map());
+      assert.equal(typer.analyze("select json_object('data',value) as result from payload",'').columns[0]!.type,'{ "data": JsonValue }');
+      assert.equal(typer.analyze('select json_group_array(value) as result from payload','').columns[0]!.type,'Array<JsonValue>');
+      for (const value of [{nested:[true,null,3]},[1,'a'],true,null,17,'text']) {
+        engine.db.prepare('insert into payload values(jsonb(?))').run(JSON.stringify(value));
+        assert.deepEqual(JSON.parse(engine.db.prepare("select json_object('data',value) as result from payload").get()!.result as string),{data:value});
+        engine.db.exec('delete from payload');
+      }
+      engine.db.exec("insert into payload values(x'00ff')");
+      assert.throws(()=>engine.db.prepare("select json_object('data',value) from payload").get(),/JSON/);
+      if(storage==='blob') assert.equal(typer.analyze('select value from payload','').columns[0]!.type,'Uint8Array | null');
+      assert.equal(typer.analyze("select json_object('data',cast(value as text)) as result from payload",'').columns[0]!.type,'{ "data": string | null }');
+      assert.equal(typer.analyze("select json_object('data',null,'count',3) as result",'').columns[0]!.type,'{ "data": null; "count": number }');
+    }finally{engine.close();}
+  }
+});
+
+test('JSONB constructor values round-trip nested generated JSON', async () => {
+  const {test:property}=await import('@hegeldev/hegel');
+  const gs=await import('@hegeldev/hegel/generators');
+  const engine=new Engine(['create table payload(value blob not null) strict']);
+  try {
+    const insert=engine.db.prepare('insert into payload values(jsonb(?))');
+    const read=engine.db.prepare("select json_object('data',value) as result from payload");
+    property(tc=>{
+      const value={items:tc.draw(gs.arrays(gs.integers({minValue:-100000,maxValue:100000}))),text:tc.draw(gs.text()),nested:{flag:tc.draw(gs.booleans()),empty:null}};
+      engine.db.exec('delete from payload');
+      insert.run(JSON.stringify(value));
+      assert.deepEqual(JSON.parse(read.get()!.result as string),{data:value});
+      assert.equal(new Typer(engine,new Map()).analyze("select json_object('data',value) as result from payload",'').columns[0]!.type,'{ "data": JsonValue }');
+    },{testCases:1000});
+  }finally{engine.close();}
+});

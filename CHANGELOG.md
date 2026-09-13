@@ -4,6 +4,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: JSON constructors expose decoded JSONB and flexible storage as `JsonValue` instead of binary values (ADR 0074).
+
 - Fixed: focused D1 tests start runtimes only when used and exit after their selected work (ADR 0073).
 
 - Added: Node commands compose with caller-owned transactions through savepoints (ADR 0072).

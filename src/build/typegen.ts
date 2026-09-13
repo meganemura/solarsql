@@ -79,6 +79,12 @@ type ScopeContext = { rows: Map<string, ScopeColumn[]>; visible: ScopeColumn[]; 
 
 type Resolved = { type: string; nullable: boolean; brand: string | null };
 
+function jsonResultType(input: string): string {
+  // A BLOB can contain JSONB. Flexible storage can also hold that BLOB,
+  // so a successful JSON constructor can return an object or array here.
+  return unionMembers(input).some(type => type === "Uint8Array" || type === "SqlValue") ? "JsonValue" : input;
+}
+
 const rowIdentifiers = ["rowid", "_rowid_", "oid"];
 
 function implicitRowIdentifier(table: TableFact, name: string): boolean {
@@ -492,7 +498,7 @@ export class Typer {
     const excludedAlias = nonNullFilterAlias(item.expr.slice(call.close));
     const insideNullable = new Set([...nullableAliases].filter((a) => a !== excludedAlias));
     if (findCall(inner, "json_object")) return `Array<${this.jsonObjectType(sql, inner, item, aliases, insideNullable, note, true, scope)}>`;
-    const element = this.valueType(sql, inner, aliases, insideNullable, note, scope);
+    const element = jsonResultType(this.valueType(sql, inner, aliases, insideNullable, note, scope));
     return `Array<${element}>`;
   }
 
@@ -524,7 +530,7 @@ export class Typer {
       if (!m) throw new BuildError(`json_object key must be a string literal, got ${key}`, sql);
       const name = m[1]!.replace(/''/g, "'");
       const value = call.args[i + 1]!.text;
-      fields.push(`${JSON.stringify(name)}: ${this.valueType(sql, value, aliases, nullableAliases, note, scope)}`);
+      fields.push(`${JSON.stringify(name)}: ${jsonResultType(this.valueType(sql, value, aliases, nullableAliases, note, scope))}`);
     }
     const type = `{ ${fields.join("; ")} }`;
     void item;
