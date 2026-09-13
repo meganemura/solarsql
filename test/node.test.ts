@@ -201,3 +201,105 @@ test('missing parameters report the exact generated keys', async () => {
   assert.throws(()=>bindValues({params:[':id','@id'],encode:[],json:[],reads:[]},{}),{message:'missing parameters: ":id", "@id"'});
   assert.throws(()=>bindValues({params:['id'],encode:[],json:[],reads:[]},{}),{message:'missing parameter: "id"'});
 });
+
+test('public Node commands share a caller-owned transaction with direct SQL', async () => {
+  const raw=new DatabaseSync(':memory:');
+  try {
+    migrate(raw,migrations);
+    const db=node(raw);
+    raw.exec('begin');
+    raw.exec("insert into customers(id,name,email) values('direct','Direct','direct@example.com')");
+    const success=await db.run(customerCommands.create,{id:'typed' as CustomersId,name:'Typed',email:'typed@example.com'});
+    assert.equal(success.ok,true);
+    const failure=await db.run(customerCommands.create,{id:'duplicate' as CustomersId,name:'Duplicate',email:'direct@example.com'});
+    assert.equal(failure.ok,false);
+    assert.equal(raw.prepare('select count(*) as n from customers').get()!.n,2);
+    raw.exec('rollback');
+    assert.equal(raw.prepare('select count(*) as n from customers').get()!.n,0);
+    raw.exec('begin');
+    assert.equal((await db.run(customerCommands.create,{id:'committed' as CustomersId,name:'Committed',email:'commit@example.com'})).ok,true);
+    raw.exec('commit');
+    assert.equal(raw.prepare('select count(*) as n from customers').get()!.n,1);
+  }finally{raw.close();}
+});
+
+test('Node savepoints isolate nested failures and retain outer rollback ownership', async () => {
+  const {storageOf}=await import('../src/node.ts');
+  const raw=new DatabaseSync(':memory:');
+  try {
+    raw.exec('create table t(value text)');
+    const storage=storageOf(raw);
+    const sentinel=new Error('inner failed');
+    storage.transactionSync(()=>{
+      raw.exec("insert into t values('outer')");
+      assert.throws(()=>storage.transactionSync(()=>{raw.exec("insert into t values('inner')");throw sentinel;}),error=>error===sentinel);
+      storage.transactionSync(()=>raw.exec("insert into t values('retained')"));
+    });
+    assert.deepEqual(raw.prepare('select value from t').all().map(r=>r.value),['outer','retained']);
+    assert.throws(()=>storage.transactionSync(()=>{storage.transactionSync(()=>raw.exec("insert into t values('rolled back')"));throw sentinel;}),error=>error===sentinel);
+    assert.equal(raw.prepare('select count(*) as n from t').get()!.n,2);
+    raw.exec('savepoint solarsql_transaction');
+    storage.transactionSync(()=>raw.exec("insert into t values('same name')"));
+    raw.exec('rollback to solarsql_transaction; release solarsql_transaction');
+    assert.equal(raw.prepare('select count(*) as n from t').get()!.n,2);
+  }finally{raw.close();}
+});
+
+test('Node savepoints retain deferred foreign-key semantics at the outer boundary', async () => {
+  const {storageOf}=await import('../src/node.ts');
+  const raw=new DatabaseSync(':memory:');
+  try {
+    raw.exec('pragma foreign_keys=on; create table p(id integer primary key); create table c(id integer references p(id) deferrable initially deferred)');
+    const storage=storageOf(raw);
+    assert.throws(()=>storage.transactionSync(()=>raw.exec('insert into c values(1)')),/FOREIGN KEY/);
+    assert.equal(raw.prepare('select count(*) as n from c').get()!.n,0);
+    raw.exec('begin');
+    storage.transactionSync(()=>raw.exec('insert into c values(2)'));
+    assert.throws(()=>raw.exec('commit'),/FOREIGN KEY/);
+    raw.exec('insert into p values(2);commit');
+    assert.equal(raw.prepare('select count(*) as n from c').get()!.n,1);
+  }finally{raw.close();}
+});
+
+test('nested Node transactions retain exactly the successful writes', async () => {
+  const {test:property}=await import('@hegeldev/hegel');
+  const gs=await import('@hegeldev/hegel/generators');
+  const {storageOf}=await import('../src/node.ts');
+  property(tc=>{
+    const steps=tc.draw(gs.arrays(gs.composite(tc=>({value:tc.draw(gs.text({maxSize:30})),fail:tc.draw(gs.booleans())})),{maxSize:20}));
+    const failOuter=tc.draw(gs.booleans());
+    const raw=new DatabaseSync(':memory:');
+    const sentinel=new Error('rollback');
+    try {
+      raw.exec("create table t(value text);insert into t values('seed')");
+      const storage=storageOf(raw);
+      const run=()=>storage.transactionSync(()=>{
+        for(const step of steps) {
+          const inner=()=>storage.transactionSync(()=>{raw.prepare('insert into t values(?)').run(step.value);if(step.fail)throw sentinel;});
+          if(step.fail)assert.throws(inner,error=>error===sentinel);else inner();
+        }
+        if(failOuter)throw sentinel;
+      });
+      if(failOuter)assert.throws(run,error=>error===sentinel);else run();
+      assert.deepEqual(raw.prepare('select value from t order by rowid').all().map(row=>row.value),['seed',...(failOuter?[]:steps.filter(step=>!step.fail).map(step=>step.value))]);
+    }finally{raw.close();}
+  });
+});
+
+test('a transaction-ending conflict propagates failed cleanup through public commands', async () => {
+  const {commands}=await import('../src/index.ts');
+  const sql='insert or rollback into t values(1)';
+  const command=commands({[sql]:{params:[],encode:[],json:[],reads:['t']}},{conflict:{plan:[sql]}}).conflict;
+  const raw=new DatabaseSync(':memory:');
+  try {
+    raw.exec('create table t(id integer primary key);insert into t values(1);begin;insert into t values(2)');
+    await assert.rejects(node(raw).run(command),error=>{
+      assert.ok(error instanceof AggregateError);
+      assert.equal(error.errors.length,2);
+      assert.match((error.cause as Error).message,/UNIQUE/);
+      return true;
+    });
+    assert.deepEqual(raw.prepare('select id from t').all().map(row=>row.id),[1]);
+    assert.throws(()=>raw.exec('commit'),/no transaction/);
+  }finally{raw.close();}
+});

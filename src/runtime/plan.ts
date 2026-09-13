@@ -40,6 +40,8 @@ export function bindValues(meta: StatementMeta, params: Record<string, unknown>)
 // Durable Object report `<name>: SQLITE_CONSTRAINT (extended:
 // SQLITE_CONSTRAINT_TRIGGER)`, and D1 adds a `D1_ERROR: ` prefix.
 export function assertFailure(error: unknown, asserts: readonly string[]): string | null {
+  // A cleanup failure must not collapse into its original assertion cause.
+  if (error instanceof AggregateError) return null;
   const e = error as { message?: string; errcode?: number; cause?: { message?: string } };
   const message = e.cause?.message ?? e.message ?? "";
   const isTrigger = e.errcode === 1811 || message.includes("SQLITE_CONSTRAINT_TRIGGER");
@@ -80,6 +82,7 @@ function bareMessage(error: unknown): string {
 // A constraint failure as a value, when the error is one. The text formats
 // are the same on node:sqlite, D1, and a Durable Object.
 export function constraintFailure(error: unknown): ConstraintFailure | null {
+  if (error instanceof AggregateError) return null;
   const m = bareMessage(error);
   let match: RegExpExecArray | null;
   if ((match = /^UNIQUE constraint failed: (.+)$/.exec(m))) {

@@ -37,13 +37,19 @@ export function storageOf(db: DatabaseSync): StorageLike {
       },
     },
     transactionSync<T>(closure: () => T): T {
-      db.exec("begin");
+      // SAVEPOINT owns an inner rollback boundary without committing the
+      // caller's transaction. Repeated names resolve to the innermost mark.
+      db.exec("savepoint solarsql_transaction");
       try {
         const out = closure();
-        db.exec("commit");
+        db.exec("release savepoint solarsql_transaction");
         return out;
       } catch (e) {
-        db.exec("rollback");
+        try {
+          db.exec("rollback to savepoint solarsql_transaction; release savepoint solarsql_transaction");
+        } catch (cleanup) {
+          throw new AggregateError([e, cleanup], "The Node transaction failed and its savepoint cleanup also failed", { cause: e });
+        }
         throw e;
       }
     },

@@ -4,6 +4,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Added: Node commands compose with caller-owned transactions through savepoints (ADR 0072).
+
 - Fixed: distinct SQLite named parameters retain their slots and types; ambiguous bare names use prefixed caller keys (ADR 0071).
 
 - Fixed: rebuilds retain AUTOINCREMENT history, including deleted maxima and empty tables (ADR 0070).
