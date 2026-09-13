@@ -5,6 +5,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 ## Unreleased
 
 - Fixed: integer and BLOB primary keys retain their scalar types; identity brands require text storage (ADR 0053).
+- Fixed: adapters normalize BLOB results to `Uint8Array`, including D1 byte arrays, before JSON decoding (ADR 0054).
 
 - Added: parameters inherit CTE, view, and derived-table column types. Nested references use their local scope (ADR 0052).
 - Added: VALUES rows and recursive seeds use generated result types without changes to runtime SQL (ADR 0050).

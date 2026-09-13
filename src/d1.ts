@@ -29,7 +29,7 @@ export function d1(binding: D1Like, options: AdapterOptions = {}): Database {
     observed(options.observe, "query", query.name, async (report) => {
       const result = await prepared(query.sql, query.meta, (args[0] ?? {}) as Record<string, unknown>).all();
       report(engineMeta([result]));
-      return parseJson<Row<Q> & Record<string, unknown>>((result.results ?? []) as Record<string, unknown>[], query.meta.json);
+      return parseJson<Row<Q> & Record<string, unknown>>((result.results ?? []) as Record<string, unknown>[], query.meta.json, "d1");
     }, () => "ok");
 
   return {
@@ -42,7 +42,7 @@ export function d1(binding: D1Like, options: AdapterOptions = {}): Database {
       observed(options.observe, "batch", reads.map((r) => r.query.name).join("+"), async (report) => {
         const results = await binding.batch(reads.map((r) => prepared(r.query.sql, r.query.meta, r.params)));
         report(engineMeta(results));
-        return reads.map((r, i) => parseJson((results[i]?.results ?? []) as Record<string, unknown>[], r.query.meta.json)) as unknown as BatchRows<R>;
+        return reads.map((r, i) => parseJson((results[i]?.results ?? []) as Record<string, unknown>[], r.query.meta.json, "d1")) as unknown as BatchRows<R>;
       }, () => "ok"),
     run: <C extends Command<GeneratedMap, PlanShape<GeneratedMap>>>(command: C, ...args: ParamsArg<C>): Promise<CommandResult<C>> =>
       observed(options.observe, "command", command.name, async (report) => {
@@ -73,7 +73,7 @@ export function d1(binding: D1Like, options: AdapterOptions = {}): Database {
         }, 0);
         if (command.returns === null) return { ok: true, rows: [], changes } as CommandResult<C>;
         const last = results[results.length - 1];
-        const rows = parseJson((last?.results ?? []) as Record<string, unknown>[], command.meta.returns!.json);
+        const rows = parseJson((last?.results ?? []) as Record<string, unknown>[], command.meta.returns!.json, "d1");
         return { ok: true, rows, changes } as CommandResult<C>;
       }, (r) => outcomeOf(r as { ok: boolean; kind?: string; assert?: string })),
   };

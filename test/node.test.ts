@@ -75,3 +75,31 @@ describe("the example on node:sqlite", () => {
     assert.deepEqual(await db.run(orderCommands.clear), { ok: true, rows: [], changes: 0 });
   });
 });
+
+test("SQLite scalar values survive the Node adapter", async () => {
+  const { testAsync } = await import('@hegeldev/hegel');
+  const gs = await import('@hegeldev/hegel/generators');
+  const raw = new DatabaseSync(':memory:');
+  raw.exec('create table values_test(n integer, text_value text, data blob, anything any) strict');
+  const db = node(raw);
+  try {
+    await testAsync(async tc => {
+      const n = tc.draw(gs.integers());
+      const text = tc.draw(gs.text());
+      const bytes = Uint8Array.from(tc.draw(gs.binary()));
+      const anything = tc.draw(gs.sampledFrom([null, n, text]));
+      raw.exec('delete from values_test');
+      raw.prepare('insert into values_test values (?, ?, ?, ?)').run(n, text, bytes, anything);
+      const query = { kind: 'query' as const, name: 'values', sql: 'select * from values_test', meta: { params: [], encode: [], json: [], reads: ['values_test'] } };
+      assert.deepEqual(await db.all(query), [{ n, text_value: text, data: bytes, anything }]);
+    });
+  } finally { raw.close(); }
+});
+
+test("Node rejects an integer read outside the safe number range", async () => {
+  const raw = new DatabaseSync(':memory:');
+  try {
+    const query = { kind: 'query' as const, name: 'large', sql: 'select 9223372036854775807 as n', meta: { params: [], encode: [], json: [], reads: [] } };
+    await assert.rejects(node(raw).all(query), /too large|safely|range/i);
+  } finally { raw.close(); }
+});

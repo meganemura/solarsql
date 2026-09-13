@@ -104,4 +104,20 @@ test("confirm once", async () => {
 });
 ```
 
-node:sqlite and workerd carry the same SQLite, and the constraint messages are the same text, so a test here tests the SQL that runs on D1. Miniflare stays for the library's own tests of the D1 batch and the Durable Object transaction.
+Node tests check SQL locally. Miniflare tests check the D1 batch and Durable Object transaction contracts.
+Engine versions and adapter conversions must be checked for each target.
+
+## Values across adapters
+
+BLOB results use `Uint8Array` on all adapters, including BLOB values in an ANY column.
+The adapters convert D1 byte arrays and Durable Object ArrayBuffers before decoding JSON text.
+JSON arrays remain ordinary arrays. SQL NULL remains `null`.
+INTEGER results use JavaScript numbers. Keep portable integer values within the safe integer range.
+Node rejects reads outside that range; D1 can lose precision and its API does not support bigint parameters.
+`SqlValue` describes possible SQLite values, not a promise that each adapter accepts every value.
+An engine error is thrown; the adapters do not retry an operation whose commit outcome is unknown.
+Use an application idempotency key or reconciliation before repeating a write after a lost response.
+
+The local tests exercise Node, D1 and Durable Object scalar representations.
+Remote behavior is checked by the opt-in remote suite; local tests do not certify a deployed database.
+See [D1 value conversion](https://developers.cloudflare.com/d1/worker-api/#type-conversion).

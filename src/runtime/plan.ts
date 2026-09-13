@@ -52,10 +52,15 @@ export function assertFailure(error: unknown, asserts: readonly string[]): strin
 }
 
 // JSON columns arrive as text from the engine. The generated meta says which.
-export function parseJson<R extends Record<string, unknown>>(rows: readonly Record<string, unknown>[], json: readonly string[]): R[] {
-  if (json.length === 0) return rows as R[];
+export function parseJson<R extends Record<string, unknown>>(rows: readonly Record<string, unknown>[], json: readonly string[], format: "native" | "d1" = "native"): R[] {
   return rows.map((row) => {
     const out = { ...row };
+    // Raw D1 BLOBs are byte arrays; Durable Object BLOBs are ArrayBuffers.
+    // Decode those before JSON text, whose arrays must remain JSON arrays.
+    for (const [key, value] of Object.entries(out)) {
+      if (value instanceof ArrayBuffer) out[key] = new Uint8Array(value);
+      else if (format === "d1" && Array.isArray(value)) out[key] = new Uint8Array(value);
+    }
     for (const c of json) {
       const v = out[c];
       if (typeof v === "string") out[c] = JSON.parse(v);
