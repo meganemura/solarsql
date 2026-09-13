@@ -102,3 +102,5 @@ Use `newId()` for text identities.
 
 CHECK narrowing requires a complete `column IN (literal, ...)` predicate.
 Mixed affinity, non-BINARY collations, and complex predicates retain the scalar type (ADR 0061).
+
+The build reads STRICT and WITHOUT ROWID from SQLite metadata. Comments do not enable table options.

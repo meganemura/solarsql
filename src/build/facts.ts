@@ -90,7 +90,10 @@ export class Engine {
     const ddl = sql ?? (this.db.prepare(`select sql from sqlite_schema where type = 'table' and name = ?`).get(name) as { sql: string } | undefined)?.sql;
     if (!ddl) throw new Error(`no table named ${name}`);
     const defs = definitions(ddl);
-    const virtual = /^\s*create\s+virtual\s+table\b/i.test(ddl);
+    // SQLite metadata describes the parsed table; trailing comments can name
+    // STRICT or WITHOUT ROWID without enabling either attribute.
+    const attributes = this.db.prepare(`select type, wr, strict from pragma_table_list where schema = 'main' and name = ?`).get(name) as { type: string; wr: number; strict: number };
+    const virtual = attributes.type === "virtual";
     // hidden: 0 is a plain column, 2 a virtual generated column, 3 a stored
     // one. 1 is a hidden column of a virtual table, which a query may read.
     const columns = (this.db.prepare(`select name, type, "notnull" as nn, dflt_value, pk, hidden from pragma_table_xinfo(?) where hidden in (0, 2, 3) or (hidden = 1 and ?)`).all(name, virtual ? 1 : 0) as {
@@ -115,8 +118,7 @@ export class Engine {
       from: f.from,
       to: f.to,
     }));
-    const tail = ddl.slice(ddl.lastIndexOf(")"));
-    return { name, sql: ddl, virtual, columns, foreignKeys, withoutRowid: /\bwithout\s+rowid\b/i.test(tail), strict: /\bstrict\b/i.test(tail) };
+    return { name, sql: ddl, virtual, columns, foreignKeys, withoutRowid: attributes.wr === 1, strict: attributes.strict === 1 };
   }
 
   // The first column of a table or a view that a statement may set. A

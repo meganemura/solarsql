@@ -374,6 +374,15 @@ describe("solarsql build", () => {
     }
   });
 
+  test("a STRICT comment cannot enable the module storage contract", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/customers/module.ts");
+      writeFileSync(schema, readFileSync(schema, "utf8").replace(") strict\n", ") /* strict */ without rowid\n"));
+      await expectBuildError(dir, /table customers is not STRICT/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   test("an expression column without a cast is refused with the fix in the message", async () => {
     const dir = copy();
     try {

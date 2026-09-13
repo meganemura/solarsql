@@ -48,13 +48,14 @@ export function introspect(db: DatabaseSync): Schema {
   const virtuals = new Map<string, Virtual>();
   // pragma table_list tells a virtual table and its shadow tables apart
   // from a plain table; sqlite_schema calls all three "table".
-  const kinds = new Map((db.prepare(`select name, type from pragma_table_list where schema = 'main'`).all() as { name: string; type: string }[]).map((r) => [r.name, r.type]));
+  const attributes = new Map((db.prepare(`select name, type, wr, strict from pragma_table_list where schema = 'main'`).all() as { name: string; type: string; wr: number; strict: number }[]).map((r) => [r.name, r]));
   const rows = db
     .prepare(`select type, name, tbl_name, sql from sqlite_schema where sql is not null and name not like 'sqlite_%' order by name`)
     .all() as { type: string; name: string; tbl_name: string; sql: string }[];
   for (const row of rows) {
-    if (row.type === "table" && kinds.get(row.name) === "shadow") continue;
-    if (row.type === "table" && kinds.get(row.name) === "virtual") {
+    const table = attributes.get(row.name);
+    if (row.type === "table" && table?.type === "shadow") continue;
+    if (row.type === "table" && table?.type === "virtual") {
       virtuals.set(row.name, { name: row.name, sql: row.sql });
     } else if (row.type === "table") {
       const defs = definitions(row.sql);
@@ -81,8 +82,8 @@ export function introspect(db: DatabaseSync): Schema {
         columns,
         foreignKeys,
         constraints: defs?.constraints ?? [],
-        withoutRowid: /\bwithout\s+rowid\b/i.test(row.sql.slice(row.sql.lastIndexOf(")"))),
-        strict: /\bstrict\b/i.test(row.sql.slice(row.sql.lastIndexOf(")"))),
+        withoutRowid: table!.wr === 1,
+        strict: table!.strict === 1,
       });
     } else if (row.type === "index") {
       indexes.set(row.name, { name: row.name, table: row.tbl_name, sql: row.sql });

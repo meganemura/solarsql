@@ -3,6 +3,10 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { Engine } from "../src/build/facts.ts";
+import { introspect } from "../src/build/migration.ts";
+import { Typer } from "../src/build/typegen.ts";
+import * as hegel from "@hegeldev/hegel";
+import * as gs from "@hegeldev/hegel/generators";
 
 const ddl = [
   `create table customers (id text primary key not null, name text not null)`,
@@ -15,6 +19,37 @@ const ddl = [
   )`,
   `create table order_lines (id text primary key not null, order_id text not null references orders(id), qty integer not null, price real)`,
 ];
+
+test("table attributes retain their engine meaning through arbitrary comments", () => {
+  hegel.test(tc => {
+    const strict = tc.draw(gs.booleans());
+    const withoutRowid = tc.draw(gs.booleans());
+    const comment = tc.draw(gs.text({ maxSize: 50 })).replaceAll("\0", "").replaceAll("*/", "* /");
+    const options = [strict ? "strict" : "", withoutRowid ? "without rowid" : ""].filter(Boolean).join(", ");
+    const engine = new Engine([`create table t(id text primary key, value text) /* ${comment} strict without rowid */ ${options}`]);
+    try {
+      for (const facts of [engine.table("t"), introspect(engine.db).tables.get("t")!]) {
+        assert.equal(facts.strict, strict);
+        assert.equal(facts.withoutRowid, withoutRowid);
+      }
+      if (!strict) {
+        engine.db.exec("insert into t values ('id', x'00')");
+        assert.equal(engine.db.prepare("select typeof(value) as storage from t").get()!.storage, "blob");
+        assert.equal(new Typer(engine, new Map(), { conservativeStorage: true }).analyze("select value from t", "t").columns[0]!.type, "SqlValue | null");
+      }
+    } finally { engine.close(); }
+  });
+});
+
+test("virtual table facts use the parsed table kind through comments", () => {
+  const engine = new Engine(["create /* spacing */ virtual table search using fts5(value)"]);
+  try {
+    assert.equal(engine.table("search").virtual, true);
+    assert.ok(engine.table("search").columns.some(c => c.name === "rank" && c.hidden));
+    assert.deepEqual([...introspect(engine.db).virtuals.keys()], ["search"]);
+    assert.equal(introspect(engine.db).tables.size, 0);
+  } finally { engine.close(); }
+});
 
 describe("Engine", () => {
   const engine = new Engine(ddl);

@@ -4,6 +4,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: type and migration facts use SQLite table attributes, so DDL comments cannot enable STRICT or WITHOUT ROWID (ADR 0064).
+
 - Added: a bounded backup lifecycle experiment with phase timings and snapshot identity checks (ADR 0063).
 
 - Fixed: machine build reports retain valid JSON when application imports write logs, throw, or exit early (ADR 0062).
