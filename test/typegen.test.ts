@@ -385,3 +385,30 @@ test('JSONB constructor values round-trip nested generated JSON', async () => {
     },{testCases:1000});
   }finally{engine.close();}
 });
+
+test('BLOB literal types preserve engine values across query scopes', async () => {
+  const {test:property}=await import('@hegeldev/hegel');
+  const gs=await import('@hegeldev/hegel/generators');
+  const engine=new Engine([]);
+  try {
+    property(tc=>{
+      const bytes=Uint8Array.from(tc.draw(gs.binary()));
+      const hex=Buffer.from(bytes).toString('hex');
+      const literal=tc.draw(gs.booleans()) ? `x'${hex}'` : `X'${hex.toUpperCase()}'`;
+      for(const sql of [`select ${literal}`,`values (${literal})`,`with data as (select ${literal} as value) select value from data`,`select value from (select (${literal}) as value)`]) {
+        const analysis=new Typer(engine,new Map()).analyze(sql,'');
+        assert.equal(analysis.sql,sql);
+        assert.equal(analysis.columns[0]!.type,'Uint8Array');
+        const statement=engine.db.prepare(sql);
+        assert.equal(analysis.columns[0]!.name,statement.columns()[0]!.name);
+        assert.deepEqual(statement.get()![analysis.columns[0]!.name],bytes);
+      }
+    },{testCases:1000});
+    for(const literal of ["x'0'","x'gg'","x'00"]) assert.throws(()=>new Typer(engine,new Map()).analyze(`select ${literal}`,''));
+    assert.equal(new Typer(engine,new Map()).analyze("values (x''),(null)",'').columns[0]!.type,'Uint8Array | null');
+    const jsonb=engine.db.prepare("select hex(jsonb('{\"data\":[true,null]}')) as value").get()!.value;
+    const sql=`select json_object('value',x'${jsonb}') as result`;
+    assert.equal(new Typer(engine,new Map()).analyze(sql,'').columns[0]!.type,'{ "value": JsonValue }');
+    assert.deepEqual(JSON.parse(engine.db.prepare(sql).get()!.result as string),{value:{data:[true,null]}});
+  }finally{engine.close();}
+});

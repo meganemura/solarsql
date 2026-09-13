@@ -831,6 +831,9 @@ function literalType(expr: string): string | null {
     if (tokens[0]!.type === "string") return "string";
     if (tokens[0]!.type === "number" || isKeyword(tokens[0], "true") || isKeyword(tokens[0], "false")) return "number";
   }
+  // SQLite requires the hex prefix and string to be adjacent. Keep string
+  // aliases and separated tokens from acquiring a binary result contract.
+  if (tokens.length === 2 && /^[xX]$/.test(tokens[0]!.text) && tokens[0]!.end === tokens[1]!.start && /^'(?:[0-9a-fA-F]{2})*'$/.test(tokens[1]!.text)) return "Uint8Array";
   if (tokens.length === 2 && ["-", "+"].includes(tokens[0]!.text) && tokens[1]!.type === "number") return "number";
   return null;
 }

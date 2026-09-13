@@ -128,3 +128,50 @@ export default {async fetch(request,env){if(new URL(request.url).pathname==='/do
     assert.deepEqual(await response.json(),[{result:{data:{nested:[true,null,3],text:'value'}}}]);
   }
 });
+
+test('generated BLOB literal contracts compile and execute on Node, D1, and Durable Objects', async t => {
+  const root=resolve(import.meta.dirname,'..');
+  const dir=realpathSync(mkdtempSync(join(tmpdir(),'solarsql-literals-')));
+  let mf:ReturnType<typeof workerMiniflare>|undefined;
+  t.after(async()=>{await mf?.dispose();rmSync(dir,{recursive:true,force:true});});
+  const library=relative(dir,join(root,'src/index.ts'));
+  const bytes=Uint8Array.from({length:256},(_,i)=>i);
+  const sql=`select x'${Buffer.from(bytes).toString('hex')}' as value union all select x''`;
+  const report=analyzeSchema('',{query:sql},library);
+  writeFileSync(join(dir,'package.json'),'{"type":"module"}');
+  writeFileSync(join(dir,'generated.ts'),report.generated);
+  writeFileSync(join(dir,'consumer.ts'),`
+import {queries, type Row} from ${JSON.stringify(library)};
+import {generated,statements} from './generated.ts';
+export const q=queries(generated,statements);
+export const params={};
+export const row:Row<typeof q.query>={value:new Uint8Array()};
+// @ts-expect-error BLOB literals return bytes.
+export const wrong:Row<typeof q.query>={value:'00ff'};
+export function serialize(rows:Row<typeof q.query>[]){return rows.map(r=>({bytes:Array.from(r.value),typed:r.value instanceof Uint8Array}));}
+`);
+  const typed=spawnSync(join(root,'node_modules/.bin/tsc'),['--ignoreConfig','--noEmit','--strict','--skipLibCheck','--target','esnext','--module','nodenext','--allowImportingTsExtensions',join(dir,'consumer.ts')],{encoding:'utf8',timeout:30_000});
+  assert.equal(typed.status,0,typed.stdout+typed.stderr);
+  writeFileSync(join(dir,'execute.mjs'),`
+import assert from 'node:assert/strict';
+import {DatabaseSync} from 'node:sqlite';
+import {node} from ${JSON.stringify(relative(dir,join(root,'src/node.ts')))};
+import {q,params,serialize} from './consumer.ts';
+const raw=new DatabaseSync(':memory:');try{assert.deepEqual(serialize(await node(raw).all(q.query,params)),[{bytes:Array.from({length:256},(_,i)=>i),typed:true},{bytes:[],typed:true}]);}finally{raw.close();}
+`);
+  const executed=spawnSync(process.execPath,[join(dir,'execute.mjs')],{encoding:'utf8',timeout:30_000});
+  assert.equal(executed.status,0,executed.stdout+executed.stderr);
+  writeFileSync(join(dir,'worker.ts'),`
+import {DurableObject} from 'cloudflare:workers';
+import {d1} from ${JSON.stringify(relative(dir,join(root,'src/d1.ts')))};
+import {durable} from ${JSON.stringify(relative(dir,join(root,'src/durable.ts')))};
+import {q,params,serialize} from './consumer.ts';
+export class Slots extends DurableObject {async fetch(){return Response.json(serialize(await durable(this.ctx.storage).all(q.query,params)));}}
+export default {async fetch(request,env){if(new URL(request.url).pathname==='/do')return env.SLOTS.get(env.SLOTS.idFromName('slots')).fetch('http://local');return Response.json(serialize(await d1(env.DB).all(q.query,params)));}};
+`);
+  mf=workerMiniflare(join(dir,'worker.ts'),resolve('/'),{durableObjects:{SLOTS:'Slots'}});
+  for(const path of ['/','/do']) {
+    const response=await mf.dispatchFetch('http://localhost'+path);
+    assert.deepEqual(await response.json(),[{bytes:Array.from(bytes),typed:true},{bytes:[],typed:true}]);
+  }
+});

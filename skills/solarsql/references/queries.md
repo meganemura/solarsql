@@ -63,6 +63,7 @@ Other expressions need `cast(... as integer | real | text)`.
 | a column through a view, CTE, or derived table | its defining query's type, including its nullability and JSON shape |
 | a scalar SELECT | its single output type, with `\| null` for an empty result |
 | a string, number, or NULL literal | the literal's type |
+| a BLOB literal, such as `x'00ff'` or `X''` | `Uint8Array` |
 | an expression: `count(*)`, `sum(x)`, `a + b`, `bm25(t)`, a window function, a `case` | needs `cast(... as integer \| real \| text)`; the build refuses it without one |
 | `cast(expr as T)` | `T \| null` |
 | `cast(<shape> as T)` where the whole `<shape>` is `count(...)`, `total(...)`, `row_number()`, `rank()`, `dense_rank()`, `ntile(...)`, `exists (...)`, `not exists (...)`, `coalesce(x, <literal>)`, or `coalesce(x, <not null column>)`, such as `cast(coalesce(b.n, 0) as integer)` | `T`, never null |
