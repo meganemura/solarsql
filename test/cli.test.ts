@@ -99,6 +99,46 @@ test("blocked migration preserves generated types and fails checks without write
   assert.equal(f.run("migration", "placed_at").status, 1);
 });
 
+test("a removed ordinary column needs an exact intent before migration generation", (t) => {
+  const f = fixture(t);
+  const initial = join(f.dir, "example/migrations/0001_initial.sql");
+  writeFileSync(initial, readFileSync(initial, "utf8").replace("    note text\n", "    note text,\n    obsolete_note text\n"));
+  const before = snapshot(f.dir);
+  const checked = f.run("build", "--check");
+  assert.equal(checked.status, 1, checked.stderr);
+  assert.match(checked.stderr, /migration blocked: automatic migration removes ordinary objects: column "orders"\."obsolete_note"/);
+  assert.match(checked.stderr, /Create changes\.json:/);
+  assert.match(checked.stderr, /npx solarsql migration describe_change --intent changes\.json/);
+  assert.deepEqual(snapshot(f.dir), before);
+
+  const intent = join(f.dir, "changes.json");
+  writeFileSync(intent, JSON.stringify({ version: 1, drops: [{ kind: "column", table: "orders", column: "obsolete_note" }] }));
+  const written = f.run("migration", "remove_obsolete_note", "--intent", intent);
+  assert.equal(written.status, 0, written.stderr);
+  assert.match(written.stdout, /wrote 0006_remove_obsolete_note\.sql/);
+  assert.equal(f.run("build", "--check").status, 0);
+});
+
+test("an invalid destructive intent fails before configuration import", (t) => {
+  const f = fixture(t);
+  const intent = join(f.dir, "invalid.json");
+  writeFileSync(intent, '{"version":1,"drops":[],"unexpected":true}');
+  writeFileSync(join(f.dir, config), "throw new Error('configuration must not load');\n");
+  const result = f.run("migration", "remove", "--intent", intent);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Invalid migration intent/);
+  assert.doesNotMatch(result.stderr, /configuration must not load/);
+});
+
+test("an unreadable destructive intent fails before configuration import", (t) => {
+  const f = fixture(t);
+  writeFileSync(join(f.dir, config), "throw new Error('configuration must not load');\n");
+  const result = f.run("migration", "remove", "--intent", join(f.dir, "missing.json"));
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Invalid migration intent .*cannot read the file/);
+  assert.doesNotMatch(result.stderr, /configuration must not load/);
+});
+
 test("invalid SQL fails generation and checks", (t) => {
   const f = fixture(t);
   f.edit("update orders set note = :note where id = :id", "update orders set absent_column = :note where id = :id");

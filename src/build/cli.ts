@@ -2,7 +2,7 @@
 // Responsibility: the command line of solarsql.
 //   solarsql build [config]             generate types and report migration status
 //   solarsql build --check [config]     the same, writing nothing; exit 1 when a file is stale
-//   solarsql migration <name> [config]  write the next migration file
+//   solarsql migration <name> [--intent file] [config]  write the next migration file
 //   solarsql init <module> [dir]        a first module, built, with its migration
 // Boundary: printing and exit codes only. build.ts and init.ts do the work.
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
@@ -10,6 +10,8 @@ import { analyzeDatabase, analyzeSchema } from "./analyze.ts";
 import { rehearse } from "./rehearse.ts";
 import { build, migration } from "./build.ts";
 import { init } from "./init.ts";
+import { readMigrationIntent } from "./migration-intent.ts";
+import type { DropIntent } from "./migration.ts";
 import { isReportWorker, printReport, runMachine, runRehearsalProcess } from "./machine.ts";
 import { protectInputs } from "./output.ts";
 import { shellArgument } from "./shell.ts";
@@ -26,7 +28,7 @@ const usage = `usage:
   solarsql rehearse <database.sqlite> <change.sql> [checks.json] [--timeout-ms 30000]   validate a disposable snapshot
   solarsql inspect [--timeout-ms 30000] [solarsql.config.ts]        JSON contracts, accesses and freshness; writes no build artifacts
   solarsql build --json [--timeout-ms 30000] [solarsql.config.ts]   machine-readable generation result (combine with --check)
-  solarsql migration <name> [solarsql.config.ts]
+  solarsql migration <name> [--intent changes.json] [solarsql.config.ts]
   solarsql init <module> [dir]                  writes solarsql.config.ts and modules/<module>/, then builds and writes the first migration`;
 
 function discovery(argv: string[]): number | undefined {
@@ -93,6 +95,30 @@ function machineArguments(args: string[]): { args: string[]; timeoutMs: number }
   return { args: workerArgs, timeoutMs };
 }
 
+function migrationArguments(args: string[]): { name: string; configPath: string; drops: DropIntent[] } {
+  const paths: string[] = [];
+  let intentPath: string | undefined;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!;
+    if (arg === "--intent") {
+      const value = args[++index];
+      if (!value || value.startsWith("--") || intentPath !== undefined) throw new BuildError("--intent requires one JSON file.");
+      intentPath = value;
+    } else if (arg.startsWith("--")) {
+      throw new BuildError(`Unknown migration option ${arg}.`);
+    } else {
+      paths.push(arg);
+    }
+  }
+  if (paths.length < 1 || paths.length > 2) throw new BuildError("Use solarsql migration <name> [--intent changes.json] [solarsql.config.ts].");
+  return { name: paths[0]!, configPath: paths[1] ?? "solarsql.config.ts", drops: intentPath ? readMigrationIntent(intentPath).drops : [] };
+}
+
+function destructiveAction(drops: readonly DropIntent[], configArgument: string): string {
+  const intent = JSON.stringify({ version: 1, drops }, null, 2);
+  return `Create changes.json:\n${intent}\nRun: npx solarsql migration describe_change --intent changes.json${configArgument}`;
+}
+
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
   if (command === "analyze") {
@@ -147,7 +173,7 @@ async function main(argv: string[]): Promise<number> {
       const diagnostics = [
         ...(check && (result.modules.some(m => m.changed) || result.index.changed) ? [{ code: "GENERATED_STALE", action: `npx solarsql build${configArgument}` }] : []),
         ...(result.migration.pending ? [{ code: result.migration.reason ? "MIGRATION_BLOCKED" : "MIGRATION_PENDING", message: result.migration.reason,
-          action: result.migration.reason ? "Write a manual migration and run build." : `npx solarsql migration <name>${configArgument}` }] : []),
+          action: result.migration.reason ? result.migration.drops ? destructiveAction(result.migration.drops, configArgument) : "Write a manual migration and run build." : `npx solarsql migration <name>${configArgument}` }] : []),
       ];
       const ok = !check || diagnostics.length === 0;
       await printReport({ version: 1, ok, mode: inspect ? "inspect" : check ? "check" : "build", diagnostics,
@@ -169,7 +195,8 @@ async function main(argv: string[]): Promise<number> {
     if (result.index.path !== null && result.index.changed) console.log(`${check ? "stale  " : "wrote  "} ${result.index.path} (the migration files, for a Durable Object)`);
     if (result.migration.reason) {
       console.error(`migration blocked: ${result.migration.reason}`);
-      console.error(`Write a manual SQL migration in the configured migrations directory, then run: npx solarsql build${configArgument}`);
+      if (result.migration.drops) console.error(destructiveAction(result.migration.drops, configArgument));
+      else console.error(`Write a manual SQL migration in the configured migrations directory, then run: npx solarsql build${configArgument}`);
       return check ? 1 : 0;
     }
     if (result.migration.pending) {
@@ -185,14 +212,11 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   if (command === "migration") {
-    const name = rest[0];
-    if (!name) {
-      console.error(usage);
-      return 2;
-    }
-    const result = await migration(rest[1] ?? "solarsql.config.ts", name);
+    const { name, configPath, drops } = migrationArguments(rest);
+    const result = await migration(configPath, name, drops);
     if (result.reason) {
       console.error(`migration blocked: ${result.reason}`);
+      if (result.drops) console.error(destructiveAction(result.drops, ` ${shellArgument(configPath)}`));
       return 1;
     }
     console.log(result.filename ? `wrote ${result.filename}` : "nothing to migrate");

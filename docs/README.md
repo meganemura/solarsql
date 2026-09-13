@@ -117,6 +117,7 @@ A change to a decision gets a new ADR that supersedes the old one.
 
 | [0088](adr/0088-runtime-parameters-match-the-operation-contract.md) | Runtime parameters match the operation contract |
 | [0089](adr/0089-machine-cli-has-a-time-budget.md) | Machine CLI reports have a time budget |
+| [0090](adr/0090-automatic-destructive-migrations-need-intent.md) | Automatic destructive migrations need an exact intent |
 
 ## Measurements
 

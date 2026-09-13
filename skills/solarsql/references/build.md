@@ -13,7 +13,7 @@ Unknown help targets and extra discovery arguments print usage to stderr and exi
 npx solarsql init <module> [dir]
 npx solarsql build [solarsql.config.ts]
 npx solarsql build --check [solarsql.config.ts]
-npx solarsql migration <name> [solarsql.config.ts]
+npx solarsql migration <name> [--intent changes.json] [solarsql.config.ts]
 ```
 
 ## init
@@ -43,6 +43,7 @@ A successful build does not establish that the change is ready to deploy.
 1. Run `npx solarsql build` after a schema or SQL edit.
 2. Read the migration status, even when the build exits 0.
    When it says `migration pending. Write the migration`, run `npx solarsql migration <name>`.
+   When it reports an ordinary removal, copy its JSON and run the command it prints.
    For other errors, apply the fix in the message and run the build again.
 3. Run `npx solarsql build --check` to verify generated files and migrations against the source.
 4. Run the project's TypeScript check (`npx tsc --noEmit` by default) and tests.
@@ -99,7 +100,7 @@ Shared SQL reports all its catalog locations.
 | `is missing. Run: npx solarsql build` | run the build; a check writes nothing |
 | `is not in modules` | the configuration imports a module it does not list; add the module's directory to `modules` |
 | `migration pending. Write the migration` | run `npx solarsql migration <name>` |
-| `migration blocked:` | follow the reason: split an ambiguous column change, add a default, or write an explicit data-preserving migration for a rebuild with foreign-key delete actions |
+| `migration blocked:` | follow the reason. For an ordinary removal, copy the exact JSON and command. For another block, split an ambiguous change, add a default, or write a data-preserving migration for a rebuild with foreign-key delete actions |
 | `generated files are stale` | run `npx solarsql build` |
 | `migration name must match` | rename: `[a-z0-9_]+` |
 | `module name must match` | rename: `[a-z][a-z0-9_]*` |

@@ -20,7 +20,11 @@ export type View = { name: string; sql: string };
 export type Virtual = { name: string; sql: string };
 export type Schema = { tables: Map<string, Table>; indexes: Map<string, Index>; triggers: Map<string, Trigger>; views: Map<string, View>; virtuals: Map<string, Virtual> };
 export type Rename = { table: string; from: string; to: string };
-export type Plan = { kind: "ok"; statements: string[] } | { kind: "blocked"; reason: string };
+// A drop names the SQLite object by its logical name, not by SQL text. This
+// keeps a dot in a quoted identifier as one name instead of a table/column
+// separator. The CLI writes the SQL spelling only for its diagnostic.
+export type DropIntent = { kind: "table"; table: string } | { kind: "column"; table: string; column: string };
+export type Plan = { kind: "ok"; statements: string[] } | { kind: "blocked"; reason: string; drops?: DropIntent[] };
 
 export function open(statements: readonly string[]): DatabaseSync {
   const db = new DatabaseSync(":memory:");
@@ -249,7 +253,60 @@ function tableStatements(current: Table, target: Table, renames: readonly Rename
   };
 }
 
-export function diff(current: Schema, target: Schema, renames: readonly Rename[] = []): Plan {
+function dropKey(drop: DropIntent): string {
+  return drop.kind === "table" ? `table\u0000${drop.table}` : `column\u0000${drop.table}\u0000${drop.column}`;
+}
+
+function sameSqliteName(left: string, right: string): boolean {
+  const normalizeName = (value: string) => value.replace(/[A-Z]/g, letter => letter.toLowerCase());
+  return normalizeName(left) === normalizeName(right);
+}
+
+export function dropReference(drop: DropIntent): string {
+  return drop.kind === "table" ? `table ${quoteIdent(drop.table)}` : `column ${quoteIdent(drop.table)}.${quoteIdent(drop.column)}`;
+}
+
+// A table drop owns its columns. A column is removed only when its table
+// remains. A declared rename consumes its source name before this comparison.
+function requiredDrops(current: Schema, target: Schema, renames: readonly Rename[]): DropIntent[] {
+  const required: DropIntent[] = [];
+  for (const table of current.tables.values()) {
+    const next = target.tables.get(table.name);
+    if (!next) {
+      required.push({ kind: "table", table: table.name });
+      continue;
+    }
+    const targetColumns = new Set(next.columns.map(column => column.name));
+    for (const column of table.columns) {
+      const renamed = renames.some(rename => rename.table === table.name && rename.from === column.name && targetColumns.has(rename.to));
+      if (!renamed && !targetColumns.has(column.name)) required.push({ kind: "column", table: table.name, column: column.name });
+    }
+  }
+  return required;
+}
+
+function dropIntentPlan(required: readonly DropIntent[], supplied: readonly DropIntent[]): Plan | null {
+  const suppliedKeys = new Set<string>();
+  for (const drop of supplied) {
+    const key = dropKey(drop);
+    if (suppliedKeys.has(key)) return { kind: "blocked", reason: `destructive intent repeats ${dropReference(drop)}. Supply each removed object once.`, drops: [...required] };
+    suppliedKeys.add(key);
+  }
+  const requiredKeys = new Set(required.map(dropKey));
+  const extra = supplied.find(drop => !requiredKeys.has(dropKey(drop)));
+  if (extra) return { kind: "blocked", reason: `destructive intent does not match a removed ordinary object: ${dropReference(extra)}.`, drops: [...required] };
+  const missing = required.filter(drop => !suppliedKeys.has(dropKey(drop)));
+  if (missing.length > 0) {
+    return {
+      kind: "blocked",
+      reason: `automatic migration removes ordinary objects: ${missing.map(dropReference).join(", ")}. Supply an exact destructive intent before generation.`,
+      drops: [...required],
+    };
+  }
+  return null;
+}
+
+export function diff(current: Schema, target: Schema, renames: readonly Rename[] = [], drops: readonly DropIntent[] = []): Plan {
   // Order: drop views, drop triggers and indexes, drop tables, change
   // tables, create indexes, views, and triggers. An index that names a
   // column must go before the column does. An index or trigger on a rebuilt
@@ -264,6 +321,9 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
   const rebuilt = new Set<string>();
   let needsDefer = false;
 
+  const intent = dropIntentPlan(requiredDrops(current, target, renames), drops);
+  if (intent) return intent;
+
   const keptIndexes = new Map<string, string[]>();
   const dropIndexOf = new Map<string, string>();
   for (const [name, index] of current.indexes) {
@@ -276,8 +336,25 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
     const t = target.triggers.get(name);
     if (!t || normalize(t.sql) !== normalize(trigger.sql)) dropTriggerOf.set(name, trigger.table);
   }
-  for (const name of current.tables.keys()) {
-    if (!target.tables.has(name)) dropTables.push(`drop table ${quoteIdent(name)}`);
+  const removedTables = [...current.tables.keys()].filter(name => !target.tables.has(name));
+  for (const name of removedTables) {
+    // DROP TABLE runs the same delete actions as deleting every parent row.
+    // An intent reviews the parent table, but it cannot review rows that
+    // survive in a child table, so this path needs an explicit migration.
+    for (const schema of [current, target]) {
+      for (const table of schema.tables.values()) {
+        if (!target.tables.has(table.name)) continue;
+        for (const reference of table.foreignKeys) {
+          if (sameSqliteName(reference.table, name) && reference.onDelete !== "NO ACTION") {
+            return {
+              kind: "blocked",
+              reason: `${table.name}.${reference.from} has ON DELETE ${reference.onDelete} referencing ${name}. Removing ${name} drops the table and can delete or change child rows, or fail. Write an explicit migration that preserves the data and foreign keys.`,
+            };
+          }
+        }
+      }
+    }
+    dropTables.push(`drop table ${quoteIdent(name)}`);
   }
   // A search table has no ALTER. A changed or removed one is dropped, and
   // a changed or new one is created after the tables, before the triggers
@@ -302,11 +379,10 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
       // DROP TABLE runs foreign-key delete actions even when checks are
       // deferred. Inspect both schemas: an earlier table change can install
       // a target reference before this parent's rebuild.
-      const sqliteName = (value: string) => value.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
       for (const schema of [current, target]) {
         for (const table of schema.tables.values()) {
           for (const reference of table.foreignKeys) {
-            if (sqliteName(reference.table) === sqliteName(name) && reference.onDelete !== "NO ACTION") {
+            if (sameSqliteName(reference.table, name) && reference.onDelete !== "NO ACTION") {
               return {
                 kind: "blocked",
                 reason: `${table.name}.${reference.from} has ON DELETE ${reference.onDelete} referencing ${name}. Rebuilding ${name} drops the table and can delete or change child rows, or fail. Write an explicit migration that preserves the data and foreign keys.`,

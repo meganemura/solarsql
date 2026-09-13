@@ -177,7 +177,12 @@ test("migration diff round-trips the declared schema", () => {
 
     const current = open([...ddl(s1), ...rowsFor(s1)]);
     const target = open(ddl(s2));
-    const plan = diff(introspect(current), introspect(target));
+    const currentSchema = introspect(current);
+    const targetSchema = introspect(target);
+    let plan = diff(currentSchema, targetSchema);
+    // This property studies the SQL transformation. It supplies the exact
+    // removal set after first proving that the public default blocks it.
+    if (plan.kind === "blocked" && plan.drops) plan = diff(currentSchema, targetSchema, [], plan.drops);
 
     if (expectedBlock(s1, s2)) {
       event("blocked");
@@ -221,7 +226,10 @@ test("a table that loses and gains a column in one change is blocked", () => {
   const s1: Schema = { tables: [{ name: "a", columns: [{ name: "c1", type: "text", notnull: false, check: false, generated: null }], fkToA: false }], indexes: [] };
   const s2: Schema = { tables: [{ name: "a", columns: [{ name: "c2", type: "text", notnull: false, check: false, generated: null }], fkToA: false }], indexes: [] };
   assert.equal(expectedBlock(s1, s2), true);
-  const plan = diff(introspect(open(ddl(s1))), introspect(open(ddl(s2))));
+  const current = introspect(open(ddl(s1)));
+  const target = introspect(open(ddl(s2)));
+  const initial = diff(current, target);
+  const plan = initial.kind === "blocked" && initial.drops ? diff(current, target, [], initial.drops) : initial;
   assert.equal(plan.kind, "blocked");
   if (plan.kind === "blocked") assert.match(plan.reason, /columns \[c1\] removed and \[c2\] added in one change/);
 });
