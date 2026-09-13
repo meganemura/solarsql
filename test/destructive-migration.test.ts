@@ -96,14 +96,14 @@ test("parent removal checks delete actions in both schema versions", () => {
   }
 });
 
-test("the intent parser accepts only version one drop objects", () => {
-  assert.deepEqual(parseMigrationIntent('{"version":1,"drops":[{"kind":"column","table":"order.lines","column":"old.column"}]}'), {
-    drops: [{ kind: "column", table: "order.lines", column: "old.column" }],
+test("the intent parser accepts only version one intent objects", () => {
+  assert.deepEqual(parseMigrationIntent('{"version":1,"drops":[{"kind":"column","table":"order.lines","column":"old.column"}],"renames":[]}'), {
+    drops: [{ kind: "column", table: "order.lines", column: "old.column" }], renames: [],
   });
   for (const text of [
     "not json",
     '{"version":2,"drops":[]}',
-    '{"version":1,"drops":[],"renames":[]}',
+    '{"version":1,"drops":[]}',
     '{"version":1,"drops":[{"kind":"table","table":"t","extra":true}]}',
     '{"version":1,"drops":[{"kind":"virtual","table":"search"}]}',
   ]) assert.throws(() => parseMigrationIntent(text), /Invalid migration intent/);

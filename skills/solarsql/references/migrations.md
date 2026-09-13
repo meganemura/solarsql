@@ -22,7 +22,8 @@ An automatic migration does not remove an ordinary table or column until an
 intent file names the exact objects. This prevents a DDL edit from silently
 discarding data on a database that has rows.
 
-Create `changes.json` with this strict version-one shape:
+Create `changes.json` with this strict version-one shape. Keep both lists,
+even when one list is empty:
 
 ```json
 {
@@ -30,7 +31,8 @@ Create `changes.json` with this strict version-one shape:
   "drops": [
     { "kind": "column", "table": "orders", "column": "obsolete_note" },
     { "kind": "table", "table": "retired_orders" }
-  ]
+  ],
+  "renames": []
 }
 ```
 
@@ -44,11 +46,47 @@ The strings are SQLite object names. Do not add SQL quotes. A table named
 `order.lines` remains one `table` string, and a column named `old.value`
 remains one `column` string. The generator quotes these names in SQL.
 
-The file must have only `version` and `drops`. Its version is `1`. Each entry
-must be a `table` with `table`, or a `column` with `table` and `column`. List
-every ordinary removal once. The generator rejects a duplicate, an object that
-the schema does not remove, and an omitted removal. It also rejects malformed
-JSON before it imports the project configuration.
+The file must have only `version`, `drops`, and `renames`. Its version is `1`.
+Each drop entry must be a `table` with `table`, or a `column` with `table` and
+`column`. List every ordinary removal once. The generator rejects a duplicate,
+an object that the schema does not remove, and an omitted removal. It also
+rejects malformed JSON before it imports the project configuration.
+
+## Rename a column without losing its values
+
+When a table loses one column and gains one column, the build reports an exact
+rename repair and a command. Copy the reported JSON into `changes.json`, or
+write this shape yourself:
+
+```json
+{
+  "version": 1,
+  "drops": [],
+  "renames": [
+    { "table": "orders", "from": "old_note", "to": "note" }
+  ]
+}
+```
+
+Run the command with the same custom configuration path when there is one:
+
+```sh
+npx solarsql migration rename_note --intent changes.json solarsql.config.ts
+```
+
+Each rename entry has only `table`, `from`, and `to` strings. The names are
+logical SQLite identifiers, so dots remain part of one value and need no SQL
+quotes. The generator rejects unknown fields, a missing source or target,
+duplicate, conflicting, chained, or unused declarations. It writes `ALTER
+TABLE ... RENAME COLUMN ...` before safe additions and preserves the renamed
+values and row identifiers.
+
+An exact column drop in `drops` may share the same migration with a declared
+rename and a safe nullable addition. The drop does not become another rename.
+
+For several removed and added columns, the build lists the source and target
+candidate sets. Choose the one-to-one mapping in `renames`, or split the
+change into separate migrations. The generator does not choose that mapping.
 
 `build` reports the blocked objects, the JSON to copy, and a runnable
 migration command. `build --check` writes no files. A rename declaration
@@ -69,7 +107,7 @@ explicit migration that preserves the required rows and foreign keys.
 | a new table, index, view, trigger, or search table | `CREATE ...` |
 | a new column with a default, or nullable | `alter table t add column ...` |
 | a new `not null` column without a default | refused; give it a default |
-| a table that both loses and gains a column | refused; two migrations, one per change |
+| a table that both loses and gains a column | blocked until `renames` gives each data-preserving mapping; split an ambiguous multi-column change when needed |
 | a changed column, constraint, or foreign key; a dropped column; a new stored generated column on a table with rows | a rebuild: create the new table, copy common columns into a side table, drop the original, rename the new table, restore rows, then drop the side table; one transaction with `pragma defer_foreign_keys = on` first |
 | a rebuild referenced through ON DELETE CASCADE, SET NULL, SET DEFAULT, or RESTRICT | blocked; write an explicit migration that preserves related rows and foreign keys |
 | a changed view or trigger | `drop` then `create` |

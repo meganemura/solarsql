@@ -112,17 +112,46 @@ test("a removed ordinary column needs an exact intent before migration generatio
   assert.deepEqual(snapshot(f.dir), before);
 
   const intent = join(f.dir, "changes.json");
-  writeFileSync(intent, JSON.stringify({ version: 1, drops: [{ kind: "column", table: "orders", column: "obsolete_note" }] }));
+  writeFileSync(intent, JSON.stringify({ version: 1, drops: [{ kind: "column", table: "orders", column: "obsolete_note" }], renames: [] }));
   const written = f.run("migration", "remove_obsolete_note", "--intent", intent);
   assert.equal(written.status, 0, written.stderr);
   assert.match(written.stdout, /wrote 0006_remove_obsolete_note\.sql/);
   assert.equal(f.run("build", "--check").status, 0);
 });
 
+test("a pending rename reports a strict intent and writes a data-preserving migration", (t) => {
+  const f = fixture(t);
+  const initial = join(f.dir, "example/migrations/0001_initial.sql");
+  writeFileSync(initial, readFileSync(initial, "utf8").replace("    note text\n", '    "old.note" text\n'));
+  const search = join(f.dir, "example/migrations/0004_search.sql");
+  writeFileSync(search, readFileSync(search, "utf8").replaceAll("new.note", 'new."old.note"').replace("after update of note", 'after update of "old.note"'));
+  const before = snapshot(f.dir);
+  const checked = f.run("build", "--check");
+  assert.equal(checked.status, 1, checked.stderr);
+  assert.match(checked.stderr, /columns \[old\.note\] removed and \[note\] added/);
+  assert.match(checked.stderr, /"renames": \[\n    \{\n      "table": "orders",\n      "from": "old.note",\n      "to": "note"/);
+  assert.ok(checked.stderr.includes(quotedConfig));
+  assert.deepEqual(snapshot(f.dir), before);
+  const machine = f.run("build", "--check", "--json");
+  assert.equal(machine.status, 1, machine.stderr);
+  const report = JSON.parse(machine.stdout) as { result: { migration: { renames?: unknown; drops?: unknown } } };
+  assert.deepEqual(report.result.migration.renames, [{ table: "orders", from: "old.note", to: "note" }]);
+  assert.equal(report.result.migration.drops, undefined);
+  assert.deepEqual(snapshot(f.dir), before);
+
+  const intent = join(f.dir, "rename.json");
+  writeFileSync(intent, JSON.stringify({ version: 1, drops: [], renames: [{ table: "orders", from: "old.note", to: "note" }] }));
+  const written = f.run("migration", "rename_note", "--intent", intent);
+  assert.equal(written.status, 0, written.stderr);
+  assert.match(written.stdout, /wrote 0006_rename_note\.sql/);
+  assert.match(readFileSync(join(f.dir, "example/migrations/0006_rename_note.sql"), "utf8"), /rename column "old\.note" to "note"/);
+  assert.equal(f.run("build", "--check").status, 0);
+});
+
 test("an invalid destructive intent fails before configuration import", (t) => {
   const f = fixture(t);
   const intent = join(f.dir, "invalid.json");
-  writeFileSync(intent, '{"version":1,"drops":[],"unexpected":true}');
+  writeFileSync(intent, '{"version":1,"drops":[],"renames":[],"unexpected":true}');
   writeFileSync(join(f.dir, config), "throw new Error('configuration must not load');\n");
   const result = f.run("migration", "remove", "--intent", intent);
   assert.equal(result.status, 1);

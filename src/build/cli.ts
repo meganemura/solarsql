@@ -10,8 +10,8 @@ import { analyzeDatabase, analyzeSchema } from "./analyze.ts";
 import { rehearse } from "./rehearse.ts";
 import { build, migration } from "./build.ts";
 import { init } from "./init.ts";
-import { readMigrationIntent } from "./migration-intent.ts";
-import type { DropIntent } from "./migration.ts";
+import { readMigrationIntent, type MigrationIntent } from "./migration-intent.ts";
+import type { DropIntent, Rename, RenameRepair } from "./migration.ts";
 import { isReportWorker, printReport, runMachine, runRehearsalProcess } from "./machine.ts";
 import { protectInputs } from "./output.ts";
 import { shellArgument } from "./shell.ts";
@@ -95,7 +95,7 @@ function machineArguments(args: string[]): { args: string[]; timeoutMs: number }
   return { args: workerArgs, timeoutMs };
 }
 
-function migrationArguments(args: string[]): { name: string; configPath: string; drops: DropIntent[] } {
+function migrationArguments(args: string[]): { name: string; configPath: string; intent: MigrationIntent } {
   const paths: string[] = [];
   let intentPath: string | undefined;
   for (let index = 0; index < args.length; index++) {
@@ -111,12 +111,18 @@ function migrationArguments(args: string[]): { name: string; configPath: string;
     }
   }
   if (paths.length < 1 || paths.length > 2) throw new BuildError("Use solarsql migration <name> [--intent changes.json] [solarsql.config.ts].");
-  return { name: paths[0]!, configPath: paths[1] ?? "solarsql.config.ts", drops: intentPath ? readMigrationIntent(intentPath).drops : [] };
+  return { name: paths[0]!, configPath: paths[1] ?? "solarsql.config.ts", intent: intentPath ? readMigrationIntent(intentPath) : { drops: [], renames: [] } };
 }
 
-function destructiveAction(drops: readonly DropIntent[], configArgument: string): string {
-  const intent = JSON.stringify({ version: 1, drops }, null, 2);
+function intentAction(drops: readonly DropIntent[], renames: readonly Rename[], configArgument: string): string {
+  const intent = JSON.stringify({ version: 1, drops, renames }, null, 2);
   return `Create changes.json:\n${intent}\nRun: npx solarsql migration describe_change --intent changes.json${configArgument}`;
+}
+
+function migrationAction(drops: DropIntent[] | undefined, renames: Rename[] | undefined, renameCandidates: RenameRepair[] | undefined, configArgument: string): string {
+  if (drops || renames) return intentAction(drops ?? [], renames ?? [], configArgument);
+  if (renameCandidates) return `Choose a one-to-one rename map from:\n${JSON.stringify(renameCandidates, null, 2)}\nRun: npx solarsql migration describe_change --intent changes.json${configArgument}`;
+  return "Write a manual migration and run build.";
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -173,7 +179,7 @@ async function main(argv: string[]): Promise<number> {
       const diagnostics = [
         ...(check && (result.modules.some(m => m.changed) || result.index.changed) ? [{ code: "GENERATED_STALE", action: `npx solarsql build${configArgument}` }] : []),
         ...(result.migration.pending ? [{ code: result.migration.reason ? "MIGRATION_BLOCKED" : "MIGRATION_PENDING", message: result.migration.reason,
-          action: result.migration.reason ? result.migration.drops ? destructiveAction(result.migration.drops, configArgument) : "Write a manual migration and run build." : `npx solarsql migration <name>${configArgument}` }] : []),
+          action: result.migration.reason ? migrationAction(result.migration.drops, result.migration.renames, result.migration.renameCandidates, configArgument) : `npx solarsql migration <name>${configArgument}` }] : []),
       ];
       const ok = !check || diagnostics.length === 0;
       await printReport({ version: 1, ok, mode: inspect ? "inspect" : check ? "check" : "build", diagnostics,
@@ -195,8 +201,8 @@ async function main(argv: string[]): Promise<number> {
     if (result.index.path !== null && result.index.changed) console.log(`${check ? "stale  " : "wrote  "} ${result.index.path} (the migration files, for a Durable Object)`);
     if (result.migration.reason) {
       console.error(`migration blocked: ${result.migration.reason}`);
-      if (result.migration.drops) console.error(destructiveAction(result.migration.drops, configArgument));
-      else console.error(`Write a manual SQL migration in the configured migrations directory, then run: npx solarsql build${configArgument}`);
+      const action = migrationAction(result.migration.drops, result.migration.renames, result.migration.renameCandidates, configArgument);
+      console.error(action === "Write a manual migration and run build." ? `Write a manual SQL migration in the configured migrations directory, then run: npx solarsql build${configArgument}` : action);
       return check ? 1 : 0;
     }
     if (result.migration.pending) {
@@ -212,11 +218,12 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   if (command === "migration") {
-    const { name, configPath, drops } = migrationArguments(rest);
-    const result = await migration(configPath, name, drops);
+    const { name, configPath, intent } = migrationArguments(rest);
+    const result = await migration(configPath, name, intent);
     if (result.reason) {
       console.error(`migration blocked: ${result.reason}`);
-      if (result.drops) console.error(destructiveAction(result.drops, ` ${shellArgument(configPath)}`));
+      const action = migrationAction(result.drops, result.renames, result.renameCandidates, ` ${shellArgument(configPath)}`);
+      if (action !== "Write a manual migration and run build.") console.error(action);
       return 1;
     }
     console.log(result.filename ? `wrote ${result.filename}` : "nothing to migrate");

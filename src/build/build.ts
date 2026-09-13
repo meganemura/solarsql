@@ -12,7 +12,8 @@ import type { Command, Config, Index, ModuleConfig, PlanItem, Query, Search, Tab
 import { GUARD_DDL, GUARD_TABLE, assertStatement } from "../runtime/plan.ts";
 import { GENERATED_FILE, emitGenerated, emitMigrationsIndex, emitStub } from "./emit.ts";
 import { Engine, type Access, type OutputColumn } from "./facts.ts";
-import { applied, diff, introspect, open, type DropIntent } from "./migration.ts";
+import { applied, diff, introspect, open, type DropIntent, type Rename, type RenameRepair } from "./migration.ts";
+import type { MigrationIntent } from "./migration-intent.ts";
 import { migrationSequence, nextMigrationFile, withMigrationLock, writeNewMigration } from "./migration-files.ts";
 import { created, indexTarget, quoteIdent, triggerTarget } from "./scan.ts";
 import { shellArgument } from "./shell.ts";
@@ -66,7 +67,7 @@ export type BuildResult = {
   // Per module: the statements this build added to and removed from the
   // generated file, so the CLI can say what changed.
   modules: { name: string; generatedPath: string; entries: number; changed: boolean; added: string[]; removed: string[]; ms: number }[];
-  migration: { pending: boolean; statements: string[]; reason: string | null; drops?: DropIntent[] };
+  migration: { pending: boolean; statements: string[]; reason: string | null; drops?: DropIntent[]; renames?: Rename[]; renameCandidates?: RenameRepair[] };
   // The bundle of the migration files a Durable Object imports. It is a
   // generated file too: the build rewrites it when a migration file changed,
   // and a check reports it stale. `path` is null when there are no files.
@@ -580,14 +581,16 @@ function migrationsIndex(dir: string, write: boolean): BuildResult["index"] {
   return { path, changed };
 }
 
-function migrationStatus(configDir: string, config: Config, modules: readonly Module[], drops: readonly DropIntent[] = []): BuildResult["migration"] {
+const emptyIntent: MigrationIntent = { drops: [], renames: [] };
+
+function migrationStatus(configDir: string, config: Config, modules: readonly Module[], intent: MigrationIntent = emptyIntent): BuildResult["migration"] {
   const dir = resolve(configDir, config.migrations);
   const files = migrationFiles(dir);
   const current = applied(files.map((f) => f.sql));
   const target = open(declaredDdl(modules));
   try {
-    const plan = diff(introspect(current), introspect(target), [], drops);
-    if (plan.kind === "blocked") return { pending: true, statements: [], reason: plan.reason, ...(plan.drops ? { drops: plan.drops } : {}) };
+    const plan = diff(introspect(current), introspect(target), intent.renames, intent.drops);
+    if (plan.kind === "blocked") return { pending: true, statements: [], reason: plan.reason, ...(plan.drops ? { drops: plan.drops } : {}), ...(plan.renames ? { renames: plan.renames } : {}), ...(plan.renameCandidates ? { renameCandidates: plan.renameCandidates } : {}) };
     return { pending: plan.statements.length > 0, statements: plan.statements, reason: null };
   } finally {
     current.close();
@@ -596,7 +599,7 @@ function migrationStatus(configDir: string, config: Config, modules: readonly Mo
 }
 
 // Write the next migration file, and the bundle a Durable Object imports.
-export async function migration(configPath: string, name: string, drops: readonly DropIntent[] = []): Promise<{ filename: string | null; reason: string | null; drops?: DropIntent[] }> {
+export async function migration(configPath: string, name: string, intent: MigrationIntent = emptyIntent): Promise<{ filename: string | null; reason: string | null; drops?: DropIntent[]; renames?: Rename[]; renameCandidates?: RenameRepair[] }> {
   if (!/^[a-z0-9_]+$/.test(name)) throw new BuildError(`migration name must match [a-z0-9_]+: ${name}`);
   const { config, configDir, modules } = await load(configPath);
   const dir = resolve(configDir, config.migrations);
@@ -604,8 +607,8 @@ export async function migration(configPath: string, name: string, drops: readonl
   return withMigrationLock(dir, () => {
     const files = migrationFiles(dir);
     migrationSequence(files.map(file => file.name));
-    const status = migrationStatus(configDir, config, modules, drops);
-    if (status.reason) return { filename: null, reason: status.reason, ...(status.drops ? { drops: status.drops } : {}) };
+    const status = migrationStatus(configDir, config, modules, intent);
+    if (status.reason) return { filename: null, reason: status.reason, ...(status.drops ? { drops: status.drops } : {}), ...(status.renames ? { renames: status.renames } : {}), ...(status.renameCandidates ? { renameCandidates: status.renameCandidates } : {}) };
     let filename: string | null = null;
     if (status.pending) {
       const file = nextMigrationFile(files.map(file => file.name), name, status.statements);

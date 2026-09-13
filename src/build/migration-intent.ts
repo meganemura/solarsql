@@ -2,10 +2,10 @@
 // destructive migration. Boundary: this file does not compare schemas; the
 // migration diff rejects an intent that does not match the actual removal.
 import { readFileSync } from "node:fs";
-import type { DropIntent } from "./migration.ts";
+import type { DropIntent, Rename } from "./migration.ts";
 import { BuildError } from "./typegen.ts";
 
-export type MigrationIntent = { drops: DropIntent[] };
+export type MigrationIntent = { drops: DropIntent[]; renames: Rename[] };
 
 function object(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -28,8 +28,8 @@ export function parseMigrationIntent(text: string, path = "intent"): MigrationIn
     return fail(path, "the file must contain JSON.");
   }
   const root = object(value);
-  if (!root || !exactKeys(root, ["drops", "version"]) || root.version !== 1 || !Array.isArray(root.drops)) {
-    return fail(path, 'use exactly {"version":1,"drops":[...]}.');
+  if (!root || !exactKeys(root, ["drops", "renames", "version"]) || root.version !== 1 || !Array.isArray(root.drops) || !Array.isArray(root.renames)) {
+    return fail(path, 'use exactly {"version":1,"drops":[],"renames":[]}.');
   }
   const drops: DropIntent[] = [];
   for (const [index, value] of root.drops.entries()) {
@@ -45,7 +45,15 @@ export function parseMigrationIntent(text: string, path = "intent"): MigrationIn
       return fail(path, `drops[${index}] has an unknown or incomplete object shape.`);
     }
   }
-  return { drops };
+  const renames: Rename[] = [];
+  for (const [index, value] of root.renames.entries()) {
+    const rename = object(value);
+    if (!rename || typeof rename.table !== "string" || typeof rename.from !== "string" || typeof rename.to !== "string" || rename.table.length === 0 || rename.from.length === 0 || rename.to.length === 0 || !exactKeys(rename, ["from", "table", "to"])) {
+      return fail(path, `renames[${index}] must have string table, from, and to values.`);
+    }
+    renames.push({ table: rename.table, from: rename.from, to: rename.to });
+  }
+  return { drops, renames };
 }
 
 export function readMigrationIntent(path: string): MigrationIntent {

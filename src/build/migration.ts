@@ -20,11 +20,12 @@ export type View = { name: string; sql: string };
 export type Virtual = { name: string; sql: string };
 export type Schema = { tables: Map<string, Table>; indexes: Map<string, Index>; triggers: Map<string, Trigger>; views: Map<string, View>; virtuals: Map<string, Virtual> };
 export type Rename = { table: string; from: string; to: string };
+export type RenameRepair = { table: string; from: string[]; to: string[] };
 // A drop names the SQLite object by its logical name, not by SQL text. This
 // keeps a dot in a quoted identifier as one name instead of a table/column
 // separator. The CLI writes the SQL spelling only for its diagnostic.
 export type DropIntent = { kind: "table"; table: string } | { kind: "column"; table: string; column: string };
-export type Plan = { kind: "ok"; statements: string[] } | { kind: "blocked"; reason: string; drops?: DropIntent[] };
+export type Plan = { kind: "ok"; statements: string[] } | { kind: "blocked"; reason: string; drops?: DropIntent[]; renames?: Rename[]; renameCandidates?: RenameRepair[] };
 
 export function open(statements: readonly string[]): DatabaseSync {
   const db = new DatabaseSync(":memory:");
@@ -136,7 +137,7 @@ function renamedCreate(sql: string, newName: string): string {
   return sql.replace(/^(\s*create\s+table\s+(?:if\s+not\s+exists\s+)?)("(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]|[^\s(]+)/i, `$1${quoteIdent(newName)}`);
 }
 
-function tableStatements(current: Table, target: Table, renames: readonly Rename[], keptIndexes: readonly string[]): Plan & { rebuilt?: boolean } {
+function tableStatements(current: Table, target: Table, renames: readonly Rename[], drops: readonly DropIntent[], keptIndexes: readonly string[]): Plan & { rebuilt?: boolean } {
   const statements: string[] = [];
   const currentColumns = new Map(current.columns.map((c) => [c.name, c]));
   let currentAlias = current.rowidAlias;
@@ -153,11 +154,12 @@ function tableStatements(current: Table, target: Table, renames: readonly Rename
   const targetNames = new Set(target.columns.map((c) => c.name));
   const removed = [...currentColumns.keys()].filter((n) => !targetNames.has(n));
   const added = target.columns.filter((c) => !currentColumns.has(c.name)).map((c) => c.name);
-  if (removed.length > 0 && added.length > 0) {
+  const unreviewedRemoved = removed.filter(column => !drops.some(drop => drop.kind === "column" && drop.table === current.name && drop.column === column));
+  if (unreviewedRemoved.length > 0 && added.length > 0) {
     return {
       kind: "blocked",
       reason:
-        `table ${current.name}: columns [${removed.join(", ")}] removed and [${added.join(", ")}] added in one change. ` +
+        `table ${current.name}: columns [${unreviewedRemoved.join(", ")}] removed and [${added.join(", ")}] added in one change. ` +
         `Declare a rename if the data must move, or split the change into two migrations.`,
     };
   }
@@ -306,6 +308,81 @@ function dropIntentPlan(required: readonly DropIntent[], supplied: readonly Drop
   return null;
 }
 
+function renameKey(rename: Rename): string {
+  return `${rename.table}\u0000${rename.from}\u0000${rename.to}`;
+}
+
+// Validate declarations before the diff mutates a working column map. A
+// declaration must describe one source that disappears and one target that
+// appears. This rejects a declaration that would otherwise turn a drop and an
+// add into an accidental copy.
+function renameIntentPlan(current: Schema, target: Schema, renames: readonly Rename[]): Plan | null {
+  const exact = new Set<string>();
+  for (const rename of renames) {
+    const key = renameKey(rename);
+    if (exact.has(key)) return { kind: "blocked", reason: `rename intent repeats ${quoteIdent(rename.table)}.${quoteIdent(rename.from)} -> ${quoteIdent(rename.to)}. Supply each rename once.` };
+    exact.add(key);
+  }
+  for (const rename of renames) {
+    if (renames.some(other => other !== rename && other.table === rename.table && other.from === rename.to)) {
+      return { kind: "blocked", reason: `rename intent chains through ${quoteIdent(rename.table)}.${quoteIdent(rename.to)}. Split it into separate migrations.` };
+    }
+  }
+  const from = new Map<string, Rename>();
+  const to = new Map<string, Rename>();
+  for (const rename of renames) {
+    if (rename.from === rename.to) return { kind: "blocked", reason: `rename intent ${quoteIdent(rename.table)}.${quoteIdent(rename.from)} -> ${quoteIdent(rename.to)} does not change a column.` };
+    const table = current.tables.get(rename.table);
+    const targetTable = target.tables.get(rename.table);
+    if (!table || !targetTable) return { kind: "blocked", reason: `rename intent ${quoteIdent(rename.table)}.${quoteIdent(rename.from)} -> ${quoteIdent(rename.to)} has a missing source or target table.` };
+    const sourceColumns = new Set(table.columns.map(column => column.name));
+    const targetColumns = new Set(targetTable.columns.map(column => column.name));
+    if (!sourceColumns.has(rename.from)) return { kind: "blocked", reason: `rename intent ${quoteIdent(rename.table)}.${quoteIdent(rename.from)} -> ${quoteIdent(rename.to)} has a missing source column.` };
+    if (!targetColumns.has(rename.to)) return { kind: "blocked", reason: `rename intent ${quoteIdent(rename.table)}.${quoteIdent(rename.from)} -> ${quoteIdent(rename.to)} has a missing target column.` };
+    if (sourceColumns.has(rename.to)) return { kind: "blocked", reason: `rename intent ${quoteIdent(rename.table)}.${quoteIdent(rename.from)} -> ${quoteIdent(rename.to)} conflicts with an existing source column.` };
+    if (targetColumns.has(rename.from)) return { kind: "blocked", reason: `rename intent ${quoteIdent(rename.table)}.${quoteIdent(rename.from)} -> ${quoteIdent(rename.to)} is unused because its source remains in the target schema.` };
+    const fromKey = `${rename.table}\u0000${rename.from}`;
+    const toKey = `${rename.table}\u0000${rename.to}`;
+    if (from.has(fromKey) || to.has(toKey)) return { kind: "blocked", reason: `rename intent conflicts at ${quoteIdent(rename.table)}.${quoteIdent(rename.from)} -> ${quoteIdent(rename.to)}.` };
+    from.set(fromKey, rename);
+    to.set(toKey, rename);
+  }
+  return null;
+}
+
+// A table with both a disappearing and an appearing column needs a rename
+// map. A singleton pair is safe to print as a ready-to-use intent. Larger
+// sets remain candidates because the generator cannot choose their mapping.
+function renameRepairPlan(current: Schema, target: Schema, renames: readonly Rename[], drops: readonly DropIntent[]): Plan | null {
+  const required = new Set(requiredDrops(current, target, renames).map(dropKey));
+  const candidates: RenameRepair[] = [];
+  for (const [name, table] of current.tables) {
+    const targetTable = target.tables.get(name);
+    if (!targetTable) continue;
+    const source = new Set(table.columns.map(column => column.name));
+    for (const rename of renames.filter(rename => rename.table === name)) {
+      source.delete(rename.from);
+      source.add(rename.to);
+    }
+    const targetNames = new Set(targetTable.columns.map(column => column.name));
+    // A reviewed exact column drop is not a rename source. An unmatched or
+    // duplicate entry stays visible here and later fails drop validation.
+    const removed = [...source].filter(column => !targetNames.has(column) && !drops.some(drop => drop.kind === "column" && drop.table === name && drop.column === column && required.has(dropKey(drop))));
+    const added = [...targetNames].filter(column => !source.has(column));
+    if (removed.length > 0 && added.length > 0) candidates.push({ table: name, from: removed, to: added });
+  }
+  if (candidates.length === 0) return null;
+  const exact = candidates.every(candidate => candidate.from.length === 1 && candidate.to.length === 1)
+    ? candidates.map(candidate => ({ table: candidate.table, from: candidate.from[0]!, to: candidate.to[0]! })) : undefined;
+  const detail = candidates.map(candidate => `table ${candidate.table}: columns [${candidate.from.join(", ")}] removed and [${candidate.to.join(", ")}] added in one change`).join("; ");
+  return {
+    kind: "blocked",
+    reason: `${detail}. Declare a rename if the data must move, or split the change into two migrations.`,
+    ...(exact ? { renames: exact } : {}),
+    renameCandidates: candidates,
+  };
+}
+
 export function diff(current: Schema, target: Schema, renames: readonly Rename[] = [], drops: readonly DropIntent[] = []): Plan {
   // Order: drop views, drop triggers and indexes, drop tables, change
   // tables, create indexes, views, and triggers. An index that names a
@@ -321,6 +398,10 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
   const rebuilt = new Set<string>();
   let needsDefer = false;
 
+  const renameIntent = renameIntentPlan(current, target, renames);
+  if (renameIntent) return renameIntent;
+  const renameRepair = renameRepairPlan(current, target, renames, drops);
+  if (renameRepair) return renameRepair;
   const intent = dropIntentPlan(requiredDrops(current, target, renames), drops);
   if (intent) return intent;
 
@@ -373,7 +454,7 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
       continue;
     }
     if (same(tableShape(current_), tableShape(target_))) continue;
-    const plan = tableStatements(current_, target_, renames, keptIndexes.get(name) ?? []);
+    const plan = tableStatements(current_, target_, renames, drops, keptIndexes.get(name) ?? []);
     if (plan.kind === "blocked") return plan;
     if (plan.rebuilt) {
       // DROP TABLE runs foreign-key delete actions even when checks are
