@@ -76,6 +76,10 @@ Other expressions need `cast(... as integer | real | text)`.
 | `INTERSECT` or `EXCEPT` | the left input's types |
 | `RIGHT JOIN` or `FULL JOIN` | source types with nullability for each side that can be absent |
 
+A JSON constructor must span the complete expression, with supported FILTER or OVER clauses for an aggregate.
+An enclosing scalar expression such as `length(json_object(...))` needs an explicit CAST.
+The CAST result keeps its scalar type and skips JSON decoding.
+
 Inside JSON constructors, a BLOB or flexible storage value has the recursive `JsonValue` type.
 SQLite can decode valid JSONB into objects, arrays, scalars, or null.
 Invalid binary content can still cause a SQLite error.

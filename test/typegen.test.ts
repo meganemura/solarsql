@@ -412,3 +412,36 @@ test('BLOB literal types preserve engine values across query scopes', async () =
     assert.deepEqual(JSON.parse(engine.db.prepare(sql).get()!.result as string),{value:{data:[true,null]}});
   }finally{engine.close();}
 });
+
+test('JSON decoding follows the complete expression and explicit scalar casts', async () => {
+  const {test:property}=await import('@hegeldev/hegel');
+  const gs=await import('@hegeldev/hegel/generators');
+  const {parseJson}=await import('../src/runtime/plan.ts');
+  const engine=new Engine([]);
+  try {
+    property(tc=>{
+      const n=tc.draw(gs.integers({minValue:-100000,maxValue:100000}));
+      const json=`json_object('value',${n})`;
+      const [expr,type]=tc.draw(gs.sampledFrom([
+        [`length(${json})`,'integer'],[`${json} = '{}'`,'integer'],[`${json} || 'suffix'`,'text'],
+        [`substr(${json},1,2)`,'text'],[`case when 1 then ${json} else '{}' end`,'text'],
+      ]));
+      const sql=`select ${expr} as value`;
+      engine.db.prepare(sql).get();
+      assert.throws(()=>new Typer(engine,new Map()).analyze(sql,''),/cast/);
+      assert.throws(()=>new Typer(engine,new Map()).analyze(`select json_group_array(${expr}) as value`,''),/cast/);
+      const cast=`select cast(${expr} as ${type}) as value`;
+      const analysis=new Typer(engine,new Map()).analyze(cast,'');
+      assert.deepEqual(analysis.columns,[{name:'value',type:type==='integer'?'number | null':'string | null',json:false}]);
+      const actual=engine.db.prepare(cast).get()!;
+      assert.deepEqual(parseJson([actual],analysis.columns.filter(c=>c.json).map(c=>c.name),'native'),[{...actual}]);
+    },{testCases:1000});
+    for(const expr of ["json_group_array(json_object('value',1)) filter(where 1) over ()","coalesce(json_group_array(json_object('value',1)) filter(where 1), '[]')","(json_group_array(json_object('value',1)))"]) {
+      const sql=`select ${expr} as value`;
+      assert.deepEqual(new Typer(engine,new Map()).analyze(sql,'').columns,[{name:'value',type:'Array<{ "value": number }>',json:true}]);
+      assert.deepEqual(JSON.parse(engine.db.prepare(sql).get()!.value as string),[{value:1}]);
+    }
+    assert.throws(()=>new Typer(engine,new Map()).analyze("select json_object('value',json((select json_group_array(1))) || 'x')",''),/cast/);
+    assert.throws(()=>new Typer(engine,new Map()).analyze("select json_object('value',json((select length(json_group_array(1)))))",''),/cast/);
+  }finally{engine.close();}
+});

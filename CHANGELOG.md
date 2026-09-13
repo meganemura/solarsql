@@ -4,6 +4,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: JSON decoding and result types follow complete expressions instead of nested function calls (ADR 0076).
+
 - Added: BLOB literal types through query scopes without SQL rewriting (ADR 0075).
 
 - Fixed: JSON constructors expose decoded JSONB and flexible storage as `JsonValue` instead of binary values (ADR 0074).

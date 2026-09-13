@@ -429,15 +429,12 @@ export class Typer {
       const joinNull = unresolved || (alias !== null && nullableAliases.has(alias));
       return { name: out.name, type: r.nullable || joinNull ? `${r.type} | null` : r.type, json: false };
     }
-    // The outer JSON call is the one that starts first in the text; the
-    // other may sit inside it, or inside a subquery of it.
-    const array = item && !/^cast\s*\(/i.test(item.expr) ? findCall(item.expr, "json_group_array") : null;
-    const object = item && !/^cast\s*\(/i.test(item.expr) ? findCall(item.expr, "json_object") : null;
-    if (item && array && (!object || array.open < object.open)) {
-      return { name: out.name, type: this.jsonArrayType(sql, item, aliases, nullableAliases, note, scope), json: true };
+    const json = item ? jsonExpression(item.expr) : null;
+    if (item && json?.kind === "array") {
+      return { name: out.name, type: this.jsonArrayType(sql, { ...item, expr: json.expr }, aliases, nullableAliases, note, scope), json: true };
     }
-    if (item && object) {
-      return { name: out.name, type: this.jsonObjectType(sql, item.expr, item, aliases, nullableAliases, note, false, scope), json: true };
+    if (item && json?.kind === "object") {
+      return { name: out.name, type: this.jsonObjectType(sql, json.expr, item, aliases, nullableAliases, note, false, scope), json: true };
     }
     const affinity = affinities.get(out.name) ?? "";
     const scalar = affinityType(affinity);
@@ -497,7 +494,7 @@ export class Typer {
     // A FILTER clause alone does not prove that it removes the join rows.
     const excludedAlias = nonNullFilterAlias(item.expr.slice(call.close));
     const insideNullable = new Set([...nullableAliases].filter((a) => a !== excludedAlias));
-    if (findCall(inner, "json_object")) return `Array<${this.jsonObjectType(sql, inner, item, aliases, insideNullable, note, true, scope)}>`;
+
     const element = jsonResultType(this.valueType(sql, inner, aliases, insideNullable, note, scope));
     return `Array<${element}>`;
   }
@@ -543,7 +540,11 @@ export class Typer {
   // query, a `json((select json_group_array(...) ...))` subquery through
   // its own analysis, and anything else is an error.
   private valueType(sql: string, expr: string, aliases: Map<string, string | null>, nullableAliases: Set<string>, note: (r: Resolved) => Resolved, scope?: ScopeContext): string {
-    const literal = literalType(stripParens(expr));
+    expr = stripParens(expr);
+    const shape = jsonExpression(expr);
+    if (shape?.kind === "object") return this.jsonObjectType(sql, shape.expr, { text: expr }, aliases, nullableAliases, note, false, scope);
+    if (shape?.kind === "array") return this.jsonArrayType(sql, { expr: shape.expr, text: expr }, aliases, nullableAliases, note, scope);
+    const literal = literalType(expr);
     if (literal !== null) return literal;
     const nested = this.nestedJsonType(sql, expr, aliases, note, scope);
     if (nested !== null) return nested;
@@ -576,16 +577,17 @@ export class Typer {
   // call is required: a subquery's text has no JSON subtype, so without it
   // the array would nest as a string.
   private nestedJsonType(sql: string, expr: string, aliases: Map<string, string | null>, note: (r: Resolved) => Resolved, scope?: ScopeContext): string | null {
-    const bare = /^\(\s*select\b/i.test(expr.trim());
-    const call = findCall(expr, "json");
-    const wrapped = call !== null && /^\s*json\s*\(/i.test(expr) && call.args.length === 1 && /^\(\s*select\b/i.test(call.args[0]!.text.trim());
+    const bare = /^select\b/i.test(stripParens(expr));
+    const call = completeCall(expr, "json");
+    const wrapped = call !== null && call.args.length === 1 && /^select\b/i.test(stripParens(call.args[0]!.text));
     if (!bare && !wrapped) return null;
-    const subquery = (wrapped ? call!.args[0]!.text : expr).trim().replace(/^\(/, "").replace(/\)$/, "");
+    const subquery = stripParens(wrapped ? call!.args[0]!.text : expr);
     const items = selectItems(subquery);
     if (!items || items.length !== 1) throw new BuildError(`a subquery inside json must select one value, got ${items?.length ?? 0}`, sql);
     const item = items[0]!;
-    const isArray = findCall(item.expr, "json_group_array") !== null;
-    const isObject = !isArray && findCall(item.expr, "json_object") !== null;
+    const shape = jsonExpression(item.expr);
+    const isArray = shape?.kind === "array";
+    const isObject = shape?.kind === "object";
     if (!isArray && !isObject) return null;
     if (!wrapped) throw new BuildError(`the subquery "${expr}" inside json yields JSON text. Wrap it in json(...) so it nests as JSON, not as a string.`, sql);
     if (scope) {
@@ -835,5 +837,41 @@ function literalType(expr: string): string | null {
   // aliases and separated tokens from acquiring a binary result contract.
   if (tokens.length === 2 && /^[xX]$/.test(tokens[0]!.text) && tokens[0]!.end === tokens[1]!.start && /^'(?:[0-9a-fA-F]{2})*'$/.test(tokens[1]!.text)) return "Uint8Array";
   if (tokens.length === 2 && ["-", "+"].includes(tokens[0]!.text) && tokens[1]!.type === "number") return "number";
+  return null;
+}
+
+// A nested function cannot define its enclosing expression's decoding policy.
+// SQLite validates clause syntax; this check only verifies the call's boundary.
+function completeCall(expr: string, name: string, aggregate = false): ReturnType<typeof findCall> {
+  const tokens = significant(tokenize(expr));
+  if (!isKeyword(tokens[0], name) || tokens[1]?.text !== "(") return null;
+  const call = findCall(expr, name);
+  if (!call || call.open !== tokens[1].start) return null;
+  let i = tokens.findIndex(token => token.start === call.close) + 1;
+  while (aggregate && i < tokens.length) {
+    const over = isKeyword(tokens[i], "over");
+    if (!over && !isKeyword(tokens[i], "filter")) return null;
+    i++;
+    if (tokens[i]?.text === "(") {
+      const depth = tokens[i]!.depth;
+      i++;
+      while (tokens[i] && !(tokens[i]!.text === ")" && tokens[i]!.depth === depth)) i++;
+      if (!tokens[i]) return null;
+      i++;
+    } else if (over && tokens[i]?.type === "ident") i++;
+    else return null;
+  }
+  return i === tokens.length ? call : null;
+}
+
+function jsonExpression(input: string): { kind: "array" | "object"; expr: string } | null {
+  const expr = stripParens(input);
+  if (completeCall(expr, "json_object")) return { kind: "object", expr };
+  if (completeCall(expr, "json_group_array", true)) return { kind: "array", expr };
+  const fallback = completeCall(expr, "coalesce");
+  if (fallback?.args.length === 2 && stripParens(fallback.args[1]!.text) === "'[]'") {
+    const shape = jsonExpression(fallback.args[0]!.text);
+    if (shape?.kind === "array") return shape;
+  }
   return null;
 }
