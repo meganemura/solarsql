@@ -12,6 +12,7 @@ import { aliasMap, columnRef, findCall, isKeyword, leadingComment, namedParams, 
 
 export class BuildError extends Error {
   readonly sql: string | undefined;
+  readonly locations: string[] = [];
   constructor(message: string, sql?: string) {
     super(sql === undefined ? message : `${message}\n  in: ${sql.replace(/\s+/g, " ").trim()}`);
     this.name = "BuildError";

@@ -141,3 +141,36 @@ test("a DDL-only nullability change updates types before its migration", (t) => 
   assert.equal(f.run("migration", "updated_at_required").status, 0);
   assert.equal(f.run("build", "--check").status, 0);
 });
+
+test('inspect reports contracts, sources and effects without modifying files', t => {
+  const f = fixture(t);
+  const before = snapshot(f.dir);
+  const inspected = f.run('inspect');
+  assert.equal(inspected.status, 0, inspected.stderr);
+  const report = JSON.parse(inspected.stdout);
+  assert.equal(report.version, 1);
+  assert.equal(report.contract.deploymentVerified, false);
+  const operations = report.result.inspection.operations as { sql: string; locations: string[]; columns: unknown[]; accesses: { action: string; table: string }[] }[];
+  assert.ok(operations.some(o => o.locations.some(l => l.includes('orderQueries.byId')) && o.columns.length > 0));
+  assert.ok(operations.some(o => o.accesses.some(a => a.action === 'update' && a.table === 'orders')));
+  assert.deepEqual(snapshot(f.dir), before);
+  f.edit('update orders set note = :note where id = :id', "update orders set note = :note where id = :id and status = 'draft'");
+  const stale = f.run('inspect');
+  assert.equal(stale.status, 1);
+  assert.ok(JSON.parse(stale.stdout).diagnostics.some((d: { code: string }) => d.code === 'GENERATED_STALE'));
+});
+
+test('JSON failures retain SQL and source locations', t => {
+  const f = fixture(t);
+  f.edit('update orders set note = :note where id = :id', 'update orders set unknown_field = :note where id = :id');
+  const before = snapshot(f.dir);
+  for (const args of [['inspect'], ['build', '--check', '--json']]) {
+    const result = f.run(...args);
+    assert.equal(result.status, 1);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.diagnostics[0].code, 'BUILD_FAILED');
+    assert.match(report.diagnostics[0].sql, /unknown_field/);
+    assert.ok(report.diagnostics[0].locations.some((l: string) => l.includes('module.ts')));
+  }
+  assert.deepEqual(snapshot(f.dir), before);
+});

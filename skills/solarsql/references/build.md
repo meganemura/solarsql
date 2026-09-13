@@ -101,3 +101,15 @@ A statement that does not prepare fails with the engine's own message, such as `
 ## For an agent working in a project
 
 Point the project's AGENTS.md at `node_modules/solarsql/skills/solarsql/SKILL.md`; the package ships this skill.
+
+## Inspect an operation contract
+
+Run `npx solarsql inspect solarsql.config.ts` for JSON with format `version: 1`.
+`result.inspection.operations` lists each SQL string, its catalog locations, parameter and result types, column origins, and engine access records.
+Types combine engine metadata with static scope and expression rules. Column origins are evidence, not a complete proof of the result type.
+The report identifies the local SQLite version and states that deployment compatibility was not verified.
+
+Inspection writes no build artifacts. Configuration and module imports still execute application JavaScript; inspection is not a sandbox.
+A missing generated file requires a build first. A stale file or pending migration produces exit 1 and diagnostics with a recovery action.
+`build --json` provides machine-readable generation results; combine it with `--check` for verification.
+`BUILD_FAILED` preserves the error message, SQL when available, and catalog locations when available.

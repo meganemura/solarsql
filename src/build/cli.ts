@@ -13,6 +13,8 @@ import { BuildError } from "./typegen.ts";
 const usage = `usage:
   solarsql build [solarsql.config.ts]
   solarsql build --check [solarsql.config.ts]   writes nothing; exit 1 when a generated file or a migration is stale
+  solarsql inspect [solarsql.config.ts]        JSON contracts, accesses and freshness; writes no build artifacts
+  solarsql build --json [solarsql.config.ts]   machine-readable generation result (combine with --check)
   solarsql migration <name> [solarsql.config.ts]
   solarsql init <module> [dir]                  writes solarsql.config.ts and modules/<module>/, then builds and writes the first migration`;
 
@@ -23,11 +25,25 @@ function oneLine(sql: string): string {
 
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
-  if (command === "build") {
-    const check = rest.includes("--check");
-    const args = rest.filter((a) => a !== "--check");
+  if (command === "build" || command === "inspect") {
+    const inspect = command === "inspect";
+    const check = inspect || rest.includes("--check");
+    const json = inspect || rest.includes("--json");
+    const args = rest.filter((a) => a !== "--check" && a !== "--json");
+    if (args.length > 1 || args.some(a => a.startsWith("--"))) throw new BuildError("Unexpected build argument. Use solarsql inspect [config] or solarsql build [--check] [--json] [config].");
     const configArgument = args[0] === undefined ? "" : ` ${shellArgument(args[0])}`;
-    const result = await build(args[0] ?? "solarsql.config.ts", { write: !check });
+    const result = await build(args[0] ?? "solarsql.config.ts", { write: !check, inspect });
+    if (json) {
+      const diagnostics = [
+        ...(check && (result.modules.some(m => m.changed) || result.index.changed) ? [{ code: "GENERATED_STALE", action: `npx solarsql build${configArgument}` }] : []),
+        ...(result.migration.pending ? [{ code: result.migration.reason ? "MIGRATION_BLOCKED" : "MIGRATION_PENDING", message: result.migration.reason,
+          action: result.migration.reason ? "Write a manual migration and run build." : `npx solarsql migration <name>${configArgument}` }] : []),
+      ];
+      const ok = !check || diagnostics.length === 0;
+      console.log(JSON.stringify({ version: 1, ok, mode: inspect ? "inspect" : check ? "check" : "build", diagnostics,
+        contract: { types: "engine-metadata-and-static-inference", execution: "local-node-sqlite", imports: "application-modules-execute", deploymentVerified: false }, result }));
+      return ok ? 0 : 1;
+    }
     for (const m of result.modules) {
       console.log(`${m.changed ? (check ? "stale  " : "wrote  ") : "current"} ${m.generatedPath} (${m.entries} statements, ${m.ms}ms)`);
       for (const k of m.added) console.log(`  + ${oneLine(k)}`);
@@ -94,7 +110,8 @@ async function main(argv: string[]): Promise<number> {
 main(process.argv.slice(2)).then(
   (code) => process.exit(code),
   (e) => {
-    if (e instanceof BuildError) console.error(`error: ${e.message}`);
+    if (process.argv.includes("--json") || ["inspect"].includes(process.argv[2] ?? "")) console.log(JSON.stringify({ version: 1, ok: false, diagnostics: [{ code: "BUILD_FAILED", message: e instanceof Error ? e.message : String(e), sql: e instanceof BuildError ? e.sql : undefined, locations: e instanceof BuildError ? e.locations : [] }] }));
+    else if (e instanceof BuildError) console.error(`error: ${e.message}`);
     else console.error(e);
     process.exit(1);
   },

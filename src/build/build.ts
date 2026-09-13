@@ -11,7 +11,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Command, Config, Index, ModuleConfig, PlanItem, Query, Search, Table, Trigger, View } from "../index.ts";
 import { GUARD_DDL, GUARD_TABLE, assertStatement } from "../runtime/plan.ts";
 import { GENERATED_FILE, emitGenerated, emitMigrationsIndex, emitStub } from "./emit.ts";
-import { Engine } from "./facts.ts";
+import { Engine, type Access, type OutputColumn } from "./facts.ts";
 import { applied, diff, introspect, open, render } from "./migration.ts";
 import { created, indexTarget, quoteIdent, triggerTarget } from "./scan.ts";
 import { shellArgument } from "./shell.ts";
@@ -46,9 +46,22 @@ export type BuildOptions = {
   // false: write nothing, and report what a build would change. For CI
   // and for a test hook, through `solarsql build --check`. Default true.
   write?: boolean;
+  inspect?: boolean;
+};
+
+export type OperationInspection = {
+  module: string;
+  sql: string;
+  locations: readonly string[];
+  params: Analysis["params"];
+  columns: Analysis["columns"];
+  origins: OutputColumn[];
+  accesses: Access[];
+  reads: string[];
 };
 
 export type BuildResult = {
+  inspection?: { sqlite: string; operations: OperationInspection[] };
   // Per module: the statements this build added to and removed from the
   // generated file, so the CLI can say what changed.
   modules: { name: string; generatedPath: string; entries: number; changed: boolean; added: string[]; removed: string[]; ms: number }[];
@@ -320,6 +333,7 @@ export async function build(configPath: string, options: BuildOptions = {}): Pro
     const results: BuildResult["modules"] = [];
     const scans: BuildResult["scans"] = [];
     const reads: BuildResult["reads"] = [];
+    const operations: OperationInspection[] = [];
 
     for (const m of modules) {
       const entries: { key: string; analysis: Analysis }[] = [];
@@ -346,6 +360,12 @@ export async function build(configPath: string, options: BuildOptions = {}): Pro
         for (const query of m.queries) reads.push({ module: m.name, query: query.name, tables: analysisBySql.get(query.sql)!.reads });
       }
       checkCommands(m, entries);
+      if (options.inspect) {
+        for (const { key, analysis } of entries) {
+          operations.push({ module: m.name, sql: key, locations: m.statementUses.get(key)!, params: analysis.params,
+            columns: analysis.columns, origins: engine.columns(analysis.sql), accesses: engine.accesses(analysis.sql), reads: analysis.reads });
+        }
+      }
       const importedBrands = new Map<string, string[]>();
       for (const b of used) {
         const from = brandModule.get(b);
@@ -374,7 +394,8 @@ export async function build(configPath: string, options: BuildOptions = {}): Pro
 
     const migration = migrationStatus(configDir, config, modules);
     const index = migrationsIndex(resolve(configDir, config.migrations), write);
-    return { modules: results, migration, index, scans, reads, ms: Math.round(performance.now() - buildStarted) };
+    const inspection = options.inspect ? { sqlite: String(engine.db.prepare("select sqlite_version() as version").get()!.version), operations } : undefined;
+    return { modules: results, migration, index, scans, reads, ms: Math.round(performance.now() - buildStarted), ...(inspection ? { inspection } : {}) };
   } finally {
     engine.close();
   }
@@ -533,6 +554,7 @@ function checkCommands(m: Module, entries: readonly { key: string; analysis: Ana
 function withLocations(error: unknown, locations: readonly string[], sql?: string): BuildError {
   const diagnostic = error instanceof BuildError ? error : new BuildError(error instanceof Error ? error.message : String(error), sql);
   diagnostic.message += `\n  at: ${locations.join("\n  at: ")}`;
+  diagnostic.locations.push(...locations);
   return diagnostic;
 }
 
