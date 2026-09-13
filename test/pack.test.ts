@@ -83,6 +83,13 @@ test("npm pack, install, and run the CLI from node_modules", { timeout: 180_000 
       assert.equal(timed.report.diagnostics[0]!.code, "BUILD_TIMEOUT");
       assert.equal(timed.report.diagnostics[0]!.timeoutMs, 500);
     }
+    for (const args of [["build"], ["build", "--check"], ["migration", "deadline_test"]]) {
+      const timed = spawnSync(cli, [...args, "--timeout-ms", "500", hanging], { cwd: join(dir, "consumer"), encoding: "utf8", timeout: 10_000 });
+      assert.ifError(timed.error);
+      assert.equal(timed.status, 1, timed.stderr);
+      assert.match(timed.stderr, /packed deadline import/);
+      assert.match(timed.stderr, /exceeded its 500ms time budget/);
+    }
     const invalid = "invalid-timeout.config.ts";
     writeFileSync(join(dir, "consumer", invalid), "console.error('packed invalid deadline import'); throw new Error('invalid deadline imported');\n");
     for (const args of [["inspect"], ["build", "--json"]]) {
@@ -92,11 +99,99 @@ test("npm pack, install, and run the CLI from node_modules", { timeout: 180_000 
       assert.equal(rejected.report.diagnostics[0]!.code, "BUILD_FAILED");
       assert.match(rejected.report.diagnostics[0]!.message!, /requires an integer/);
     }
+    for (const args of [["build"], ["build", "--check"], ["migration", "deadline_test"]]) {
+      const rejected = spawnSync(cli, [...args, "--timeout-ms", "0", invalid], { cwd: join(dir, "consumer"), encoding: "utf8", timeout: 10_000 });
+      assert.ifError(rejected.error);
+      assert.equal(rejected.status, 1);
+      assert.doesNotMatch(rejected.stderr, /packed invalid deadline import/);
+      assert.match(rejected.stderr, /requires an integer/);
+    }
+    for (const args of [["build", "--check"], ["migration", "deadline_test"]]) {
+      const result = spawnSync(cli, [...args, "--timeout-ms", "60000", "example/solarsql.config.ts"], { cwd: join(dir, "consumer"), encoding: "utf8", timeout: 10_000 });
+      assert.ifError(result.error);
+      assert.equal(result.status, 0, result.stderr);
+    }
 
     // The generated file names the package, and is otherwise the committed one.
     const generated = readFileSync(join(dir, "consumer/example/modules/orders/solarsql.generated.ts"), "utf8");
     const committed = readFileSync(join(root, "example/modules/orders/solarsql.generated.ts"), "utf8");
     assert.equal(generated, committed.replace('from "../../../src/index.ts"', 'from "solarsql"'));
+
+    const preload = join(dir, "consumer", "stop-after-atomic-write.mjs");
+    writeFileSync(preload, [
+      'import fs from "node:fs";',
+      'import { syncBuiltinESMExports } from "node:module";',
+      "const rename = fs.renameSync;",
+      'fs.renameSync = (from, to) => {',
+      '  if (String(to).endsWith(process.env.SOLARSQL_TEST_BLOCK_TARGET ?? "")) {',
+      '    console.error("atomic replacement started: " + to);',
+      '    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);',
+      "  }",
+      "  return rename(from, to);",
+      "};",
+      "syncBuiltinESMExports();",
+    ].join("\n"));
+    const atomicRun = (target: string, args: string[]) => spawnSync(cli, args, {
+      cwd: join(dir, "consumer"), encoding: "utf8", timeout: 10_000,
+      env: { ...process.env, NODE_OPTIONS: "--import=" + preload, SOLARSQL_TEST_BLOCK_TARGET: target },
+    });
+    const module = join(dir, "consumer/example/modules/orders/module.ts");
+    const moduleBefore = readFileSync(module, "utf8");
+    writeFileSync(module, moduleBefore.replace("update orders set note = :note where id = :id", "update orders set note = :note where id = :id and status = 'draft'"));
+    const generatedPath = join(dir, "consumer/example/modules/orders/solarsql.generated.ts");
+    const generatedBefore = readFileSync(generatedPath, "utf8");
+    const outputTimeout = atomicRun("solarsql.generated.ts", ["build", "--timeout-ms", "500", "example/solarsql.config.ts"]);
+    assert.ifError(outputTimeout.error);
+    assert.equal(outputTimeout.status, 1, outputTimeout.stderr);
+    assert.match(outputTimeout.stderr, /atomic replacement started/);
+    assert.equal(readFileSync(generatedPath, "utf8"), generatedBefore);
+    const generatedTemporary = readdirSync(join(dir, "consumer/example/modules/orders"))
+      .filter(name => /^\.solarsql\.generated\.ts\.\d+\.[0-9a-f]+\.tmp$/.test(name));
+    assert.equal(generatedTemporary.length, 1);
+    assert.match(readFileSync(join(dir, "consumer/example/modules/orders", generatedTemporary[0]!), "utf8"), /status = 'draft'/);
+
+    const index = join(dir, "consumer/example/migrations/index.ts");
+    const indexBefore = readFileSync(index, "utf8");
+    writeFileSync(module, readFileSync(module, "utf8")
+      .replace("updated_at text\n", "updated_at text,\n    placed_at integer not null default 0\n")
+      .replace("select id, note, updated_at from orders", "select id, note, updated_at, placed_at from orders"));
+    const configPath = join(dir, "consumer/example/solarsql.config.ts");
+    const forged = join(dir, "consumer/forged-lock");
+    writeFileSync(configPath, [
+      "const originalSend = process.send?.bind(process);",
+      "process.on(\"message\", message => {",
+      "  const value = message as { protocol?: string; token?: string; type?: string };",
+      "  if (value.type === \"migration-lock-ack\") originalSend?.({ protocol: value.protocol, token: value.token, type: \"migration-lock\", nonce: \"forged\", path: " + JSON.stringify(forged) + " });",
+      "});",
+      'Object.defineProperty(process, "send", { value: () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0) });',
+      "",
+    ].join("\n") + readFileSync(configPath, "utf8"));
+    const migrationTimeout = atomicRun("migrations/index.ts", ["migration", "atomic_timeout", "--timeout-ms", "500", "example/solarsql.config.ts"]);
+    const lock = join(dir, "consumer/example/migrations/.solarsql-generation.lock");
+    assert.ifError(migrationTimeout.error);
+    assert.equal(migrationTimeout.status, 1, migrationTimeout.stderr);
+    assert.match(migrationTimeout.stderr, /atomic replacement started/);
+    assert.match(migrationTimeout.stderr, new RegExp(lock.replace(/[.*+?^\${}()|[\]\\]/g, "\\$&")));
+    assert.doesNotMatch(migrationTimeout.stderr, new RegExp(forged.replace(/[.*+?^\${}()|[\]\\]/g, "\\$&")));
+    assert.match(migrationTimeout.stderr, /remove it only after this worker has stopped/);
+    assert.doesNotMatch(migrationTimeout.stderr, /current/);
+    assert.ok(existsSync(lock));
+    assert.equal(readFileSync(index, "utf8"), indexBefore);
+    const indexTemporary = readdirSync(join(dir, "consumer/example/migrations"))
+      .filter(name => /^\.index\.ts\.\d+\.[0-9a-f]+\.tmp$/.test(name));
+    assert.equal(indexTemporary.length, 1);
+    assert.match(readFileSync(join(dir, "consumer/example/migrations", indexTemporary[0]!), "utf8"), /atomic_timeout/);
+    writeFileSync(module, moduleBefore);
+    writeFileSync(generatedPath, generatedBefore);
+    writeFileSync(index, indexBefore);
+    for (const name of [...generatedTemporary, ...indexTemporary]) {
+      const parent = name.startsWith(".index") ? join(dir, "consumer/example/migrations") : join(dir, "consumer/example/modules/orders");
+      rmSync(join(parent, name));
+    }
+    rmSync(lock);
+    for (const name of readdirSync(join(dir, "consumer/example/migrations"))) {
+      if (name.endsWith("_atomic_timeout.sql")) rmSync(join(dir, "consumer/example/migrations", name));
+    }
 
     const imported = spawnSync(process.execPath, ["-e", 'import("solarsql/d1").then((m) => console.log(typeof m.d1)); import("solarsql/durable").then((m) => console.log(typeof m.migrate)); import("solarsql/node").then((m) => console.log(typeof m.node)); import("solarsql").then((m) => console.log(typeof m.newId));'], {
       cwd: join(dir, "consumer"),

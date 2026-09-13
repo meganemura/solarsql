@@ -417,16 +417,16 @@ test('migration generation appends after gaps without replacing history', async 
   assert.equal(existsSync(join(migrations,'.solarsql-generation.lock')),false);
 });
 
-test('migration file publication is exclusive and generation locks are released', t => {
+test('migration file publication is exclusive and generation locks are released', async t => {
   const dir = mkdtempSync(join(tmpdir(),'solarsql-migration-lock-'));
   t.after(()=>rmSync(dir,{recursive:true,force:true}));
   const file = {filename:'0001_initial.sql',sql:'create table t(n integer) strict;'};
   writeNewMigration(dir,file);
   assert.throws(()=>writeNewMigration(dir,{...file,sql:'drop table t;'}),/already exists/);
   assert.equal(readFileSync(join(dir,file.filename),'utf8'),file.sql);
-  withMigrationLock(dir,()=>assert.throws(()=>withMigrationLock(dir,()=>{}),/generation is locked/));
-  assert.throws(()=>withMigrationLock(dir,()=>{throw new Error('fixture failure')}),/fixture failure/);
-  withMigrationLock(dir,()=>{});
+  await withMigrationLock(dir,()=>assert.rejects(withMigrationLock(dir,()=>{}),/generation is locked/));
+  await assert.rejects(withMigrationLock(dir,()=>{throw new Error('fixture failure')}),/fixture failure/);
+  await withMigrationLock(dir,()=>{});
   assert.equal(existsSync(join(dir,'.solarsql-generation.lock')),false);
 });
 
@@ -444,7 +444,7 @@ test('a competing CLI generator reports the held lock and preserves history', as
   const existing = join(migrations,'0005_customer_name_not_empty.sql');
   const before = readFileSync(existing,'utf8');
   const config = join(dir,'example/solarsql.config.ts');
-  withMigrationLock(migrations,()=>{
+  await withMigrationLock(migrations,()=>{
     const child = spawnSync(process.execPath,[join(root,'src/build/cli.ts'),'migration','competing',config],{encoding:'utf8',timeout:10_000});
     assert.equal(child.status,1,child.stdout+child.stderr);
     assert.match(child.stderr,/generation is locked/);

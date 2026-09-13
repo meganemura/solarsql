@@ -119,6 +119,7 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0089](adr/0089-machine-cli-has-a-time-budget.md) | Machine CLI reports have a time budget |
 | [0090](adr/0090-automatic-destructive-migrations-need-intent.md) | Automatic destructive migrations need an exact intent |
 | [0091](adr/0091-column-renames-use-the-migration-intent.md) | Column renames use the migration intent |
+| [0092](adr/0092-project-cli-has-a-time-budget.md) | Project-loading CLI commands have a time budget |
 
 ## Measurements
 

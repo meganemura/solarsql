@@ -2,6 +2,8 @@
 
 Status: accepted (2026-09-14)
 
+ADR 0092 supersedes this decision for plain `build`, `build --check`, and `migration`.
+
 ## Context
 
 An agent can request `inspect` or `build --json` while a configuration import waits forever.
@@ -23,7 +25,7 @@ Application stdout and stderr remain on stderr.
 
 The deadline applies to the report-worker process boundary.
 It does not cancel an in-process build API, sandbox configuration code, or establish that the build can safely roll back application side effects.
-Plain `build` keeps its existing process and output behavior.
+ADR 0092 defines the worker boundary for plain `build`, `build --check`, and `migration`.
 
 ## Evidence
 

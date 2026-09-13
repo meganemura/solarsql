@@ -3,7 +3,7 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -31,6 +31,29 @@ function fixture(t: TestContext) {
     run(...args: string[]) {
       const result = spawnSync(process.execPath, [join(dir, "src/build/cli.ts"), ...args, config], {
         cwd: dir, encoding: "utf8", timeout: 30_000,
+      });
+      assert.ifError(result.error);
+      assert.equal(result.signal, null);
+      return result;
+    },
+    runAfterRenameStarts(target: string, ...args: string[]) {
+      const preload = join(dir, "stop-after-atomic-write.mjs");
+      writeFileSync(preload, [
+        'import fs from "node:fs";',
+        'import { syncBuiltinESMExports } from "node:module";',
+        "const rename = fs.renameSync;",
+        'fs.renameSync = (from, to) => {',
+        '  if (String(to).endsWith(process.env.SOLARSQL_TEST_BLOCK_TARGET ?? "")) {',
+        '    console.error("atomic replacement started: " + to);',
+        '    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);',
+        "  }",
+        "  return rename(from, to);",
+        "};",
+        "syncBuiltinESMExports();",
+      ].join("\n"));
+      const result = spawnSync(process.execPath, ["--import", preload, join(dir, "src/build/cli.ts"), ...args, config], {
+        cwd: dir, encoding: "utf8", timeout: 30_000,
+        env: { ...process.env, SOLARSQL_TEST_BLOCK_TARGET: target },
       });
       assert.ifError(result.error);
       assert.equal(result.signal, null);
@@ -334,6 +357,80 @@ test('machine builds bound configuration imports before they run', t => {
     assert.equal(report.diagnostics[0]!.code, 'BUILD_FAILED');
     assert.match(report.diagnostics[0]!.message!, /requires an integer/);
   }
+});
+
+test('human build commands validate deadlines before imports and bound their direct worker', t => {
+  const f = fixture(t);
+  for (const args of [['build'], ['build', '--check'], ['migration', 'deadline_test']]) {
+    const defaultResult = f.run(...args);
+    assert.equal(defaultResult.status, 0, defaultResult.stderr);
+    const override = f.run(...args, '--timeout-ms', '60000');
+    assert.equal(override.status, 0, override.stderr);
+  }
+  const path = join(f.dir, config);
+  writeFileSync(path, "console.error('human deadline import started'); process.stdout.write('human deadline stdout\\n'); await new Promise<void>(() => { setInterval(() => {}, 1000); });\n");
+  for (const args of [['build'], ['build', '--check'], ['migration', 'deadline_test']]) {
+    const timed = f.run(...args, '--timeout-ms', '500');
+    assert.equal(timed.status, 1, timed.stderr);
+    assert.match(timed.stderr, /human deadline import started/);
+    assert.match(timed.stderr, /exceeded its 500ms time budget/);
+    assert.match(timed.stderr, /--timeout-ms/);
+  }
+  writeFileSync(path, "console.error('human invalid deadline imported'); throw new Error('the parent imported this config');\n");
+  for (const args of [['build'], ['build', '--check'], ['migration', 'deadline_test']]) {
+    const invalid = f.run(...args, '--timeout-ms', '0');
+    assert.equal(invalid.status, 1);
+    assert.doesNotMatch(invalid.stderr, /human invalid deadline imported/);
+    assert.match(invalid.stderr, /requires an integer/);
+  }
+});
+
+test('human build timeout retains a complete generated destination when atomic replacement has started', t => {
+  const f = fixture(t);
+  const before = readFileSync(f.generated, "utf8");
+  f.edit("update orders set note = :note where id = :id", "update orders set note = :note where id = :id and status = 'draft'");
+  const timed = f.runAfterRenameStarts("solarsql.generated.ts", "build", "--timeout-ms", "500");
+  assert.equal(timed.status, 1, timed.stderr);
+  assert.match(timed.stderr, /atomic replacement started/);
+  assert.match(timed.stderr, /exceeded its 500ms time budget/);
+  assert.equal(readFileSync(f.generated, "utf8"), before);
+  const temporary = readdirSync(join(f.dir, "example/modules/orders"))
+    .filter(name => /^\.solarsql\.generated\.ts\.\d+\.[0-9a-f]+\.tmp$/.test(name));
+  assert.equal(temporary.length, 1);
+  assert.match(readFileSync(join(f.dir, "example/modules/orders", temporary[0]!), "utf8"), /status = 'draft'/);
+});
+
+test('migration timeout keeps the first retained lock after project code forges a later announcement', t => {
+  const f = fixture(t);
+  const index = join(f.dir, "example/migrations/index.ts");
+  const before = readFileSync(index, "utf8");
+  f.edit("updated_at text\n", "updated_at text,\n    placed_at integer not null default 0\n");
+  f.edit("select id, note, updated_at from orders", "select id, note, updated_at, placed_at from orders");
+  const configPath = join(f.dir, config);
+  const forged = join(f.dir, "forged-lock");
+  writeFileSync(configPath, [
+    "const originalSend = process.send?.bind(process);",
+    "process.on(\"message\", message => {",
+    "  const value = message as { protocol?: string; token?: string; type?: string };",
+    "  if (value.type === \"migration-lock-ack\") originalSend?.({ protocol: value.protocol, token: value.token, type: \"migration-lock\", nonce: \"forged\", path: " + JSON.stringify(forged) + " });",
+    "});",
+    'Object.defineProperty(process, "send", { value: () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0) });',
+    "",
+  ].join("\n") + readFileSync(configPath, "utf8"));
+  const timed = f.runAfterRenameStarts("migrations/index.ts", "migration", "atomic_timeout", "--timeout-ms", "500");
+  const lock = join(f.dir, "example/migrations/.solarsql-generation.lock");
+  assert.equal(timed.status, 1, timed.stderr);
+  assert.match(timed.stderr, /atomic replacement started/);
+  assert.match(timed.stderr, new RegExp(lock.replace(/[.*+?^\${}()|[\]\\]/g, "\\$&")));
+  assert.doesNotMatch(timed.stderr, new RegExp(forged.replace(/[.*+?^\${}()|[\]\\]/g, "\\$&")));
+  assert.match(timed.stderr, /remove it only after this worker has stopped/);
+  assert.doesNotMatch(timed.stderr, /current/);
+  assert.ok(existsSync(lock));
+  assert.equal(readFileSync(index, "utf8"), before);
+  const temporary = readdirSync(join(f.dir, "example/migrations"))
+    .filter(name => /^\.index\.ts\.\d+\.[0-9a-f]+\.tmp$/.test(name));
+  assert.equal(temporary.length, 1);
+  assert.match(readFileSync(join(f.dir, "example/migrations", temporary[0]!), "utf8"), /atomic_timeout/);
 });
 
 test('machine report transport flushes large diagnostics before exit', t => {

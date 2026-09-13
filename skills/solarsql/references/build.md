@@ -11,9 +11,9 @@ Unknown help targets and extra discovery arguments print usage to stderr and exi
 
 ```
 npx solarsql init <module> [dir]
-npx solarsql build [solarsql.config.ts]
-npx solarsql build --check [solarsql.config.ts]
-npx solarsql migration <name> [--intent changes.json] [solarsql.config.ts]
+npx solarsql build [--timeout-ms 30000] [solarsql.config.ts]
+npx solarsql build --check [--timeout-ms 30000] [solarsql.config.ts]
+npx solarsql migration <name> [--intent changes.json] [--timeout-ms 30000] [solarsql.config.ts]
 ```
 
 ## init
@@ -37,6 +37,14 @@ Normal `build` exits 0 after valid generation, even when a migration is pending 
 Invalid schema, SQL, or module boundaries still fail the build.
 `build --check` and `migration <name>` exit 1 for a blocked migration.
 A successful build does not establish that the change is ready to deploy.
+
+The CLI runs `build`, `build --check`, and `migration` in a direct worker with a 30,000 millisecond deadline.
+Use `--timeout-ms <positive integer>` to set a different finite deadline.
+The parent validates every command option before the worker imports the project.
+On expiry, it stops the direct worker and reports the expired budget with a recovery action.
+The command does not make claims about application-owned child processes.
+Generated files and `migrations/index.ts` replace their old contents atomically.
+Review a timed-out migration directory before you remove a retained `.solarsql-generation.lock`.
 
 ## Verification after an edit
 

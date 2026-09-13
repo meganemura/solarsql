@@ -5,7 +5,7 @@
 // Boundary: this file owns the module layout and the file system. The
 // facts come from facts.ts, the types from typegen.ts, the file text from
 // emit.ts, and the migration statements from migration.ts.
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Command, Config, Index, ModuleConfig, PlanItem, Query, Search, Table, Trigger, View } from "../index.ts";
@@ -17,6 +17,7 @@ import type { MigrationIntent } from "./migration-intent.ts";
 import { migrationSequence, nextMigrationFile, withMigrationLock, writeNewMigration } from "./migration-files.ts";
 import { created, indexTarget, quoteIdent, triggerTarget } from "./scan.ts";
 import { shellArgument } from "./shell.ts";
+import { writeGeneratedFile } from "./output.ts";
 import { BuildError, Typer, brandName, type Analysis, type Brand } from "./typegen.ts";
 import { catalogStatement } from "./statements.ts";
 
@@ -109,7 +110,7 @@ export async function load(configPath: string, write = true): Promise<Loaded> {
     const generatedPath = join(dir, GENERATED_FILE);
     if (!existsSync(generatedPath)) {
       if (!write) throw new BuildError(`module ${name}: ${generatedPath} is missing. Run: npx solarsql build ${shellArgument(configPath)}`);
-      writeFileSync(generatedPath, emitStub(library));
+      writeGeneratedFile(generatedPath, emitStub(library));
     }
   }
   // A module the config imports but does not list would keep its stub for
@@ -123,7 +124,7 @@ export async function load(configPath: string, write = true): Promise<Loaded> {
     const dir = dirname(unlisted[0]);
     throw new BuildError(`module ${basename(dir)}: ${basename(absolute)} imports it, and it is not in modules. Add ${JSON.stringify(`./${relative(realpathSync(configDir), dir).split("\\").join("/")}`)} to modules.`);
   }
-  for (const path of stubbed) writeFileSync(path, emitStub(library));
+  for (const path of stubbed) writeGeneratedFile(path, emitStub(library));
   const modules: Module[] = [];
   for (const { mc, dir } of listed) {
     const name = basename(dir);
@@ -201,7 +202,7 @@ async function importConfig(absolute: string, write: boolean, stubbed: string[],
       // The library specifier is in the config, which has not loaded yet;
       // load() rewrites the stub once it has. The import is type-only, so
       // the specifier does not matter for this import.
-      writeFileSync(missing, emitStub("solarsql"));
+      writeGeneratedFile(missing, emitStub("solarsql"));
       stubbed.push(missing);
     }
   }
@@ -390,7 +391,7 @@ export async function build(configPath: string, options: BuildOptions = {}): Pro
       const before = Object.keys(((await importFresh(generatedPath)) as { generated?: Record<string, unknown> }).generated ?? {});
       const { added, removed } = keyDiff(before, entries.map((e) => e.key));
       const changed = readFileSync(generatedPath, "utf8") !== text;
-      if (changed && write) writeFileSync(generatedPath, text);
+      if (changed && write) writeGeneratedFile(generatedPath, text);
       results.push({ name: m.name, generatedPath, entries: entries.length, changed, added, removed, ms: Math.round(m.importMs + typeMs) });
     }
 
@@ -577,7 +578,7 @@ function migrationsIndex(dir: string, write: boolean): BuildResult["index"] {
   const path = join(dir, "index.ts");
   const wanted = emitMigrationsIndex(files);
   const changed = !existsSync(path) || readFileSync(path, "utf8") !== wanted;
-  if (changed && write) writeFileSync(path, wanted);
+  if (changed && write) writeGeneratedFile(path, wanted);
   return { path, changed };
 }
 
@@ -604,7 +605,7 @@ export async function migration(configPath: string, name: string, intent: Migrat
   const { config, configDir, modules } = await load(configPath);
   const dir = resolve(configDir, config.migrations);
   mkdirSync(dir, { recursive: true });
-  return withMigrationLock(dir, () => {
+  return await withMigrationLock(dir, () => {
     const files = migrationFiles(dir);
     migrationSequence(files.map(file => file.name));
     const status = migrationStatus(configDir, config, modules, intent);
@@ -615,7 +616,7 @@ export async function migration(configPath: string, name: string, intent: Migrat
       writeNewMigration(dir, file);
       filename = file.filename;
     }
-    writeFileSync(join(dir, "index.ts"), emitMigrationsIndex(migrationFiles(dir)));
+    writeGeneratedFile(join(dir, "index.ts"), emitMigrationsIndex(migrationFiles(dir)));
     return { filename, reason: null };
   });
 }

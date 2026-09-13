@@ -5,15 +5,15 @@
 //   solarsql migration <name> [--intent file] [config]  write the next migration file
 //   solarsql init <module> [dir]        a first module, built, with its migration
 // Boundary: printing and exit codes only. build.ts and init.ts do the work.
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { analyzeDatabase, analyzeSchema } from "./analyze.ts";
 import { rehearse } from "./rehearse.ts";
 import { build, migration } from "./build.ts";
 import { init } from "./init.ts";
 import { readMigrationIntent, type MigrationIntent } from "./migration-intent.ts";
 import type { DropIntent, Rename, RenameRepair } from "./migration.ts";
-import { isReportWorker, printReport, runMachine, runRehearsalProcess } from "./machine.ts";
-import { protectInputs } from "./output.ts";
+import { isCliWorker, isReportWorker, printReport, runHuman, runMachine, runRehearsalProcess } from "./machine.ts";
+import { protectInputs, writeGeneratedFile } from "./output.ts";
 import { shellArgument } from "./shell.ts";
 import { BuildError } from "./typegen.ts";
 
@@ -23,12 +23,12 @@ const usage = `usage:
   solarsql help [command]                     show all commands or one command
   solarsql analyze --database <database.sqlite> <queries.json> [--out generated.ts] [--check] [--library specifier]
   solarsql analyze <schema.sql> <queries.json> [--out generated.ts] [--check] [--library specifier]
-  solarsql build [solarsql.config.ts]
-  solarsql build --check [solarsql.config.ts]   writes nothing; exit 1 when a generated file or a migration is stale
+  solarsql build [--timeout-ms 30000] [solarsql.config.ts]
+  solarsql build --check [--timeout-ms 30000] [solarsql.config.ts]   writes nothing; exit 1 when a generated file or a migration is stale
   solarsql rehearse <database.sqlite> <change.sql> [checks.json] [--timeout-ms 30000]   validate a disposable snapshot
   solarsql inspect [--timeout-ms 30000] [solarsql.config.ts]        JSON contracts, accesses and freshness; writes no build artifacts
   solarsql build --json [--timeout-ms 30000] [solarsql.config.ts]   machine-readable generation result (combine with --check)
-  solarsql migration <name> [--intent changes.json] [solarsql.config.ts]
+  solarsql migration <name> [--intent changes.json] [--timeout-ms 30000] [solarsql.config.ts]
   solarsql init <module> [dir]                  writes solarsql.config.ts and modules/<module>/, then builds and writes the first migration`;
 
 function discovery(argv: string[]): number | undefined {
@@ -77,7 +77,7 @@ function rehearsalArguments(args: string[]): { paths: string[]; timeoutMs: numbe
 }
 
 // Parse the deadline in the parent so an invalid budget cannot load project code.
-function machineArguments(args: string[]): { args: string[]; timeoutMs: number } {
+function deadlineArguments(args: string[]): { args: string[]; timeoutMs: number } {
   const workerArgs: string[] = [];
   let timeoutMs = 30_000;
   for (let i = 0; i < args.length; i++) {
@@ -93,6 +93,20 @@ function machineArguments(args: string[]): { args: string[]; timeoutMs: number }
     timeoutMs = Number(value);
   }
   return { args: workerArgs, timeoutMs };
+}
+
+function buildArguments(args: string[]): { configPath: string; check: boolean; json: boolean } {
+  let check = false;
+  let json = false;
+  const paths: string[] = [];
+  for (const arg of args) {
+    if (arg === "--check") check = true;
+    else if (arg === "--json") json = true;
+    else if (arg.startsWith("--")) throw new BuildError("Unexpected build argument. Use solarsql build [--check] [--json] [config].");
+    else paths.push(arg);
+  }
+  if (paths.length > 1) throw new BuildError("Unexpected build argument. Use solarsql build [--check] [--json] [config].");
+  return { configPath: paths[0] ?? "solarsql.config.ts", check, json };
 }
 
 function migrationArguments(args: string[]): { name: string; configPath: string; intent: MigrationIntent } {
@@ -154,7 +168,7 @@ async function main(argv: string[]): Promise<number> {
     const catalog = JSON.parse(readFileSync(paths[1]!, "utf8"));
     const result = database ? analyzeDatabase(paths[0]!, catalog, library) : analyzeSchema(readFileSync(paths[0]!, "utf8"), catalog, library);
     const changed = out !== undefined && (!existsSync(out) || readFileSync(out, "utf8") !== result.generated);
-    if (out && !check && changed) writeFileSync(out, result.generated);
+    if (out && !check && changed) writeGeneratedFile(out, result.generated);
     const ok = !(check && changed);
     await printReport({ ...result, generated: out ? undefined : result.generated, ok, output: out, changed,
       diagnostics: ok ? [] : [{ code: "GENERATED_STALE", action: "Repeat analyze with the same inputs and --out, without --check." }] });
@@ -169,12 +183,11 @@ async function main(argv: string[]): Promise<number> {
   }
   if (command === "build" || command === "inspect") {
     const inspect = command === "inspect";
-    const check = inspect || rest.includes("--check");
-    const json = inspect || rest.includes("--json");
-    const args = rest.filter((a) => a !== "--check" && a !== "--json");
-    if (args.length > 1 || args.some(a => a.startsWith("--"))) throw new BuildError("Unexpected build argument. Use solarsql inspect [config] or solarsql build [--check] [--json] [config].");
-    const configArgument = args[0] === undefined ? "" : ` ${shellArgument(args[0])}`;
-    const result = await build(args[0] ?? "solarsql.config.ts", { write: !check, inspect });
+    const parsed = buildArguments(rest);
+    const check = inspect || parsed.check;
+    const json = inspect || parsed.json;
+    const configArgument = parsed.configPath === "solarsql.config.ts" ? "" : ` ${shellArgument(parsed.configPath)}`;
+    const result = await build(parsed.configPath, { write: !check, inspect });
     if (json) {
       const diagnostics = [
         ...(check && (result.modules.some(m => m.changed) || result.index.changed) ? [{ code: "GENERATED_STALE", action: `npx solarsql build${configArgument}` }] : []),
@@ -250,15 +263,25 @@ async function main(argv: string[]): Promise<number> {
 
 const args = process.argv.slice(2);
 const machineBuild = args[0] === "inspect" || (args[0] === "build" && args.includes("--json"));
+const humanBuild = args[0] === "build" || args[0] === "migration";
 try {
   // Discovery must precede worker dispatch and application configuration imports.
   const code = discovery(args) ?? (args[0] === "rehearse" && !isReportWorker()
     ? await runRehearsalProcess(import.meta.filename, args, rehearsalArguments(args.slice(1)).timeoutMs)
     : machineBuild && !isReportWorker()
     ? await (() => {
-      const machine = machineArguments(args);
+      const machine = deadlineArguments(args);
+      // Validate all build arguments before the report worker imports a project.
+      buildArguments(machine.args.slice(1));
       return runMachine(import.meta.filename, machine.args, { timeoutMs: machine.timeoutMs, timeoutCode: "BUILD_TIMEOUT",
         action: "Inspect the configuration import and build work. Set --timeout-ms to a larger positive budget if the work requires more time." });
+    })()
+    : humanBuild && !isReportWorker() && !isCliWorker()
+    ? await (() => {
+      const worker = deadlineArguments(args);
+      if (worker.args[0] === "build") buildArguments(worker.args.slice(1));
+      else migrationArguments(worker.args.slice(1));
+      return runHuman(import.meta.filename, worker.args, worker.timeoutMs);
     })()
     : await main(args));
   process.exit(code);

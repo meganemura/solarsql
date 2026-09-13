@@ -4,6 +4,7 @@ import { closeSync, openSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { render } from "./migration.ts";
 import { BuildError } from "./typegen.ts";
+import { announceMigrationLock } from "./machine.ts";
 
 export function migrationSequence(names: readonly string[]): { maximum: number; width: number } {
   let maximum = -1;
@@ -39,8 +40,9 @@ export function writeNewMigration(dir: string, file: { filename: string; sql: st
   }
 }
 
-export function withMigrationLock<T>(dir: string, action: () => T): T {
+export async function withMigrationLock<T>(dir: string, action: () => T | Promise<T>): Promise<T> {
   const path = join(dir, ".solarsql-generation.lock");
+  await announceMigrationLock(path);
   let fd: number;
   try { fd = openSync(path, "wx", 0o600); }
   catch (error) {
@@ -49,7 +51,7 @@ export function withMigrationLock<T>(dir: string, action: () => T): T {
   }
   try {
     writeFileSync(fd, JSON.stringify({ pid: process.pid }));
-    return action();
+    return await action();
   } finally {
     closeSync(fd);
     unlinkSync(path);
