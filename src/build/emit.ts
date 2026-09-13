@@ -10,6 +10,7 @@ export const GENERATED_FILE = "solarsql.generated.ts";
 export type GeneratedInput = {
   library: string;
   module: string;
+  header?: string;
   ownBrands: readonly Brand[];
   importedBrands: readonly { specifier: string; names: readonly string[] }[];
   entries: readonly { key: string; analysis: Analysis }[];
@@ -32,7 +33,7 @@ export function emitStub(library: string): string {
 }
 
 export function emitGenerated(input: GeneratedInput): string {
-  const lines: string[] = [header, `// Module ${input.module}.`];
+  const lines: string[] = [input.header ?? header, `// Module ${input.module}.`];
   // Import only what the file uses, so a project with noUnusedLocals compiles.
   const names = ["Meta"];
   if (input.ownBrands.length > 0) names.unshift("Id");

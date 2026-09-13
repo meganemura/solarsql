@@ -85,9 +85,12 @@ export class Typer {
   private readonly engine: Engine;
   private readonly brands: Map<string, Brand>;
 
-  constructor(engine: Engine, brands: Map<string, Brand>) {
+  private readonly conservativeStorage: boolean;
+
+  constructor(engine: Engine, brands: Map<string, Brand>, options: { conservativeStorage?: boolean } = {}) {
     this.engine = engine;
     this.brands = brands;
+    this.conservativeStorage = options.conservativeStorage ?? false;
     for (const t of engine.tables()) this.tables.set(t.name, t);
   }
 
@@ -96,6 +99,11 @@ export class Typer {
     const t = this.tables.get(table);
     const c = t?.columns.find((x) => x.name === column);
     if (!t || !c) throw new BuildError(`unknown column ${table}.${column}`, sql);
+    // An existing non-STRICT table can store a class outside its affinity.
+    // CHECK literals alone do not prove the class after SQLite conversion.
+    if (this.conservativeStorage) {
+      return { type: t.strict ? scalarType(c.type) : "SqlValue", nullable: !c.notnull, brand: null };
+    }
     // A full-text search table: its columns hold text and may be null, its
     // rank can be null without MATCH, and the column named after the table is the match
     // target, which takes the query string.

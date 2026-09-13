@@ -1,5 +1,7 @@
 # The build, the CLI, and the messages
 
+For schema DDL and a query catalog without application modules, use [analyze](analyze.md).
+
 ```
 npx solarsql init <module> [dir]
 npx solarsql build [solarsql.config.ts]

@@ -5,7 +5,9 @@
 //   solarsql migration <name> [config]  write the next migration file
 //   solarsql init <module> [dir]        a first module, built, with its migration
 // Boundary: printing and exit codes only. build.ts and init.ts do the work.
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { analyzeSchema } from "./analyze.ts";
 import { rehearse } from "./rehearse.ts";
 import { build, migration } from "./build.ts";
 import { init } from "./init.ts";
@@ -13,6 +15,7 @@ import { shellArgument } from "./shell.ts";
 import { BuildError } from "./typegen.ts";
 
 const usage = `usage:
+  solarsql analyze <schema.sql> <queries.json> [--out generated.ts] [--check] [--library specifier]
   solarsql build [solarsql.config.ts]
   solarsql build --check [solarsql.config.ts]   writes nothing; exit 1 when a generated file or a migration is stale
   solarsql rehearse <database.sqlite> <change.sql> [checks.json]   validate a disposable snapshot
@@ -28,6 +31,37 @@ function oneLine(sql: string): string {
 
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
+  if (command === "analyze") {
+    const paths: string[] = [];
+    let out: string | undefined;
+    let library = "solarsql";
+    let check = false;
+    for (let i = 0; i < rest.length; i++) {
+      const arg = rest[i]!;
+      if (arg === "--check") check = true;
+      else if (arg === "--out" || arg === "--library") {
+        const value = rest[++i];
+        if (!value || value.startsWith("--")) throw new BuildError(`${arg} requires a value.`);
+        if (arg === "--out") out = value; else library = value;
+      } else if (arg.startsWith("--")) throw new BuildError(`Unknown analyze option ${arg}.`);
+      else paths.push(arg);
+    }
+    if (paths.length !== 2 || (check && !out)) throw new BuildError("Use solarsql analyze <schema.sql> <queries.json> [--out generated.ts] [--check]. --check requires --out.");
+    if (out && paths.some(path => resolve(path) === resolve(out))) throw new BuildError("The output must differ from the schema and catalog paths.");
+    if (out && existsSync(out)) {
+      const target = statSync(out);
+      if (paths.some(path => { const input = statSync(path); return input.dev === target.dev && input.ino === target.ino; })) {
+        throw new BuildError("The output must not link to the schema or catalog file.");
+      }
+    }
+    const result = analyzeSchema(readFileSync(paths[0]!, "utf8"), JSON.parse(readFileSync(paths[1]!, "utf8")), library);
+    const changed = out !== undefined && (!existsSync(out) || readFileSync(out, "utf8") !== result.generated);
+    if (out && !check && changed) writeFileSync(out, result.generated);
+    const ok = !(check && changed);
+    console.log(JSON.stringify({ ...result, generated: out ? undefined : result.generated, ok, output: out, changed,
+      diagnostics: ok ? [] : [{ code: "GENERATED_STALE", action: "Repeat analyze with the same inputs and --out, without --check." }] }));
+    return ok ? 0 : 1;
+  }
   if (command === "rehearse") {
     if (rest.length < 2 || rest.length > 3) throw new BuildError("Use solarsql rehearse <database.sqlite> <change.sql> [checks.json].");
     const checks = rest[2] ? JSON.parse(readFileSync(rest[2], "utf8")) : {};
@@ -120,7 +154,7 @@ async function main(argv: string[]): Promise<number> {
 main(process.argv.slice(2)).then(
   (code) => process.exit(code),
   (e) => {
-    if (process.argv.includes("--json") || ["inspect", "rehearse"].includes(process.argv[2] ?? "")) console.log(JSON.stringify({ version: 1, ok: false, diagnostics: [{ code: "BUILD_FAILED", message: e instanceof Error ? e.message : String(e), sql: e instanceof BuildError ? e.sql : undefined, locations: e instanceof BuildError ? e.locations : [] }] }));
+    if (process.argv.includes("--json") || ["inspect", "rehearse", "analyze"].includes(process.argv[2] ?? "")) console.log(JSON.stringify({ version: 1, ok: false, diagnostics: [{ code: "BUILD_FAILED", message: e instanceof Error ? e.message : String(e), sql: e instanceof BuildError ? e.sql : undefined, locations: e instanceof BuildError ? e.locations : [] }] }));
     else if (e instanceof BuildError) console.error(`error: ${e.message}`);
     else console.error(e);
     process.exit(1);
