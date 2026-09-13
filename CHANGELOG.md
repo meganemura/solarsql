@@ -4,6 +4,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Added: `analyze --database` derives query contracts from a consistent read-only SQLite view and protects source aliases and companion files (ADR 0066).
+
 - Added: rehearsal CLI deadlines with `--timeout-ms`, structured timeout diagnostics, and parent-owned snapshot cleanup (ADR 0065).
 
 - Fixed: type and migration facts use SQLite table attributes, so DDL comments cannot enable STRICT or WITHOUT ROWID (ADR 0064).

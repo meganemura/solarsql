@@ -5,17 +5,18 @@
 //   solarsql migration <name> [config]  write the next migration file
 //   solarsql init <module> [dir]        a first module, built, with its migration
 // Boundary: printing and exit codes only. build.ts and init.ts do the work.
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { analyzeSchema } from "./analyze.ts";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { analyzeDatabase, analyzeSchema } from "./analyze.ts";
 import { rehearse } from "./rehearse.ts";
 import { build, migration } from "./build.ts";
 import { init } from "./init.ts";
 import { isReportWorker, printReport, runMachine, runRehearsalProcess } from "./machine.ts";
+import { protectInputs } from "./output.ts";
 import { shellArgument } from "./shell.ts";
 import { BuildError } from "./typegen.ts";
 
 const usage = `usage:
+  solarsql analyze --database <database.sqlite> <queries.json> [--out generated.ts] [--check] [--library specifier]
   solarsql analyze <schema.sql> <queries.json> [--out generated.ts] [--check] [--library specifier]
   solarsql build [solarsql.config.ts]
   solarsql build --check [solarsql.config.ts]   writes nothing; exit 1 when a generated file or a migration is stale
@@ -55,9 +56,11 @@ async function main(argv: string[]): Promise<number> {
     let out: string | undefined;
     let library = "solarsql";
     let check = false;
+    let database = false;
     for (let i = 0; i < rest.length; i++) {
       const arg = rest[i]!;
       if (arg === "--check") check = true;
+      else if (arg === "--database") database = true;
       else if (arg === "--out" || arg === "--library") {
         const value = rest[++i];
         if (!value || value.startsWith("--")) throw new BuildError(`${arg} requires a value.`);
@@ -65,15 +68,15 @@ async function main(argv: string[]): Promise<number> {
       } else if (arg.startsWith("--")) throw new BuildError(`Unknown analyze option ${arg}.`);
       else paths.push(arg);
     }
-    if (paths.length !== 2 || (check && !out)) throw new BuildError("Use solarsql analyze <schema.sql> <queries.json> [--out generated.ts] [--check]. --check requires --out.");
-    if (out && paths.some(path => resolve(path) === resolve(out))) throw new BuildError("The output must differ from the schema and catalog paths.");
-    if (out && existsSync(out)) {
-      const target = statSync(out);
-      if (paths.some(path => { const input = statSync(path); return input.dev === target.dev && input.ino === target.ino; })) {
-        throw new BuildError("The output must not link to the schema or catalog file.");
-      }
+    if (paths.length !== 2 || (check && !out)) throw new BuildError("Use solarsql analyze [--database] <schema.sql or database.sqlite> <queries.json> [--out generated.ts] [--check]. --check requires --out.");
+    const inputs = [...paths];
+    if (database) {
+      const source = realpathSync(paths[0]!);
+      inputs.push(source, ...[paths[0]!, source].flatMap(path => [path + "-wal", path + "-shm", path + "-journal"]));
     }
-    const result = analyzeSchema(readFileSync(paths[0]!, "utf8"), JSON.parse(readFileSync(paths[1]!, "utf8")), library);
+    if (out) protectInputs(out, inputs);
+    const catalog = JSON.parse(readFileSync(paths[1]!, "utf8"));
+    const result = database ? analyzeDatabase(paths[0]!, catalog, library) : analyzeSchema(readFileSync(paths[0]!, "utf8"), catalog, library);
     const changed = out !== undefined && (!existsSync(out) || readFileSync(out, "utf8") !== result.generated);
     if (out && !check && changed) writeFileSync(out, result.generated);
     const ok = !(check && changed);

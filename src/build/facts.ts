@@ -1,5 +1,5 @@
 // Responsibility: the facts about SQL that come from the engine.
-// One in-memory node:sqlite database holds the declared schema. Every
+// A node:sqlite connection holds the declared or existing schema. Every
 // question below is answered by preparing a statement in it: column origins,
 // declared types, nullability, foreign keys, the nullable side of a join,
 // the affinity of an expression, and the tables a statement touches.
@@ -59,12 +59,14 @@ export class Engine {
 
   // A statement the engine refuses is reported with its text, so a bad
   // trigger body or view names itself.
-  constructor(statements: readonly string[]) {
-    this.db = new DatabaseSync(":memory:");
+  // The engine owns the supplied connection, including a read-only source.
+  constructor(statements: readonly string[], database?: DatabaseSync) {
+    this.db = database ?? new DatabaseSync(":memory:");
     for (const s of statements) {
       try {
         this.db.exec(s);
       } catch (e) {
+        this.db.close();
         throw new Error(`${(e as Error).message}\n  in: ${s.replace(/\s+/g, " ").trim()}`);
       }
     }
