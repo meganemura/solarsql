@@ -4,6 +4,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: CHECK-derived types respect stored value classes, complete predicates, collations, and literal whitespace (ADR 0061).
+
 - Fixed: migration generation appends after sequence gaps, refuses ambiguous replay order, and preserves existing files during competing generation (ADR 0060).
 
 - Added: `analyze` generates types and metadata from schema DDL and a JSON query catalog, without module imports or identity rules (ADR 0058).

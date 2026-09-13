@@ -16,7 +16,7 @@ Row types come from node:sqlite at build time.
 `pragma_foreign_key_list` gives the references.
 The primary key column of a table gets a brand from the table name.
 A column with `references` inherits the brand of the referenced column.
-A `check (x in (...))` becomes a union of literals.
+A `check (x in (...))` becomes a union of literals when its predicate, affinity, and collation prove the stored values (ADR 0061).
 Nullability comes from NOT NULL and from the join kind.
 A JSON aggregation gets a nested type from the literal keys of `json_object` and the origin of each value (ADR 0011).
 The generated types are keyed by the SQL text as a literal type.

@@ -53,7 +53,7 @@ export const orderSearch = search(`create virtual table order_search using fts5(
 | `blob` | `Uint8Array` | |
 | `any` | `SqlValue` | `string \| number \| bigint \| null \| Uint8Array` |
 | a column without `not null` | `T \| null` | |
-| `check (c in ('a', 'b'))` | `"a" \| "b"` | strings or numbers: `check (flag in (0, 1))` is `0 \| 1` |
+| `check (c in ('a', 'b'))` | `"a" \| "b"` | matching storage classes with BINARY collation; integer `check (flag in (0, 1))` is `0 \| 1` |
 | the primary key `id` of table `orders` | `OrdersId` | a branded string; `Id<"orders">` |
 | a column that references `customers(id)` | `CustomersId` | the brand of the referenced key |
 | a generated column | as declared | read like any other; a migration never sets it |
@@ -99,3 +99,6 @@ export { orderQueries, orderCommands } from "./module.ts";
 A single TEXT primary key receives an `Id<T>` brand. INTEGER and BLOB keys retain `number` and `Uint8Array`.
 A reference inherits a text brand only when the child column also stores text.
 Use `newId()` for text identities.
+
+CHECK narrowing requires a complete `column IN (literal, ...)` predicate.
+Mixed affinity, non-BINARY collations, and complex predicates retain the scalar type (ADR 0061).

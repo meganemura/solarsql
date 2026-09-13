@@ -186,14 +186,23 @@ export function quoteIdent(name: string): string {
 }
 
 export function normalize(text: string): string {
-  return tokenize(text)
-    .filter((t) => t.type !== "comment")
-    .map((t) => (t.type === "ws" ? " " : t.type === "ident" && !/^["`[]/.test(t.text) ? t.text.toLowerCase() : t.text))
-    .join("")
-    .replace(/\s+/g, " ")
-    .replace(/\s*([(,])\s*/g, "$1")
-    .replace(/\s*\)/g, ")")
-    .trim();
+  let result = "";
+  let space = false;
+  let previous = "";
+  for (const token of tokenize(text)) {
+    if (token.type === "ws" || token.type === "comment") {
+      space = true;
+      continue;
+    }
+    // SQL literals and quoted names retain their bytes. Only token boundaries
+    // can lose whitespace without changing a CHECK, default, or object name.
+    const punctuation = token.type === "punct" ? token.text : "";
+    if (space && result && !["(", ",", ")"].includes(punctuation) && previous !== "(" && previous !== ",") result += " ";
+    result += token.type === "ident" && !/^["`[]/.test(token.text) ? token.text.toLowerCase() : token.text;
+    previous = punctuation;
+    space = false;
+  }
+  return result;
 }
 
 // The name a CREATE statement creates, and what kind of object it is. A

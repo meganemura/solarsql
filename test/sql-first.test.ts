@@ -146,3 +146,42 @@ db.close();
   const executed = spawnSync(process.execPath, [join(dir, 'execute.mjs')], { encoding: 'utf8', timeout: 30_000 });
   assert.equal(executed.status, 0, executed.stdout + executed.stderr);
 });
+
+
+test("CHECK-derived generated rows compile with their stored SQLite types", async (t) => {
+  const { Engine } = await import("../src/build/facts.ts");
+  const { Typer } = await import("../src/build/typegen.ts");
+  const { emitGenerated } = await import("../src/build/emit.ts");
+  const dir = mkdtempSync(join(tmpdir(), "solarsql-check-types-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  symlinkSync(join(root, "node_modules"), join(dir, "node_modules"), "dir");
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
+  const engine = new Engine([`create table values_table(
+    text_value text not null check(text_value in (1)),
+    number_value integer not null check(number_value in ('1')),
+    enum_value text not null check(enum_value in ('a', 'b')),
+    folded_value text collate nocase not null check(folded_value in ('a'))
+  ) strict`]);
+  try {
+    const sql = "select * from values_table";
+    const analysis = new Typer(engine, new Map()).analyze(sql, "values");
+    writeFileSync(join(dir, "generated.ts"), emitGenerated({
+      library: join(root, "src/index.ts"), module: "values", ownBrands: [], importedBrands: [], entries: [{ key: sql, analysis }],
+    }));
+    writeFileSync(join(dir, "consumer.ts"), `
+import type { Generated } from './generated.ts';
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
+type Assert<T extends true> = T;
+export type Checked = Assert<Equal<Generated[${JSON.stringify(sql)}]['row'], {
+  text_value: string; number_value: number; enum_value: 'a' | 'b'; folded_value: string;
+}>>;
+`);
+    writeFileSync(join(dir, "tsconfig.json"), JSON.stringify({ compilerOptions: {
+      target: "esnext", module: "nodenext", strict: true, noEmit: true,
+      allowImportingTsExtensions: true, skipLibCheck: true, types: ["node"],
+    }, files: ["consumer.ts"] }));
+    const typed = spawnSync(join(root, "node_modules/.bin/tsc"), ["-p", join(dir, "tsconfig.json")], { encoding: "utf8", timeout: 30_000 });
+    assert.ifError(typed.error);
+    assert.equal(typed.status, 0, typed.stdout + typed.stderr);
+  } finally { engine.close(); }
+});

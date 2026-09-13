@@ -5,7 +5,7 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
-import { aliasMap, columnRef, created, definitions, leadingComment, namedParams, paramSites, selectItems, splitStatements, tokenize } from "../src/build/scan.ts";
+import { aliasMap, columnRef, created, definitions, leadingComment, namedParams, normalize, paramSites, selectItems, splitStatements, tokenize } from "../src/build/scan.ts";
 
 const ident = gs.fromRegex("[a-z_][a-z0-9_]{0,6}");
 const fragment = gs.composite((tc): string => {
@@ -21,6 +21,16 @@ const fragment = gs.composite((tc): string => {
   }
 });
 const sqlish = gs.composite((tc): string => tc.draw(gs.arrays(fragment, { minSize: 0, maxSize: 12 })).join(""));
+
+test("normalization preserves literal and quoted identifier bytes", () => {
+  hegel.test((tc) => {
+    const value = tc.draw(gs.text({ maxSize: 80 }));
+    const literal = `'${value.replaceAll("'", "''")}'`;
+    const name = `"${value.replaceAll('"', '""')}"`;
+    assert.equal(normalize(`SELECT  ${literal}  AS  ${name}`), `select ${literal} as ${name}`);
+  });
+  assert.equal(normalize("SELECT/* separator */value FROM t"), "select value from t");
+});
 
 describe("tokenize", () => {
   test("tokens join back into the input", () => {

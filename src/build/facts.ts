@@ -6,7 +6,7 @@
 // Boundary: nothing here reads SQL text beyond what scan.ts provides. Nothing
 // here produces TypeScript; typegen.ts does that from these facts.
 import { DatabaseSync, constants } from "node:sqlite";
-import { aliasMap, definitions, normalize, quoteIdent, tokenize, unquote } from "./scan.ts";
+import { aliasMap, definitions, isKeyword, quoteIdent, significant, tokenize, unquote } from "./scan.ts";
 
 export type ColumnFact = {
   name: string;
@@ -219,22 +219,39 @@ export class Engine {
   }
 }
 
-// The literals of `check (<column> in ('a', 'b'))` or `check (<column> in
-// (0, 1))` inside one column definition. The definition text is normalized
-// by scan.ts.
+// Only a complete IN check bounds the domain. OR and permissive collations
+// can admit values beyond the listed literals; punctuation inside text is data.
 function oneOfLiterals(definition: string, column: string): (string | number)[] | null {
-  const lower = normalize(definition);
-  const key = `check(${column.toLowerCase()} in(`;
-  const at = lower.indexOf(key);
-  if (at === -1) return null;
-  const rest = lower.slice(at + key.length);
-  const close = rest.indexOf(")");
-  if (close === -1) return null;
-  const literals: (string | number)[] = [];
-  for (const t of tokenize(rest.slice(0, close))) {
-    if (t.type === "string") literals.push(t.text.slice(1, -1).replace(/''/g, "'"));
-    else if (t.type === "number") literals.push(Number(t.text));
-    else if (t.type !== "ws" && t.text !== ",") return null;
+  const tokens = significant(tokenize(definition));
+  if (tokens.some((t, i) => isKeyword(t, "collate") && unquote(tokens[i + 1]?.text ?? "").toLowerCase() !== "binary")) return null;
+  for (let i = 0; i < tokens.length; i++) {
+    if (!isKeyword(tokens[i]!, "check") || tokens[i]!.depth !== 0 || tokens[i + 1]?.text !== "(") continue;
+    const end = tokens.findIndex((t, j) => j > i + 1 && t.text === ")" && t.depth === 0);
+    if (end < 0) continue;
+    const expression = tokens.slice(i + 2, end);
+    if (expression[0]?.type !== "ident" || unquote(expression[0].text).toLowerCase() !== column.toLowerCase()
+      || !expression[1] || !isKeyword(expression[1], "in") || expression[2]?.text !== "("
+      || expression.at(-1)?.text !== ")" || expression.at(-1)?.depth !== 1) continue;
+    const list = expression.slice(3, -1);
+    const literals: (string | number)[] = [];
+    let valid = true;
+    for (let j = 0; j < list.length; j++) {
+      let t = list[j]!;
+      let sign = 1;
+      if (t.text === "+" || t.text === "-") {
+        sign = t.text === "-" ? -1 : 1;
+        t = list[++j]!;
+        if (t?.type !== "number") { valid = false; break; }
+      }
+      if (t?.type === "string") literals.push(t.text.slice(1, -1).replace(/''/g, "'"));
+      else if (t?.type === "number") {
+        const value = sign * Number(t.text);
+        if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) { valid = false; break; }
+        literals.push(value);
+      } else { valid = false; break; }
+      if (j + 1 < list.length && (list[++j]!.text !== "," || j + 1 === list.length)) { valid = false; break; }
+    }
+    if (valid && literals.length) return literals;
   }
-  return literals.length > 0 ? literals : null;
+  return null;
 }

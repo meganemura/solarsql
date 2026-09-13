@@ -287,3 +287,55 @@ test("origin columns retain NULL from views, query scopes, scalar subqueries, an
     assert.throws(() => t.analyze("select a.id, b.id from a left join b on a.id=b.id", "m"), /duplicate output column.*id/);
   } finally { engine.close(); }
 });
+
+test('CHECK literals describe stored classes only when the complete predicate proves them', () => {
+  for (const [definition, input, expected] of [
+    ['text not null check(value in (1))', 1, 'string'],
+    ["integer not null check(value in ('1'))", '1', 'number'],
+    ['real not null check(value in (1))', 1, '1'],
+    ["any not null check(value in ('1'))", '1', '"1"'],
+    ["text not null check(value in ('a') or value='b')", 'b', 'string'],
+    ["text collate nocase not null check(value in ('a'))", 'A', 'string'],
+    ["text collate rtrim not null check(value in ('a'))", 'a ', 'string'],
+    ["text collate binary not null check(value in ('A'))", 'A', '"A"'],
+    ["text not null check(value in ('x)y''z'))", "x)y'z", '"x)y\'z"'],
+    ["text not null check(value in ('\r'))", '\r', '"\\r"'],
+    ['integer not null check(value in (-1, +2))', -1, '-1 | 2'],
+    ['real not null check(value in (1e999))', Infinity, 'number'],
+    ["text check(value in ('a'))", null, '"a" | null'],
+  ] as const) {
+    const engine = new Engine([`create table t(value ${definition}) strict`]);
+    try {
+      const literal = typeof input === 'string' ? `'${input.replaceAll("'","''")}'` : input === null ? 'null' : Number.isFinite(input) ? String(input) : '1e999';
+      engine.db.exec(`insert into t values (${literal})`);
+      assert.equal(new Typer(engine,new Map()).analyze('select value from t','t').columns[0]!.type,expected,definition);
+      const actual = engine.db.prepare('select value from t').get()!.value;
+      if (expected === 'string' || expected === 'number') assert.equal(typeof actual,expected);
+      else assert.deepEqual(actual,input);
+    } finally {engine.close();}
+  }
+});
+
+test('CHECK types admit the values SQLite stores after affinity conversion', async () => {
+  const {test:property} = await import('@hegeldev/hegel');
+  const gs = await import('@hegeldev/hegel/generators');
+  property(tc => {
+    const storage = tc.draw(gs.sampledFrom(['text','integer','real','any']));
+    const n = tc.draw(gs.integers({minValue:-1_000_000,maxValue:1_000_000}));
+    let value: string | number = tc.draw(gs.booleans()) ? n : String(n);
+    if ((storage === 'text' || storage === 'any') && tc.draw(gs.booleans())) {
+      // NUL cannot appear in SQL source. It is not a valid DDL string literal.
+      value = tc.draw(gs.text({maxSize:50})).replaceAll('\0','');
+    }
+    const literal = typeof value === 'string' ? `'${value.replaceAll("'","''")}'` : String(value);
+    const engine = new Engine([`create table t(value ${storage} not null check(value in (${literal}))) strict`]);
+    try {
+      // Use the same SQL literal class; Node number parameters bind as REAL.
+      engine.db.exec(`insert into t values (${literal})`);
+      const actual = engine.db.prepare('select value from t').get()!.value;
+      const type = new Typer(engine,new Map()).analyze('select value from t','t').columns[0]!.type;
+      if (type === 'string' || type === 'number') assert.equal(typeof actual,type);
+      else assert.deepEqual(actual,JSON.parse(type));
+    } finally {engine.close();}
+  });
+});

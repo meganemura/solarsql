@@ -114,8 +114,14 @@ export class Typer {
     }
     const brand = this.brandOf(t, c);
     if (brand) return { type: brand.typeName, nullable: !c.notnull, brand: brand.typeName };
-    if (c.oneOf) return { type: c.oneOf.map((v) => JSON.stringify(v)).join(" | "), nullable: !c.notnull, brand: null };
     const scalar = scalarType(c.type);
+    // Affinity converts comparison operands and stored values. A textual list
+    // on an integer column does not establish a union of string results.
+    if (c.oneOf && ((scalar === "string" && c.oneOf.every(v => typeof v === "string"))
+      || (scalar === "number" && c.oneOf.every(v => typeof v === "number"))
+      || (scalar === "SqlValue" && t.strict))) {
+      return { type: c.oneOf.map(v => JSON.stringify(v)).join(" | "), nullable: !c.notnull, brand: null };
+    }
     if (scalar === "unknown") throw new BuildError(`column ${table}.${column} has the declared type "${c.type}", which maps to no TypeScript type. Use text, integer, real, or blob.`, sql);
     return { type: scalar, nullable: !c.notnull, brand: null };
   }
