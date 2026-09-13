@@ -58,6 +58,8 @@ Query names `kind`, `entries`, and `__proto__` are reserved.
 
 Non-STRICT columns produce `SqlValue`: their declared affinity cannot prove the stored class.
 STRICT columns produce scalar types, without identity brands or CHECK-literal unions.
+Implicit `rowid`, `_rowid_`, and `oid` references produce numeric types, with nullability from outer joins.
+A declared column with the same name retains its own type. WITHOUT ROWID tables require declared column names.
 Use runtime narrowing for existing flexible values.
 An explicit SQL CAST changes SQLite conversion behavior and can give a narrower result type.
 The supported query shapes and named parameter rules in [queries](queries.md) also apply here.

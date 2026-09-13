@@ -79,6 +79,13 @@ type ScopeContext = { rows: Map<string, ScopeColumn[]>; visible: ScopeColumn[]; 
 
 type Resolved = { type: string; nullable: boolean; brand: string | null };
 
+const rowIdentifiers = ["rowid", "_rowid_", "oid"];
+
+function implicitRowIdentifier(table: TableFact, name: string): boolean {
+  return !table.withoutRowid && rowIdentifiers.includes(sqliteName(name))
+    && !table.columns.some(column => sqliteName(column.name) === sqliteName(name));
+}
+
 export class Typer {
   private readonly recursiveRows = new Map<Binding, ScopeColumn[]>();
   private readonly tables = new Map<string, TableFact>();
@@ -97,7 +104,10 @@ export class Typer {
   // The base type of one table column, before nullability from a join.
   column(table: string, column: string, sql: string): Resolved {
     const t = this.tables.get(table);
-    const c = t?.columns.find((x) => x.name === column);
+    const c = t?.columns.find((x) => sqliteName(x.name) === sqliteName(column));
+    // SQLite stores an implicit row identifier as an integer even on a
+    // non-STRICT table. A declared column takes precedence over that spelling.
+    if (t && implicitRowIdentifier(t, column)) return { type: "number", nullable: false, brand: null };
     if (!t || !c) throw new BuildError(`unknown column ${table}.${column}`, sql);
     // An existing non-STRICT table can store a class outside its affinity.
     // CHECK literals alone do not prove the class after SQLite conversion.
@@ -264,10 +274,14 @@ export class Typer {
     }
     const table = [...this.tables.values()].find((table) => sqliteName(table.name) === sqliteName(name));
     if (!table) throw new BuildError(`unknown source ${name}`, name);
-    return table.columns.map((column) => {
+    const rows: ScopeColumn[] = table.columns.map((column) => {
       const r = note(this.column(table.name, column.name, name));
       return { name: column.name, type: r.nullable ? unionType(r.type, "null") : r.type, json: false, ...(column.hidden ? { hidden: true } : {}) };
     });
+    for (const name of rowIdentifiers) {
+      if (implicitRowIdentifier(table, name)) rows.push({ name, type: "number", json: false, hidden: true });
+    }
+    return rows;
   }
 
   private scopedReference(ref: { alias: string | null; column: string }, context: ScopeContext, nullable = context.nullable): ScopeColumn | null {
@@ -313,7 +327,7 @@ export class Typer {
     for (const source of sources) {
       const alias = sqliteName(source.alias);
       const rows = this.sourceRows(source, environment, active, note);
-      const common = new Set((source.natural ? rows.filter((column) => context.visible.some((left) => sqliteName(left.name) === sqliteName(column.name))).map((column) => column.name) : source.using).map(sqliteName));
+      const common = new Set((source.natural ? rows.filter((column) => !column.hidden && context.visible.some((left) => sqliteName(left.name) === sqliteName(column.name))).map((column) => column.name) : source.using).map(sqliteName));
       const before = context.visible;
       if (source.join === "right" || source.join === "full") {
         for (const previous of context.rows.keys()) context.nullable.add(previous);
@@ -445,7 +459,10 @@ export class Typer {
   }
 
   private aliasOfBareColumn(aliases: Map<string, string | null>, column: string): string | null {
-    const owners = [...aliases].filter(([, table]) => table !== null && this.tables.get(table)?.columns.some((c) => c.name === column));
+    const owners = [...aliases].filter(([, name]) => {
+      const table = name === null ? undefined : this.tables.get(name);
+      return table && (table.columns.some(c => sqliteName(c.name) === sqliteName(column)) || implicitRowIdentifier(table, column));
+    });
     return owners.length === 1 ? owners[0]![0] : null;
   }
 
