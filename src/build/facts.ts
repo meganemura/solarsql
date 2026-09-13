@@ -82,7 +82,7 @@ export class Engine {
     const rows = this.db
       .prepare(
         `select s.name, s.sql from sqlite_schema s join pragma_table_list l on l.name = s.name and l.schema = 'main'
-         where s.type = 'table' and s.sql is not null and s.name not like 'sqlite_%' and l.type <> 'shadow' order by s.name`,
+         where s.type = 'table' and s.sql is not null and lower(s.name) not glob 'sqlite_*' and l.type <> 'shadow' order by s.name`,
       )
       .all() as { name: string; sql: string }[];
     return rows.map((r) => this.table(r.name, r.sql));

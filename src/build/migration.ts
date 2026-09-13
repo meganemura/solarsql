@@ -50,7 +50,7 @@ export function introspect(db: DatabaseSync): Schema {
   // from a plain table; sqlite_schema calls all three "table".
   const attributes = new Map((db.prepare(`select name, type, wr, strict from pragma_table_list where schema = 'main'`).all() as { name: string; type: string; wr: number; strict: number }[]).map((r) => [r.name, r]));
   const rows = db
-    .prepare(`select type, name, tbl_name, sql from sqlite_schema where sql is not null and name not like 'sqlite_%' order by name`)
+    .prepare(`select type, name, tbl_name, sql from sqlite_schema where sql is not null and lower(name) not glob 'sqlite_*' order by name`)
     .all() as { type: string; name: string; tbl_name: string; sql: string }[];
   for (const row of rows) {
     const table = attributes.get(row.name);

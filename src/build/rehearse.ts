@@ -42,7 +42,7 @@ function validateChecks(checks: unknown): asserts checks is RehearsalChecks {
 }
 
 function counts(db: DatabaseSync): Record<string, number> {
-  const names = db.prepare("select name from sqlite_schema where type = 'table' and name not like 'sqlite_%' order by name").all();
+  const names = db.prepare("select name from sqlite_schema where type = 'table' and lower(name) not glob 'sqlite_*' order by name").all();
   return Object.fromEntries(names.map(r => [String(r.name), Number(db.prepare(`select count(*) as n from ${quoteIdent(String(r.name))}`).get()!.n)]));
 }
 

@@ -81,3 +81,14 @@ test('a nullable column transition preserves arbitrary stored values', async () 
     } finally { db.close(); }
   });
 });
+
+test('rehearsal counts include legal sqlite-prefixed tables', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table sqliteCache(id integer primary key autoincrement); insert into sqliteCache values(42)");
+    const result = rehearseSnapshot(db,'insert into sqliteCache values(43)');
+    assert.equal(result.ok,true,JSON.stringify(result));
+    assert.deepEqual(result.before,{sqliteCache:1});
+    assert.deepEqual(result.after,{sqliteCache:2});
+  } finally {db.close();}
+});

@@ -4,6 +4,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: schema analysis and migrations retain legal names such as `sqliteCache` (ADR 0069).
+
 - Fixed: table rebuilds preserve accessible row identifiers and refuse ambiguous alias changes (ADR 0068).
 
 - Added: native row-identifier types with SQLite output names, shadowing, and join nullability (ADR 0067).

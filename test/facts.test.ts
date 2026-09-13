@@ -3,7 +3,8 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { Engine } from "../src/build/facts.ts";
-import { introspect } from "../src/build/migration.ts";
+import { introspect, diff } from "../src/build/migration.ts";
+import { analyzeSchema } from "../src/build/analyze.ts";
 import { Typer } from "../src/build/typegen.ts";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
@@ -19,6 +20,37 @@ const ddl = [
   )`,
   `create table order_lines (id text primary key not null, order_id text not null references orders(id), qty integer not null, price real)`,
 ];
+
+test("legal sqlite-prefixed objects survive analysis and populated migrations", () => {
+  for (const name of ["sqliteCache", "SQLiteCache", "sqlite", "sqlite2"]) {
+    const ddl = [
+      `create table ${name}(id integer primary key autoincrement,value text) strict`,
+      `create index sqliteIndex on ${name}(value)`,
+      `create view sqliteView as select value from ${name}`,
+      `create trigger sqliteTrigger after update on ${name} begin select 1; end`,
+      `create virtual table search using fts5(value)`,
+    ];
+    const engine = new Engine(ddl), target = new Engine(ddl.map(sql => sql.replace("value text)", "value text not null)")));
+    try {
+      engine.db.exec(`insert into ${name} values(42,'kept')`);
+      assert.deepEqual(engine.tables().map(t => t.name).sort(), [name, "search"].sort());
+      const schema = introspect(engine.db);
+      assert.deepEqual([...schema.tables.keys()], [name]);
+      assert.deepEqual([...schema.indexes.keys()], ["sqliteIndex"]);
+      assert.deepEqual([...schema.views.keys()], ["sqliteView"]);
+      assert.deepEqual([...schema.triggers.keys()], ["sqliteTrigger"]);
+      const query = `select value from sqliteView`;
+      assert.equal(analyzeSchema(ddl.join(';'), { query }).operations[0]!.columns[0]!.type, "string | null");
+      const plan = diff(schema, introspect(target.db));
+      if (plan.kind !== "ok") throw new Error(plan.reason);
+      engine.db.exec("begin");
+      for (const sql of plan.statements) engine.db.exec(sql);
+      engine.db.exec("commit");
+      assert.deepEqual({ ...engine.db.prepare(`select * from ${name}`).get() }, { id:42, value:"kept" });
+      assert.deepEqual(diff(introspect(engine.db),introspect(target.db)), {kind:"ok",statements:[]});
+    } finally { engine.close(); target.close(); }
+  }
+});
 
 test("table attributes retain their engine meaning through arbitrary comments", () => {
   hegel.test(tc => {
@@ -119,5 +151,18 @@ describe("Engine", () => {
 
   test("prepare rejects an unknown column with the engine's message", () => {
     assert.throws(() => engine.prepare("select nope from orders"), /no such column: nope/);
+  });
+});
+
+test('legal generated sqlite-prefixed names remain visible to both metadata readers', () => {
+  hegel.test(tc => {
+    const suffix = tc.draw(gs.arrays(gs.integers({minValue:65,maxValue:90}), {maxSize:20})).map(n => String.fromCharCode(n)).join('');
+    const name = 'sqlite' + suffix;
+    const engine = new Engine([`create table "${name}"(value text) strict`]);
+    try {
+      engine.db.prepare(`select value from "${name}"`);
+      assert.equal(engine.tables()[0]?.name,name);
+      assert.equal(introspect(engine.db).tables.has(name),true);
+    } finally {engine.close();}
   });
 });
