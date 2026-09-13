@@ -4,6 +4,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: excluded example tests do not start Worker runtimes or prevent process exit (ADR 0084).
+
 - Added: `unique_index` command failures name the violated index; exhaustive constraint switches must handle the new variant (ADR 0083).
 
 - Fixed: constraint classification preserves unknown thrown values instead of replacing them with TypeErrors (ADR 0082).
