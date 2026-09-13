@@ -442,7 +442,7 @@ export class Typer {
     const cast = item ? castExpression(item.expr) : null;
     const scalar = affinityType(affinity) ?? (cast?.type === "Uint8Array" ? cast.type : null);
     if (scalar === null) {
-      throw new BuildError(`column "${out.name}" is an expression with no type. Wrap it in cast(... as integer), cast(... as real), or cast(... as text).`, sql);
+      throw new BuildError(`column "${out.name}" is an expression with no type. Wrap it in cast(... as integer), cast(... as real), cast(... as text), or cast(... as blob).`, sql);
     }
     const notNull = item !== null && castNeverNull(item.expr, (ref) => this.refNullable(ref, aliases, nullableAliases, sql, scope));
     return { name: out.name, type: notNull ? scalar : `${scalar} | null`, json: false };

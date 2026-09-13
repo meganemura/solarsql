@@ -388,7 +388,13 @@ describe("solarsql build", () => {
     try {
       const queries = join(dir, "example/modules/reports/module.ts");
       writeFileSync(queries, readFileSync(queries, "utf8").replace("cast(count(distinct o.id) as integer) as orders", "count(distinct o.id) as orders"));
-      await expectBuildError(dir, /column "orders" is an expression with no type/);
+      await assert.rejects(build(join(dir, "example/solarsql.config.ts")), (error: unknown) => {
+        assert.ok(error instanceof BuildError, String(error));
+        assert.equal(error.message, `column "orders" is an expression with no type. Wrap it in cast(... as integer), cast(... as real), cast(... as text), or cast(... as blob).
+  in: select c.id as customer_id, c.name, cast(sum(l.qty * l.price) as real) as revenue, count(distinct o.id) as orders from customers c join orders o on o.customer_id = c.id and o.status = 'confirmed' join order_lines l on l.order_id = o.id group by c.id order by revenue desc
+  at: ${queries}: query reportQueries.revenueByCustomer`);
+        return true;
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
