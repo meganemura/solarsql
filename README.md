@@ -8,6 +8,9 @@ You write SQL. The build step asks the real engine what the SQL returns, and wri
 A command is a list of statements and asserts that runs as one transaction on both targets, and a failure comes back as a value.
 A module owns its tables, and the build step refuses a statement that reaches into another module's tables.
 
+Have an existing SQLite schema? Start with [schema-only query generation](skills/solarsql/references/analyze.md), which accepts your DDL without module or identity rules.
+The [SQL change walkthrough](skills/solarsql/references/sql-workflow.md) grows a query into a CTE report, repairs its generated contract, and rehearses a migration with stored rows.
+
 ## Start a project
 
 ```sh

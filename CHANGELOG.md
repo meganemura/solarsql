@@ -6,6 +6,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 - Added: `analyze` generates types and metadata from schema DDL and a JSON query catalog, without module imports or identity rules (ADR 0058).
 - Added: `inspect` and `build --json` expose operation contracts, accesses, freshness, and structured diagnostics (ADR 0055).
+- Added: `rehearse` checks a populated SQLite snapshot with integrity checks, old queries, and data assertions (ADRs 0057 and 0059).
 - Changed: Node and Durable Object migration history records exact SQL and rejects changed, missing, duplicate, or out-of-order files. Legacy history requires explicit adoption (ADR 0056).
 - Fixed: integer and BLOB primary keys retain their scalar types; identity brands require text storage (ADR 0053).
 - Fixed: adapters normalize BLOB results to `Uint8Array`, including D1 byte arrays, before JSON decoding (ADR 0054).

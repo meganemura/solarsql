@@ -8,6 +8,7 @@ description: Use when a project uses solarsql, the typed SQL layer for SQLite on
 For an existing schema and a SQL catalog, start with [schema-only analysis](references/analyze.md).
 It generates query types without module ownership or identity rules.
 The module workflow below adds those policies when you want them.
+For a complete example, follow [SQL growth, repair, and rehearsal](references/sql-workflow.md).
 
 A module owns its tables and shows other modules one `public.ts`.
 The schema is SQLite DDL in string literals.

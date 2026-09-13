@@ -20,6 +20,16 @@ export type RehearsalResult = {
   diagnostics: { code: string; message: string }[];
 };
 
+function validateChecks(checks: unknown): asserts checks is RehearsalChecks {
+  if (!checks || typeof checks !== 'object' || Array.isArray(checks)) throw new Error('Checks must be an object with queries and/or assertions');
+  for (const [key, value] of Object.entries(checks)) {
+    if (!['queries', 'assertions'].includes(key)) throw new Error(`Unknown checks field ${key}; use queries or assertions`);
+    if (!value || typeof value !== 'object' || Array.isArray(value) || Object.values(value).some(sql => typeof sql !== 'string')) {
+      throw new Error(`${key} must be an object of names and SQL strings`);
+    }
+  }
+}
+
 function counts(db: DatabaseSync): Record<string, number> {
   const names = db.prepare("select name from sqlite_schema where type = 'table' and name not like 'sqlite_%' order by name").all();
   return Object.fromEntries(names.map(r => [String(r.name), Number(db.prepare(`select count(*) as n from ${quoteIdent(String(r.name))}`).get()!.n)]));
@@ -62,9 +72,11 @@ export async function rehearse(database: string, sql: string, checks: RehearsalC
 // The caller supplies a disposable database. This seam keeps transition checks
 // synchronous and allows property tests without filesystem scheduling.
 export function rehearseSnapshot(db: DatabaseSync, sql: string, checks: RehearsalChecks = {}): RehearsalResult {
-  let stage = 'BASELINE_FAILED';
+  let stage = 'CHECKS_INVALID';
   const result: RehearsalResult = { version: 1, ok: false, sql, before: {}, after: {}, queries: [], assertions: [], diagnostics: [] };
   try {
+    // A misspelled check must fail, rather than silently approve less evidence.
+    validateChecks(checks);
     // Prevent a migration from reaching the original database through ATTACH
     // or directing SQLite temporary files to a caller-selected directory.
     db.setAuthorizer((action, arg) => {
