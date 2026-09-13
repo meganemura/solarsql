@@ -40,10 +40,8 @@ export function bindValues(meta: StatementMeta, params: Record<string, unknown>)
 // Durable Object report `<name>: SQLITE_CONSTRAINT (extended:
 // SQLITE_CONSTRAINT_TRIGGER)`, and D1 adds a `D1_ERROR: ` prefix.
 export function assertFailure(error: unknown, asserts: readonly string[]): string | null {
-  // A cleanup failure must not collapse into its original assertion cause.
-  if (error instanceof AggregateError) return null;
-  const e = error as { message?: string; errcode?: number; cause?: { message?: string } };
-  const message = e.cause?.message ?? e.message ?? "";
+  const e = errorDetails(error);
+  const message = e.message;
   const isTrigger = e.errcode === 1811 || message.includes("SQLITE_CONSTRAINT_TRIGGER");
   if (!isTrigger) return null;
   const body = message.replace(/^D1_ERROR:\s*/, "");
@@ -71,18 +69,30 @@ export function parseJson<R extends Record<string, unknown>>(rows: readonly Reco
   });
 }
 
+// Unknown thrown values include null and objects with inaccessible fields.
+// Decline classification rather than replacing the original failure.
+function errorDetails(error: unknown): { message: string; errcode?: number } {
+  try {
+    if (error === null || (typeof error !== "object" && typeof error !== "function") || error instanceof AggregateError) return { message: "" };
+    const e = error as { message?: unknown; cause?: unknown; errcode?: unknown };
+    const cause = e.cause;
+    const causeMessage = cause !== null && (typeof cause === "object" || typeof cause === "function") ? (cause as { message?: unknown }).message : undefined;
+    const message = typeof causeMessage === "string" ? causeMessage : e.message;
+    const errcode = e.errcode;
+    return { message: typeof message === "string" ? message : "", ...(typeof errcode === "number" ? { errcode } : {}) };
+  } catch { return { message: "" }; }
+}
+
 // The message of an engine error without the D1 prefix and the extended
 // result code suffix that D1 and a Durable Object append.
 function bareMessage(error: unknown): string {
-  const e = error as { message?: string; cause?: { message?: string } };
-  const message = e.cause?.message ?? e.message ?? "";
+  const message = errorDetails(error).message;
   return message.replace(/^D1_ERROR:\s*/, "").replace(/:\s*SQLITE_CONSTRAINT(?:_[A-Z]+)?\s*(?:\(extended:[^)]*\))?\s*$/, "");
 }
 
 // A constraint failure as a value, when the error is one. The text formats
 // are the same on node:sqlite, D1, and a Durable Object.
 export function constraintFailure(error: unknown): ConstraintFailure | null {
-  if (error instanceof AggregateError) return null;
   const m = bareMessage(error);
   let match: RegExpExecArray | null;
   if ((match = /^UNIQUE constraint failed: (.+)$/.exec(m))) {

@@ -4,6 +4,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: constraint classification preserves unknown thrown values instead of replacing them with TypeErrors (ADR 0082).
+
 - Fixed: observer failures cannot replace database results or notify twice after a committed command (ADR 0081).
 
 - Fixed: numeric literals retain hexadecimal prefixes, digit separators, and decimal exponent spellings (ADR 0080).

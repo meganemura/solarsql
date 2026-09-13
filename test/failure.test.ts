@@ -1,3 +1,5 @@
+// Responsibility: verify structured engine failures and unrecognized error identity.
+// Boundary: classification does not infer transaction completion for unknown failures.
 // The adapter turns an engine error into a value. The message formats are
 // fixed strings on node:sqlite, D1, and a Durable Object, so a message built
 // from a kind, a table, and columns must parse back to the same value.
@@ -46,4 +48,33 @@ describe("constraintFailure", () => {
     assert.equal(constraintFailure(assertError), null);
     assert.equal(constraintFailure(new Error("D1_ERROR: too many SQL variables at offset 230: SQLITE_ERROR")), null);
   });
+});
+
+test('unknown thrown values are not replaced by classification errors', () => {
+  hegel.test(tc=>{
+    const value=tc.draw(gs.sampledFrom<unknown>([null,undefined,tc.draw(gs.integers()),tc.draw(gs.text()),Symbol('failure'),{},
+      {message:12},{cause:{message:false}},{get message(){throw Error('unreadable');}},
+      new AggregateError([new Error('UNIQUE constraint failed: t.id')],'cleanup failed',{cause:new Error('UNIQUE constraint failed: t.id')}),
+      new Proxy({}, {getPrototypeOf(){throw Error('unreadable prototype');}}),
+    ]));
+    assert.equal(assertFailure(value,['failed']),null);
+    assert.equal(constraintFailure(value),null);
+  },{testCases:1000});
+});
+
+test('public command adapters rethrow unrecognized values unchanged', async () => {
+  const {d1}=await import('../src/d1.ts');
+  const {durable}=await import('../src/durable.ts');
+  const {customerCommands}=await import('../example/modules/customers/public.ts');
+  for(const value of [null,undefined,7,'transport failed',{message:42},{get cause(){throw Error('unreadable');}}]) {
+    const statement={bind(){return this;},async all(){throw value;}};
+    const binding={prepare(){return statement;},async batch(){throw value;}};
+    const storage={sql:{exec(){return {toArray(){return [];}};}},transactionSync<T>(_body:()=>T):T{throw value;}};
+    for(const db of [d1(binding),durable(storage)]) {
+      let rejected=false;
+      try{await db.run(customerCommands.create,{id:'x' as never,name:'X',email:'x@example.test'});}
+      catch(error){rejected=true;assert.equal(error,value);}
+      assert.equal(rejected,true);
+    }
+  }
 });
