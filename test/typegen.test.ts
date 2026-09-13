@@ -445,3 +445,37 @@ test('JSON decoding follows the complete expression and explicit scalar casts', 
     assert.throws(()=>new Typer(engine,new Map()).analyze("select json_object('value',json((select length(json_group_array(1)))))",''),/cast/);
   }finally{engine.close();}
 });
+
+test('complete BLOB casts retain binary values through SQL trivia and scopes', async () => {
+  const {test:property}=await import('@hegeldev/hegel');
+  const gs=await import('@hegeldev/hegel/generators');
+  const engine=new Engine([]);
+  try {
+    property(tc=>{
+      const bytes=Uint8Array.from(tc.draw(gs.binary()));
+      const literal=`x'${Buffer.from(bytes).toString('hex')}'`;
+      const gap=tc.draw(gs.sampledFrom([' ','\n',' /* conversion */ ']));
+      const cast=`(cast${gap}(${literal}${gap}as${gap}BLOB))`;
+      for(const sql of [`select ${cast} as value`,`with data as (select ${cast} as value) select value from data`]) {
+        const analysis=new Typer(engine,new Map()).analyze(sql,'');
+        assert.deepEqual(analysis.columns,[{name:'value',type:'Uint8Array | null',json:false}]);
+        assert.equal(analysis.sql,sql);
+        assert.deepEqual(engine.db.prepare(sql).get()!.value,bytes);
+      }
+    },{testCases:1000});
+    for(const target of ['integer','real','text','blob']) {
+      const sql=`select json_object('value',(cast /* note */ (null AS /* note */ ${target}))) as value`;
+      const type=target==='blob'?'JsonValue':target==='text'?'string | null':'number | null';
+      assert.equal(new Typer(engine,new Map()).analyze(sql,'').columns[0]!.type,`{ "value": ${type} }`);
+      assert.deepEqual(JSON.parse(engine.db.prepare(sql).get()!.value as string),{value:null});
+    }
+    for(const inner of ['exists(select 1) + null','not exists(select 1) + null']) {
+      const sql=`select cast /* why */ (${inner} as integer) as value`;
+      assert.equal(new Typer(engine,new Map()).analyze(sql,'').columns[0]!.type,'number | null');
+      assert.equal(engine.db.prepare(sql).get()!.value,null);
+    }
+    assert.equal(new Typer(engine,new Map()).analyze('select cast /* why */ (count(*) as integer) as value','').columns[0]!.type,'number');
+    assert.throws(()=>new Typer(engine,new Map()).analyze("select json_object('value',length(cast('x' as text)))",''),/cast/);
+    assert.throws(()=>new Typer(engine,new Map()).analyze("select json_object('value',cast(1 as integer) + 2)",''),/cast/);
+  }finally{engine.close();}
+});

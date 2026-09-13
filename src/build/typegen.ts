@@ -437,7 +437,10 @@ export class Typer {
       return { name: out.name, type: this.jsonObjectType(sql, json.expr, item, aliases, nullableAliases, note, false, scope), json: true };
     }
     const affinity = affinities.get(out.name) ?? "";
-    const scalar = affinityType(affinity);
+    // CTAS stores BLOB affinity as an empty declaration. A complete CAST
+    // supplies the explicit binary type that this engine probe cannot retain.
+    const cast = item ? castExpression(item.expr) : null;
+    const scalar = affinityType(affinity) ?? (cast?.type === "Uint8Array" ? cast.type : null);
     if (scalar === null) {
       throw new BuildError(`column "${out.name}" is an expression with no type. Wrap it in cast(... as integer), cast(... as real), or cast(... as text).`, sql);
     }
@@ -559,13 +562,9 @@ export class Typer {
       const joinNull = alias !== null && nullableAliases.has(alias);
       return r.nullable || joinNull ? `${r.type} | null` : r.type;
     }
-    const cast = findCall(expr, "cast");
-    if (cast && cast.open === expr.toLowerCase().indexOf("cast(") + 4) {
-      const m = /\bas\s+([A-Za-z]+)\s*$/i.exec(cast.args[0]!.text);
-      if (m) {
-        const scalar = scalarType(m[1]!);
-        if (scalar !== "unknown") return castNeverNull(expr, (r) => this.refNullable(r, aliases, nullableAliases, sql, scope)) ? scalar : `${scalar} | null`;
-      }
+    const cast = castExpression(expr);
+    if (cast && cast.type !== "unknown") {
+      return castNeverNull(expr, (r) => this.refNullable(r, aliases, nullableAliases, sql, scope)) ? cast.type : `${cast.type} | null`;
     }
     throw new BuildError(`value "${expr}" inside json has no type. Use a column reference, cast(... as integer | real | text), or json((select json_group_array(...) ...)).`, sql);
   }
@@ -760,14 +759,17 @@ export class Typer {
 const neverNullCalls = new Set(["count", "total", "row_number", "rank", "dense_rank", "ntile", "coalesce", "ifnull"]);
 
 export function castNeverNull(expr: string, columnNullable: (ref: { alias: string | null; column: string }) => boolean | null): boolean {
-  if (!/^\s*cast\s*\(/i.test(expr)) return false;
-  const cast = findCall(expr, "cast");
-  if (!cast || cast.args.length !== 1) return false;
-  const inner = cast.args[0]!.text.replace(/\s+as\s+[A-Za-z]+\s*$/i, "");
+  const cast = castExpression(expr);
+  if (!cast) return false;
+  const inner = stripParens(cast.inner);
   const t = significant(tokenize(inner));
   const first = t[0];
   if (!first) return false;
-  if (isKeyword(first, "exists") || (isKeyword(first, "not") && isKeyword(t[1], "exists"))) return true;
+  const exists = isKeyword(first, "exists") ? 0 : isKeyword(first, "not") && isKeyword(t[1], "exists") ? 1 : -1;
+  if (exists >= 0) {
+    const open = t[exists + 1];
+    return open?.text === "(" && t.findIndex((token, i) => i > exists + 1 && token.text === ")" && token.depth === open.depth) === t.length - 1;
+  }
   if (first.type !== "ident" || t[1]?.text !== "(") return false;
   const fn = first.text.toLowerCase();
   if (!neverNullCalls.has(fn)) return false;
@@ -874,4 +876,17 @@ function jsonExpression(input: string): { kind: "array" | "object"; expr: string
     if (shape?.kind === "array") return shape;
   }
   return null;
+}
+
+// Read the outer CAST only. Comments and type-name syntax do not change
+// SQLite's conversion, and an inner CAST cannot type an enclosing operator.
+function castExpression(input: string): { inner: string; type: string } | null {
+  const expr = stripParens(input);
+  const call = completeCall(expr, "cast");
+  if (!call || call.args.length !== 1) return null;
+  const tokens = significant(tokenize(expr));
+  const as = tokens.findIndex(token => token.depth === 1 && isKeyword(token, "as"));
+  if (as < 0) return null;
+  const name = tokens.slice(as + 1, -1).map(token => unquote(token.text)).join(" ");
+  return { inner: expr.slice(call.open + 1, tokens[as]!.start).trim(), type: scalarType(name) };
 }

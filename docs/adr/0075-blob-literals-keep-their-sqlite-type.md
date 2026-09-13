@@ -1,6 +1,6 @@
 # ADR 0075: BLOB literals keep their SQLite type
 
-Status: accepted (2026-09-14)
+Status: accepted (2026-09-13)
 
 ## Context
 

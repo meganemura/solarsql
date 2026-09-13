@@ -87,8 +87,8 @@ test('generated JSONB contracts compile and execute on Node, D1, and Durable Obj
   let mf:ReturnType<typeof workerMiniflare>|undefined;
   t.after(async()=>{await mf?.dispose();rmSync(dir,{recursive:true,force:true});});
   const library=relative(dir,join(root,'src/index.ts'));
-  const sql="select json_object('data',value) as result from payload";
-  const report=analyzeSchema('create table payload(value blob) strict',{query:sql},library);
+  const sql="with payload as (select cast /* JSONB storage */ (jsonb(:input) as blob) as value) select json_object('data',value) as result from payload";
+  const report=analyzeSchema('',{query:sql},library);
   assert.equal(report.operations[0]!.columns[0]!.type,'{ "data": JsonValue }');
   writeFileSync(join(dir,'package.json'),'{"type":"module"}');
   writeFileSync(join(dir,'generated.ts'),report.generated);
@@ -97,7 +97,7 @@ import {queries, type Row, type JsonValue} from ${JSON.stringify(library)};
 import {generated,statements} from './generated.ts';
 export const q=queries(generated,statements);
 export const expected:JsonValue={nested:[true,null,3],text:'value'};
-export const params={};
+export const params={input:JSON.stringify(expected)};
 export const typedRow:Row<typeof q.query>={result:{data:expected}};
 export function check(value:JsonValue):JsonValue{return value;}
 // @ts-expect-error Binary storage does not describe decoded JSON.
@@ -110,7 +110,7 @@ import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {node} from ${JSON.stringify(relative(dir,join(root,'src/node.ts')))};
 import {q,params,expected,check} from './consumer.ts';
-const raw=new DatabaseSync(':memory:');try{raw.exec('create table payload(value blob) strict');raw.prepare('insert into payload values(jsonb(?))').run(JSON.stringify(expected));const rows=await node(raw).all(q.query,params);assert.deepEqual(check(rows[0].result.data),expected);}finally{raw.close();}
+const raw=new DatabaseSync(':memory:');try{const rows=await node(raw).all(q.query,params);assert.deepEqual(check(rows[0].result.data),expected);}finally{raw.close();}
 `);
   const executed=spawnSync(process.execPath,[join(dir,'execute.mjs')],{encoding:'utf8',timeout:30_000});
   assert.equal(executed.status,0,executed.stdout+executed.stderr);
@@ -119,8 +119,8 @@ import {DurableObject} from 'cloudflare:workers';
 import {d1} from ${JSON.stringify(relative(dir,join(root,'src/d1.ts')))};
 import {durable} from ${JSON.stringify(relative(dir,join(root,'src/durable.ts')))};
 import {q,params,expected,check} from './consumer.ts';
-export class Slots extends DurableObject {async fetch(){this.ctx.storage.sql.exec('create table payload(value blob) strict');this.ctx.storage.sql.exec('insert into payload values(jsonb(?))',JSON.stringify(expected));return Response.json(await durable(this.ctx.storage).all(q.query,params));}}
-export default {async fetch(request,env){if(new URL(request.url).pathname==='/do')return env.SLOTS.get(env.SLOTS.idFromName('slots')).fetch('http://local');await env.DB.exec('create table payload(value blob) strict');await env.DB.prepare('insert into payload values(jsonb(?))').bind(JSON.stringify(expected)).run();return Response.json(await d1(env.DB).all(q.query,params));}};
+export class Slots extends DurableObject {async fetch(){return Response.json(await durable(this.ctx.storage).all(q.query,params));}}
+export default {async fetch(request,env){if(new URL(request.url).pathname==='/do')return env.SLOTS.get(env.SLOTS.idFromName('slots')).fetch('http://local');return Response.json(await d1(env.DB).all(q.query,params));}};
 `);
   mf=workerMiniflare(join(dir,'worker.ts'),resolve('/'),{durableObjects:{SLOTS:'Slots'}});
   for(const path of ['/','/do']) {

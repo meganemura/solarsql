@@ -55,7 +55,9 @@ Unrecognized parameter expressions retain the `SqlValue` fallback.
 
 The build follows column references through tables, views, CTEs, and derived tables.
 Literals, scalar SELECTs, and the JSON shapes below have inferred types.
-Other expressions need `cast(... as integer | real | text)`.
+Other expressions need `cast(... as integer | real | text | blob)`.
+CAST accepts SQL comments, whitespace, and enclosing parentheses.
+A BLOB cast returns `Uint8Array | null` unless the complete inner expression proves a non-null result.
 
 | Column of the select list | Type |
 |---|---|
