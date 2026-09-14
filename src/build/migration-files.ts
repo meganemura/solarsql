@@ -13,7 +13,7 @@ export function migrationSequence(names: readonly string[]): { maximum: number; 
     const match = /^(\d{4,})_[a-z0-9_]+\.sql$/.exec(name);
     const sequence = match ? Number(match[1]) : NaN;
     if (!Number.isSafeInteger(sequence) || sequence <= maximum) {
-      throw new BuildError(`Migration history has an invalid or ambiguous sequence at ${name}. Restore applied filenames; use unique, increasing NNNN_name.sql names for new files.`);
+      throw new BuildError(`Migration history has an invalid or ambiguous sequence at ${name}: rename it to a unique, increasing NNNN_name.sql number if no database has applied it, or write a new migration that reconciles the colliding files if one already has.`);
     }
     maximum = sequence;
     width = Math.max(width, match![1]!.length);

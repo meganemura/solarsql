@@ -613,7 +613,8 @@ const emptyIntent: MigrationIntent = { drops: [], renames: [] };
 function migrationStatus(configDir: string, config: Config, modules: readonly Module[], intent: MigrationIntent = emptyIntent): BuildResult["migration"] {
   const dir = resolve(configDir, config.migrations);
   const files = migrationFiles(dir);
-  const current = applied(files.map((f) => f.sql));
+  migrationSequence(files.map((f) => f.name));
+  const current = applied(files.map((f) => f.sql), files.map((f) => f.name));
   const target = open(declaredDdl(modules));
   try {
     const plan = diff(introspect(current), introspect(target), intent.renames, intent.drops);

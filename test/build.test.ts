@@ -184,6 +184,30 @@ describe("solarsql build", () => {
     }
   });
 
+  test("two independently generated migrations sharing a sequence number are refused before merge", async () => {
+    const dir = copy();
+    try {
+      const migrations = join(dir, "example/migrations");
+      writeFileSync(join(migrations, "0006_add_a.sql"), "alter table customers add column note_a text;\n");
+      writeFileSync(join(migrations, "0006_add_b.sql"), "alter table customers add column note_b text;\n");
+      await expectBuildError(dir, /invalid or ambiguous sequence/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("two migrations with different sequence numbers but colliding DDL are refused with the file named", async () => {
+    const dir = copy();
+    try {
+      const migrations = join(dir, "example/migrations");
+      writeFileSync(join(migrations, "0006_add_priority_a.sql"), "alter table customers add column priority text;\n");
+      writeFileSync(join(migrations, "0007_add_priority_b.sql"), "alter table customers add column priority text;\n");
+      await expectBuildError(dir, /migration 0007_add_priority_b\.sql: duplicate column name: priority/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a changed statement is reported as one removed and one added", async () => {
     const dir = copy();
     try {

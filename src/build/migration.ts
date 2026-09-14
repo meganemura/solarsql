@@ -10,6 +10,7 @@
 // again, and its shadow tables are the engine's own.
 import { DatabaseSync } from "node:sqlite";
 import { definitions, isKeyword, normalize, quoteIdent, splitStatements, tokenize, type Token } from "./scan.ts";
+import { BuildError } from "./typegen.ts";
 
 export type Column = { name: string; type: string; notnull: boolean; dflt: string | null; pk: number; def: string; generated: boolean };
 export type ForeignKey = { table: string; from: string; to: string; onUpdate: string; onDelete: string };
@@ -35,12 +36,20 @@ export function open(statements: readonly string[]): DatabaseSync {
 
 // The schema after the migration files, applied in order, one transaction
 // per file, the way wrangler applies them.
-export function applied(files: readonly string[]): DatabaseSync {
+// `names`, when given, lets a replay failure name the specific migration
+// file it came from, matching the location a build error carries
+// everywhere else. Callers that only have raw SQL fragments (most tests)
+// omit it and get the engine's own message unwrapped, as before.
+export function applied(files: readonly string[], names?: readonly string[]): DatabaseSync {
   const db = new DatabaseSync(":memory:");
-  for (const file of files) {
-    db.exec("begin");
-    for (const s of splitStatements(file)) db.exec(s);
-    db.exec("commit");
+  for (const [i, file] of files.entries()) {
+    try {
+      db.exec("begin");
+      for (const s of splitStatements(file)) db.exec(s);
+      db.exec("commit");
+    } catch (e) {
+      throw names ? new BuildError(`migration ${names[i]}: ${(e as Error).message}`) : e;
+    }
   }
   return db;
 }
