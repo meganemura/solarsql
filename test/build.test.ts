@@ -209,7 +209,7 @@ describe("solarsql build", () => {
       const migrations = join(dir, "example/migrations");
       writeFileSync(join(migrations, "0006_add_priority_a.sql"), "alter table customers add column priority text;\n");
       writeFileSync(join(migrations, "0007_add_priority_b.sql"), "alter table customers add column priority text;\n");
-      await expectBuildError(dir, /migration 0007_add_priority_b\.sql: duplicate column name: priority/);
+      await expectBuildError(dir, /migration 0007_add_priority_b\.sql, statement 1 of 1: duplicate column name: priority/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

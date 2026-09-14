@@ -43,12 +43,24 @@ export function open(statements: readonly string[]): DatabaseSync {
 export function applied(files: readonly string[], names?: readonly string[]): DatabaseSync {
   const db = new DatabaseSync(":memory:");
   for (const [i, file] of files.entries()) {
+    let statements: string[] = [];
+    // Non-null only while a specific statement of this file is running, so
+    // a failure at "begin" or "commit" itself (for example a deferred
+    // foreign key checked at commit) is not misattributed to the last
+    // statement that happened to run before it.
+    let ordinal: number | null = null;
     try {
+      statements = splitStatements(file);
       db.exec("begin");
-      for (const s of splitStatements(file)) db.exec(s);
+      for (const [j, s] of statements.entries()) {
+        ordinal = j + 1;
+        db.exec(s);
+      }
+      ordinal = null;
       db.exec("commit");
     } catch (e) {
-      throw names ? new BuildError(`migration ${names[i]}: ${(e as Error).message}`) : e;
+      const at = ordinal === null ? "" : `, statement ${ordinal} of ${statements.length}`;
+      throw names ? new BuildError(`migration ${names[i]}${at}: ${(e as Error).message}`) : e;
     }
   }
   return db;
