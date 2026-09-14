@@ -4,6 +4,28 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## 0.4.0 (2026-09-14)
 
+- Fixed: an assert predicate that evaluates to NULL, or to text SQLite cannot read as a number, now fails as a normal assert (`kind: "assert"`), not a constraint failure naming the internal guard table. The build also refuses a `returns` clause that calls `changes()`, the same as a misplaced `changes()` inside an assert (ADR 0095).
+
+- Fixed: a `CASE ... END` expression inside a trigger body no longer ends the trigger early when a migration file is replayed.
+
+- Added: the build refuses two migration files that share a sequence number before they merge, not only when a new file is generated (ADR 0094).
+
+- Added: the build refuses a foreign key whose target table or column the schema does not declare.
+
+- Added: the build refuses a write plan item (`insert`, `update`, `delete`, or `replace`) with a `RETURNING` clause, which the adapter discards at run time; move the read into the command's `returns` field instead.
+
+- Fixed: a command with an assert deletes the guard table's rows once its plan and `returns` clause finish, so the table returns to zero rows between commands. A command's `rows_written` on D1 now includes this cleanup delete (ADR 0093).
+
+- Fixed: `solarsql build`'s full-scan report no longer names a CTE or a derived table's alias as a scanned table.
+
+- Fixed: a worker CLI command's real result is no longer discarded to a deadline timer that was still armed when the result arrived.
+
+- Fixed: a worker's report message is refused unless it carries the expected protocol and token, closing a gap where another process on the same channel could inject a report.
+
+- Fixed: a migration-intent rename's missing-column error names the case-sensitivity requirement: match the declared DDL spelling exactly, including its case.
+
+- Fixed: a generated migration file is written to a temporary file and linked into place, so a killed write leaves no partial file at the final name.
+
 - Added: `checks.cases` in rehearsal executes named-parameter queries before and after a migration, catching failures that a column check alone misses. A top-level boolean parameter is rejected; SQLite bind values have none.
 
 - Added: `build`, `build --check`, and `migration` run the project configuration import in a worker with a time budget, superseding ADR 0089 for these commands (ADR 0092).
