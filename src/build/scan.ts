@@ -763,6 +763,7 @@ export function splitStatements(sql: string): string[] {
   const all = tokenize(sql);
   const out: string[] = [];
   let inTrigger = false;
+  let caseDepth = 0;
   let start = 0;
   // Only a CREATE TRIGGER statement has a BEGIN ... END body. A table named
   // `begin` or a BEGIN TRANSACTION statement must not open one.
@@ -774,13 +775,21 @@ export function splitStatements(sql: string): string[] {
     if (first === null) first = t;
     if (isKeyword(first, "create") && t.depth === 0 && isKeyword(t, "trigger")) createTrigger = true;
     if (createTrigger && t.depth === 0 && isKeyword(t, "begin")) inTrigger = true;
-    if (t.depth === 0 && inTrigger && isKeyword(t, "end")) inTrigger = false;
+    // CASE closes with its own bare END, at the same depth as the trigger's
+    // own closing END (CASE opens no parenthesis); count nested CASE/END
+    // pairs so only the trigger's own END ends its body.
+    if (inTrigger && t.depth === 0 && isKeyword(t, "case")) caseDepth++;
+    if (t.depth === 0 && inTrigger && isKeyword(t, "end")) {
+      if (caseDepth > 0) caseDepth--;
+      else inTrigger = false;
+    }
     if (t.type === "punct" && t.text === ";" && t.depth === 0 && !inTrigger) {
       const text = stripComments(sql.slice(start, t.start)).trim();
       if (text.length > 0) out.push(text);
       start = t.end;
       first = null;
       createTrigger = false;
+      caseDepth = 0;
     }
   }
   const rest = stripComments(sql.slice(start)).trim();

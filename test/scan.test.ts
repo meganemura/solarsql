@@ -96,6 +96,13 @@ describe("splitStatements", () => {
     assert.deepEqual(splitStatements("begin transaction; insert into t values (1); commit;"), ["begin transaction", "insert into t values (1)", "commit"]);
     assert.deepEqual(splitStatements("begin; insert into t values (1); end;"), ["begin", "insert into t values (1)", "end"]);
   });
+
+  test("a CASE expression inside a trigger body does not end it early", () => {
+    const trigger = "create trigger t_touch after update on t begin update t set x = case when new.y is null then 1 else 2 end where id = new.id; end";
+    assert.deepEqual(splitStatements(`${trigger};`), [trigger]);
+    const nested = "create trigger t_touch after update on t begin update t set x = case when new.y is null then case when new.z is null then 1 else 2 end else 3 end where id = new.id; end";
+    assert.deepEqual(splitStatements(`${nested};`), [nested]);
+  });
 });
 
 describe("shapes", () => {
