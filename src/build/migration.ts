@@ -9,7 +9,7 @@
 // (CREATE VIRTUAL TABLE) has no ALTER: a change drops it and creates it
 // again, and its shadow tables are the engine's own.
 import { DatabaseSync } from "node:sqlite";
-import { definitions, isKeyword, normalize, parseRebuildRecords, quoteIdent, REBUILD_HEADER, splitStatements, tokenize, type RebuildRecord, type Token } from "./scan.ts";
+import { created, definitions, isKeyword, normalize, parseRebuildRecords, quoteIdent, REBUILD_HEADER, splitStatements, tokenize, type RebuildRecord, type Token, unknownDeclaration } from "./scan.ts";
 import { BuildError } from "./typegen.ts";
 
 export type Column = { name: string; type: string; notnull: boolean; dflt: string | null; pk: number; def: string; generated: boolean };
@@ -57,7 +57,7 @@ export function applied(files: readonly string[], names?: readonly string[]): Da
     for (const [tableName, table] of schema.tables) {
       for (const column of table.columns) before.add(`${tableName} ${column.name}`);
     }
-    for (const { table, columns } of parseRebuildRecords(file)) {
+    for (const { table, columns, constraints, indexes, triggers } of parseRebuildRecords(file)) {
       const actual = schema.tables.get(table);
       if (!actual) continue;
       const recorded = new Map(columns.map((c) => [c.name, c.def]));
@@ -78,6 +78,38 @@ export function applied(files: readonly string[], names?: readonly string[]): Da
         throw new BuildError(
           `migration ${label} rebuilds table ${quoteIdent(table)} with a stale declaration of column ${quoteIdent(changed.name)}: it now declares ${JSON.stringify(changed.def)}, but this file's generator saw ${JSON.stringify(recorded.get(changed.name))}. ` +
           `A database that replays ${label} loses that change. ` +
+          action,
+          undefined,
+          action,
+        );
+      }
+      const badConstraint = unknownDeclaration(constraints, actual.constraints);
+      if (badConstraint !== undefined) {
+        throw new BuildError(
+          `migration ${label} rebuilds table ${quoteIdent(table)} without knowledge of a table-level constraint it already has: ${JSON.stringify(badConstraint)}. ` +
+          `A database that replays ${label} loses that constraint. ` +
+          action,
+          undefined,
+          action,
+        );
+      }
+      const actualIndexSql = [...schema.indexes.values()].filter((i) => i.table === table).map((i) => normalize(i.sql));
+      const badIndex = unknownDeclaration(indexes, actualIndexSql);
+      if (badIndex !== undefined) {
+        throw new BuildError(
+          `migration ${label} rebuilds table ${quoteIdent(table)} without knowledge of index ${quoteIdent(created(badIndex)?.name ?? badIndex)} it already has: ${JSON.stringify(badIndex)}. ` +
+          `A database that replays ${label} loses that index. ` +
+          action,
+          undefined,
+          action,
+        );
+      }
+      const actualTriggerSql = [...schema.triggers.values()].filter((t) => t.table === table).map((t) => normalize(t.sql));
+      const badTrigger = unknownDeclaration(triggers, actualTriggerSql);
+      if (badTrigger !== undefined) {
+        throw new BuildError(
+          `migration ${label} rebuilds table ${quoteIdent(table)} without knowledge of trigger ${quoteIdent(created(badTrigger)?.name ?? badTrigger)} it already has: ${JSON.stringify(badTrigger)}. ` +
+          `A database that replays ${label} loses that trigger and the behavior it maintains. ` +
           action,
           undefined,
           action,
@@ -555,7 +587,13 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
       }
       rebuilt.add(name);
       needsDefer = true;
-      rebuilds.push({ table: name, columns: current_.columns.map((c) => ({ name: c.name, def: c.def })) });
+      rebuilds.push({
+        table: name,
+        columns: current_.columns.map((c) => ({ name: c.name, def: c.def })),
+        constraints: [...current_.constraints],
+        indexes: [...current.indexes.values()].filter((i) => i.table === name).map((i) => normalize(i.sql)),
+        triggers: [...current.triggers.values()].filter((t) => t.table === name).map((t) => normalize(t.sql)),
+      });
     }
     changeTables.push(...plan.statements);
   }

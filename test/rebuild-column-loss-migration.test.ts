@@ -309,3 +309,271 @@ test("a Durable Object's runtime migrate() also accepts a single rebuild that ch
   const row = db.prepare(`select "notnull" from pragma_table_xinfo(?) where name = ?`).get("t", "a") as { notnull: number };
   assert.equal(row.notnull, 0);
 });
+
+// ADR 0102: a rebuild's DROP TABLE also silently drops a table-level
+// constraint, an index, or a trigger the table already has, unless the
+// rebuild's own generator knew about it. The tests below extend the column
+// checks above to those three kinds of declaration.
+
+test("a table-level constraint added by one rebuild is lost when a sibling rebuild of the same table replays without knowing about it", () => {
+  const base = "create table t (id text primary key not null, a integer not null, b integer not null) strict";
+  const targetB = "create table t (id text primary key not null, a integer not null, b integer not null, unique (a, b)) strict"; // branch B: adds a table-level UNIQUE
+  const targetA = "create table t (id text primary key not null, a integer not null, b integer not null, check (a + b > 0)) strict"; // branch A: independently adds a table-level CHECK
+
+  const currentDb = open([base]);
+  const planB = diff(introspect(currentDb), introspect(open([targetB])));
+  assert.equal(planB.kind, "ok");
+  if (planB.kind !== "ok") return;
+  const fileB = render(2, "add_unique", planB.statements, planB.rebuilds ?? []);
+
+  const planA = diff(introspect(currentDb), introspect(open([targetA])));
+  assert.equal(planA.kind, "ok");
+  if (planA.kind !== "ok") return;
+  const fileA = render(3, "add_check", planA.statements, planA.rebuilds ?? []);
+
+  // A live database: base, then B (adds the UNIQUE), matching what a real
+  // deploy already did before the renumbered A ever runs.
+  const live = new DatabaseSync(":memory:");
+  live.exec(base);
+  for (const s of splitStatements(fileB.sql)) live.exec(s);
+
+  assert.throws(
+    () => applied([base + ";", fileB.sql, fileA.sql], ["0001_base.sql", "0002_add_unique.sql", "0003_add_check.sql"]),
+    (e: unknown) => {
+      assert.ok(e instanceof BuildError, String(e));
+      assert.match(e.message, /0003_add_check\.sql rebuilds table "t" without knowledge of a table-level constraint it already has/);
+      assert.match(e.message, /unique\(a,b\)/);
+      return true;
+    },
+  );
+
+  // The refusal does not touch `live`; B's UNIQUE is still there.
+  const row = live.prepare(`select sql from sqlite_schema where type = 'table' and name = 't'`).get() as { sql: string };
+  assert.match(row.sql, /unique\s*\(\s*a\s*,\s*b\s*\)/i);
+});
+
+test("a Durable Object's runtime migrate() also refuses a rebuild that does not know about a table-level constraint a sibling rebuild added", () => {
+  const base = "create table t (id text primary key not null, a integer not null, b integer not null) strict";
+  const targetB = "create table t (id text primary key not null, a integer not null, b integer not null, unique (a, b)) strict";
+  const targetA = "create table t (id text primary key not null, a integer not null, b integer not null, check (a + b > 0)) strict";
+
+  const currentDb = open([base]);
+  const planB = diff(introspect(currentDb), introspect(open([targetB])));
+  if (planB.kind !== "ok") throw new Error("planB blocked");
+  const fileB = render(2, "add_unique", planB.statements, planB.rebuilds ?? []);
+  const planA = diff(introspect(currentDb), introspect(open([targetA])));
+  if (planA.kind !== "ok") throw new Error("planA blocked");
+  const fileA = render(3, "add_check", planA.statements, planA.rebuilds ?? []);
+
+  const db = new DatabaseSync(":memory:");
+  migrate(db, [{ name: "0001_base.sql", sql: base + ";" }, { name: "0002_add_unique.sql", sql: fileB.sql }]);
+
+  assert.throws(
+    () => migrate(db, [
+      { name: "0001_base.sql", sql: base + ";" },
+      { name: "0002_add_unique.sql", sql: fileB.sql },
+      { name: "0003_add_check.sql", sql: fileA.sql },
+    ]),
+    (e: unknown) => {
+      assert.ok(e instanceof MigrationHistoryError, String(e));
+      assert.equal(e.code, "REBUILD_LOSES_COLUMN");
+      assert.match(e.message, /rebuilds table "t" without knowledge of a table-level constraint it already has/);
+      assert.match(e.message, /unique\(a,b\)/);
+      return true;
+    },
+  );
+
+  const row = db.prepare(`select sql from sqlite_schema where type = 'table' and name = 't'`).get() as { sql: string };
+  assert.match(row.sql, /unique\s*\(\s*a\s*,\s*b\s*\)/i);
+});
+
+test("an index added by one branch is lost when an unrelated rebuild of the same table replays without knowing about it", () => {
+  const base = "create table t (id text primary key not null, a integer not null, b integer not null) strict";
+  const targetA = "create table t (id text primary key not null, a integer, b integer not null) strict"; // branch A: drops NOT NULL on a, unrelated to the index
+
+  const currentDb = open([base]);
+  const planB = diff(introspect(currentDb), introspect(open([base, "create index idx_b on t(b)"])));
+  assert.equal(planB.kind, "ok");
+  if (planB.kind !== "ok") return;
+  const fileB = render(2, "add_idx_b", planB.statements, planB.rebuilds ?? []);
+
+  const planA = diff(introspect(currentDb), introspect(open([targetA])));
+  assert.equal(planA.kind, "ok");
+  if (planA.kind !== "ok") return;
+  const fileA = render(3, "a_nullable", planA.statements, planA.rebuilds ?? []);
+
+  const live = new DatabaseSync(":memory:");
+  live.exec(base);
+  for (const s of splitStatements(fileB.sql)) live.exec(s);
+
+  assert.throws(
+    () => applied([base + ";", fileB.sql, fileA.sql], ["0001_base.sql", "0002_add_idx_b.sql", "0003_a_nullable.sql"]),
+    (e: unknown) => {
+      assert.ok(e instanceof BuildError, String(e));
+      assert.match(e.message, /0003_a_nullable\.sql rebuilds table "t" without knowledge of index "idx_b" it already has/);
+      return true;
+    },
+  );
+
+  const row = live.prepare(`select name from sqlite_schema where type = 'index' and tbl_name = 't' and name = 'idx_b'`).get();
+  assert.ok(row, "idx_b should still exist on the live database");
+});
+
+test("a Durable Object's runtime migrate() also refuses a rebuild that does not know about an index an unrelated migration added", () => {
+  const base = "create table t (id text primary key not null, a integer not null, b integer not null) strict";
+  const targetA = "create table t (id text primary key not null, a integer, b integer not null) strict";
+
+  const currentDb = open([base]);
+  const planB = diff(introspect(currentDb), introspect(open([base, "create index idx_b on t(b)"])));
+  if (planB.kind !== "ok") throw new Error("planB blocked");
+  const fileB = render(2, "add_idx_b", planB.statements, planB.rebuilds ?? []);
+  const planA = diff(introspect(currentDb), introspect(open([targetA])));
+  if (planA.kind !== "ok") throw new Error("planA blocked");
+  const fileA = render(3, "a_nullable", planA.statements, planA.rebuilds ?? []);
+
+  const db = new DatabaseSync(":memory:");
+  migrate(db, [{ name: "0001_base.sql", sql: base + ";" }, { name: "0002_add_idx_b.sql", sql: fileB.sql }]);
+
+  assert.throws(
+    () => migrate(db, [
+      { name: "0001_base.sql", sql: base + ";" },
+      { name: "0002_add_idx_b.sql", sql: fileB.sql },
+      { name: "0003_a_nullable.sql", sql: fileA.sql },
+    ]),
+    (e: unknown) => {
+      assert.ok(e instanceof MigrationHistoryError, String(e));
+      assert.equal(e.code, "REBUILD_LOSES_COLUMN");
+      assert.match(e.message, /rebuilds table "t" without knowledge of index "idx_b" it already has/);
+      return true;
+    },
+  );
+
+  const row = db.prepare(`select name from sqlite_schema where type = 'index' and tbl_name = 't' and name = 'idx_b'`).get();
+  assert.ok(row, "idx_b should still exist");
+});
+
+test("a trigger added by one branch is lost when an unrelated rebuild of the same table replays without knowing about it", () => {
+  const base = "create table t (id text primary key not null, a integer not null, b integer not null) strict";
+  const targetA = "create table t (id text primary key not null, a integer, b integer not null) strict"; // branch A: drops NOT NULL on a, unrelated to the trigger
+  const triggerSql = "create trigger trg_b after insert on t begin update t set b = b + 1 where id = new.id; end";
+
+  const currentDb = open([base]);
+  const planB = diff(introspect(currentDb), introspect(open([base, triggerSql])));
+  assert.equal(planB.kind, "ok");
+  if (planB.kind !== "ok") return;
+  const fileB = render(2, "add_trg_b", planB.statements, planB.rebuilds ?? []);
+
+  const planA = diff(introspect(currentDb), introspect(open([targetA])));
+  assert.equal(planA.kind, "ok");
+  if (planA.kind !== "ok") return;
+  const fileA = render(3, "a_nullable", planA.statements, planA.rebuilds ?? []);
+
+  const live = new DatabaseSync(":memory:");
+  live.exec(base);
+  for (const s of splitStatements(fileB.sql)) live.exec(s);
+
+  assert.throws(
+    () => applied([base + ";", fileB.sql, fileA.sql], ["0001_base.sql", "0002_add_trg_b.sql", "0003_a_nullable.sql"]),
+    (e: unknown) => {
+      assert.ok(e instanceof BuildError, String(e));
+      assert.match(e.message, /0003_a_nullable\.sql rebuilds table "t" without knowledge of trigger "trg_b" it already has/);
+      return true;
+    },
+  );
+
+  const row = live.prepare(`select name from sqlite_schema where type = 'trigger' and tbl_name = 't' and name = 'trg_b'`).get();
+  assert.ok(row, "trg_b should still exist on the live database");
+});
+
+test("a Durable Object's runtime migrate() also refuses a rebuild that does not know about a trigger an unrelated migration added", () => {
+  const base = "create table t (id text primary key not null, a integer not null, b integer not null) strict";
+  const targetA = "create table t (id text primary key not null, a integer, b integer not null) strict";
+  const triggerSql = "create trigger trg_b after insert on t begin update t set b = b + 1 where id = new.id; end";
+
+  const currentDb = open([base]);
+  const planB = diff(introspect(currentDb), introspect(open([base, triggerSql])));
+  if (planB.kind !== "ok") throw new Error("planB blocked");
+  const fileB = render(2, "add_trg_b", planB.statements, planB.rebuilds ?? []);
+  const planA = diff(introspect(currentDb), introspect(open([targetA])));
+  if (planA.kind !== "ok") throw new Error("planA blocked");
+  const fileA = render(3, "a_nullable", planA.statements, planA.rebuilds ?? []);
+
+  const db = new DatabaseSync(":memory:");
+  migrate(db, [{ name: "0001_base.sql", sql: base + ";" }, { name: "0002_add_trg_b.sql", sql: fileB.sql }]);
+
+  assert.throws(
+    () => migrate(db, [
+      { name: "0001_base.sql", sql: base + ";" },
+      { name: "0002_add_trg_b.sql", sql: fileB.sql },
+      { name: "0003_a_nullable.sql", sql: fileA.sql },
+    ]),
+    (e: unknown) => {
+      assert.ok(e instanceof MigrationHistoryError, String(e));
+      assert.equal(e.code, "REBUILD_LOSES_COLUMN");
+      assert.match(e.message, /rebuilds table "t" without knowledge of trigger "trg_b" it already has/);
+      return true;
+    },
+  );
+
+  const row = db.prepare(`select name from sqlite_schema where type = 'trigger' and tbl_name = 't' and name = 'trg_b'`).get();
+  assert.ok(row, "trg_b should still exist");
+});
+
+test("a single rebuild that adds a table-level constraint, with no conflicting sibling, still replays", () => {
+  const base = "create table t (id text primary key not null, a integer not null, b integer not null) strict";
+  const target = "create table t (id text primary key not null, a integer not null, b integer not null, unique (a, b)) strict";
+  const current = open([base]);
+  const plan = diff(introspect(current), introspect(open([target])));
+  assert.equal(plan.kind, "ok");
+  if (plan.kind !== "ok") return;
+  const file = render(2, "add_unique", plan.statements, plan.rebuilds ?? []);
+  const db = applied([base + ";", file.sql], ["0001_base.sql", "0002_add_unique.sql"]);
+  const row = db.prepare(`select sql from sqlite_schema where type = 'table' and name = 't'`).get() as { sql: string };
+  assert.match(row.sql, /unique\s*\(\s*a\s*,\s*b\s*\)/i);
+});
+
+test("a single rebuild that intentionally drops a table-level constraint it saw at generation time still replays", () => {
+  const base = "create table t (id text primary key not null, a integer not null, b integer not null, unique (a, b)) strict";
+  const target = "create table t (id text primary key not null, a integer not null, b integer not null) strict"; // drops the UNIQUE
+  const current = open([base]);
+  const plan = diff(introspect(current), introspect(open([target])));
+  assert.equal(plan.kind, "ok");
+  if (plan.kind !== "ok") return;
+  const file = render(2, "drop_unique", plan.statements, plan.rebuilds ?? []);
+  const db = applied([base + ";", file.sql], ["0001_base.sql", "0002_drop_unique.sql"]);
+  const row = db.prepare(`select sql from sqlite_schema where type = 'table' and name = 't'`).get() as { sql: string };
+  assert.doesNotMatch(row.sql, /unique/i);
+});
+
+test("regenerating a rebuild against the merged schema replays cleanly and keeps both siblings' table-level constraints", () => {
+  const base = "create table t (id text primary key not null, a integer not null, b integer not null) strict";
+  const targetB = "create table t (id text primary key not null, a integer not null, b integer not null, unique (a, b)) strict";
+  const currentDb = open([base]);
+  const planB = diff(introspect(currentDb), introspect(open([targetB])));
+  assert.equal(planB.kind, "ok");
+  if (planB.kind !== "ok") return;
+  const fileB = render(2, "add_unique", planB.statements, planB.rebuilds ?? []);
+
+  const live = new DatabaseSync(":memory:");
+  live.exec(base);
+  for (const s of splitStatements(fileB.sql)) live.exec(s);
+
+  // The developer's repair: delete the refused file (branch A's CHECK),
+  // generate a new one against the schema as it now stands (UNIQUE already
+  // present), keeping both siblings' table-level constraints.
+  const mergedTarget = "create table t (id text primary key not null, a integer not null, b integer not null, unique (a, b), check (a + b > 0)) strict";
+  const regenerated = diff(introspect(live), introspect(open([mergedTarget])));
+  assert.equal(regenerated.kind, "ok");
+  if (regenerated.kind !== "ok") return;
+  const fileC = render(3, "add_check", regenerated.statements, regenerated.rebuilds ?? []);
+  for (const s of splitStatements(fileC.sql)) live.exec(s);
+
+  const row = live.prepare(`select sql from sqlite_schema where type = 'table' and name = 't'`).get() as { sql: string };
+  assert.match(row.sql, /unique\s*\(\s*a\s*,\s*b\s*\)/i);
+  assert.match(row.sql, /check\s*\(\s*a\s*\+\s*b\s*>\s*0\s*\)/i);
+
+  const replayed = applied([base + ";", fileB.sql, fileC.sql], ["0001_base.sql", "0002_add_unique.sql", "0003_add_check.sql"]);
+  const replayedRow = replayed.prepare(`select sql from sqlite_schema where type = 'table' and name = 't'`).get() as { sql: string };
+  assert.match(replayedRow.sql, /unique\s*\(\s*a\s*,\s*b\s*\)/i);
+  assert.match(replayedRow.sql, /check\s*\(\s*a\s*\+\s*b\s*>\s*0\s*\)/i);
+});

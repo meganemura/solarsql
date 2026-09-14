@@ -853,14 +853,23 @@ export function nonNullFilterAlias(expr: string): string | null {
 // or one that fails to parse, has nothing recorded: callers treat that
 // the same as an empty list, not as an error, so a file written before
 // this feature existed, or under ADR 0099's column-name-only format,
-// replays exactly as it did before.
-export type RebuildRecord = { table: string; columns: { name: string; def: string }[] };
+// replays exactly as it did before. The record also holds the table-level
+// constraints, indexes, and triggers the generator saw attached to the
+// table, each as a normalized declaration, compared the same way (ADR 0102).
+export type RebuildRecord = {
+  table: string;
+  columns: { name: string; def: string }[];
+  constraints: string[];
+  indexes: string[];
+  triggers: string[];
+};
 
 export const REBUILD_HEADER = "-- Rebuilds from this shape: ";
 
 export function parseRebuildRecords(sql: string): RebuildRecord[] {
   const line = sql.split("\n").find((l) => l.startsWith(REBUILD_HEADER));
   if (!line) return [];
+  const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every((s) => typeof s === "string");
   try {
     const value: unknown = JSON.parse(line.slice(REBUILD_HEADER.length));
     if (!Array.isArray(value)) return [];
@@ -872,9 +881,22 @@ export function parseRebuildRecords(sql: string): RebuildRecord[] {
         c !== null && typeof c === "object" &&
         typeof (c as { name?: unknown }).name === "string" &&
         typeof (c as { def?: unknown }).def === "string",
-      ),
+      ) &&
+      isStringArray((v as { constraints?: unknown }).constraints) &&
+      isStringArray((v as { indexes?: unknown }).indexes) &&
+      isStringArray((v as { triggers?: unknown }).triggers),
     );
   } catch {
     return [];
   }
+}
+
+// A declaration present at replay but absent from what a rebuild's
+// generator recorded seeing: something added since generation, which the
+// rebuild's own statements do not know to recreate. The reverse -- recorded
+// but no longer present -- is not a gap here: it is the rebuild's own
+// intentional drop, the same case ADR 0099 already allows for a column.
+export function unknownDeclaration(recorded: readonly string[], actual: readonly string[]): string | undefined {
+  const known = new Set(recorded);
+  return actual.find((a) => !known.has(a));
 }

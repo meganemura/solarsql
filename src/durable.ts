@@ -8,7 +8,7 @@
 // runtime/plan.ts defines.
 import type { AdapterOptions, BatchRows, Command, CommandResult, Database, Entry, GeneratedMap, ParamsArg, PlanShape, Query, Read, Row, SqlValue, StatementMeta } from "./index.ts";
 import { GUARD_CLEANUP, assertFailure, assertStatement, assertToken, bindValues, constraintFailure, observed, outcomeOf, parseJson, validateParams } from "./runtime/plan.ts";
-import { definitions, parseRebuildRecords, quoteIdent, significant, splitStatements, tokenize } from "./build/scan.ts";
+import { created, definitions, normalize, parseRebuildRecords, quoteIdent, significant, splitStatements, tokenize, unknownDeclaration } from "./build/scan.ts";
 
 // The part of DurableObjectStorage this adapter uses. Structural, so no
 // type package is needed.
@@ -140,7 +140,7 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
   }
   const applied: string[] = [];
   for (const file of ordered.slice(history.length)) {
-    for (const { table, columns } of parseRebuildRecords(file.sql)) {
+    for (const { table, columns, constraints, indexes, triggers } of parseRebuildRecords(file.sql)) {
       // pragma_table_xinfo, unlike pragma_table_info, includes a generated
       // column -- the same shape introspect() (src/build/migration.ts)
       // already reads, so a generated column a sibling migration added is
@@ -171,6 +171,32 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
         throw new MigrationHistoryError(
           "REBUILD_LOSES_COLUMN",
           `Migration ${file.name} rebuilds table ${quoteIdent(table)} with a stale declaration of column ${quoteIdent(changed)}. This database has already applied every earlier migration, so replaying ${file.name} would lose that column's current shape on ${quoteIdent(table)}. Regenerate ${file.name} against the current schema.`,
+          file.name,
+        );
+      }
+      const badConstraint = unknownDeclaration(constraints, defs?.constraints ?? []);
+      if (badConstraint !== undefined) {
+        throw new MigrationHistoryError(
+          "REBUILD_LOSES_COLUMN",
+          `Migration ${file.name} rebuilds table ${quoteIdent(table)} without knowledge of a table-level constraint it already has: ${JSON.stringify(badConstraint)}. This database has already applied every earlier migration, so that constraint would be lost if this migration ran. Regenerate ${file.name} against the current schema.`,
+          file.name,
+        );
+      }
+      const actualIndexSql = storage.sql.exec(`select sql from sqlite_schema where tbl_name = ? and type = 'index' and sql is not null`, table).toArray().map((r) => normalize(String(r.sql)));
+      const badIndex = unknownDeclaration(indexes, actualIndexSql);
+      if (badIndex !== undefined) {
+        throw new MigrationHistoryError(
+          "REBUILD_LOSES_COLUMN",
+          `Migration ${file.name} rebuilds table ${quoteIdent(table)} without knowledge of index ${quoteIdent(created(badIndex)?.name ?? badIndex)} it already has: ${JSON.stringify(badIndex)}. This database has already applied every earlier migration, so that index would be lost if this migration ran. Regenerate ${file.name} against the current schema.`,
+          file.name,
+        );
+      }
+      const actualTriggerSql = storage.sql.exec(`select sql from sqlite_schema where tbl_name = ? and type = 'trigger' and sql is not null`, table).toArray().map((r) => normalize(String(r.sql)));
+      const badTrigger = unknownDeclaration(triggers, actualTriggerSql);
+      if (badTrigger !== undefined) {
+        throw new MigrationHistoryError(
+          "REBUILD_LOSES_COLUMN",
+          `Migration ${file.name} rebuilds table ${quoteIdent(table)} without knowledge of trigger ${quoteIdent(created(badTrigger)?.name ?? badTrigger)} it already has: ${JSON.stringify(badTrigger)}. This database has already applied every earlier migration, so that trigger, and the behavior it maintains, would be lost if this migration ran. Regenerate ${file.name} against the current schema.`,
           file.name,
         );
       }
