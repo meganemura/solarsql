@@ -12,7 +12,7 @@ import { build, migration } from "./build.ts";
 import { init } from "./init.ts";
 import { readMigrationIntent, type MigrationIntent } from "./migration-intent.ts";
 import type { DropIntent, Rename, RenameRepair } from "./migration.ts";
-import { isCliWorker, isReportWorker, printReport, runHuman, runMachine, runRehearsalProcess } from "./machine.ts";
+import { announceWorkerDone, isCliWorker, isReportWorker, printReport, runHuman, runMachine, runRehearsalProcess } from "./machine.ts";
 import { protectInputs, writeGeneratedFile } from "./output.ts";
 import { shellArgument } from "./shell.ts";
 import { BuildError } from "./typegen.ts";
@@ -284,11 +284,13 @@ try {
       return runHuman(import.meta.filename, worker.args, worker.timeoutMs);
     })()
     : await main(args));
+  if (isCliWorker()) await announceWorkerDone(code);
   process.exit(code);
 } catch (e) {
   if (args.includes("--json") || ["inspect", "rehearse", "analyze"].includes(args[0] ?? "")) {
     await printReport({ version: 1, ok: false, diagnostics: [{ code: "BUILD_FAILED", message: e instanceof Error ? e.message : String(e), sql: e instanceof BuildError ? e.sql : undefined, locations: e instanceof BuildError ? e.locations : [] }] });
   } else if (e instanceof BuildError) console.error(`error: ${e.message}`);
   else console.error(e);
+  if (isCliWorker()) await announceWorkerDone(1);
   process.exit(1);
 }

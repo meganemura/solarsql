@@ -59,6 +59,27 @@ function fixture(t: TestContext) {
       assert.equal(result.signal, null);
       return result;
     },
+    runWithExitDelay(delayMs: number, ...args: string[]) {
+      const preload = join(dir, "delay-exit.mjs");
+      writeFileSync(preload, [
+        "const originalExit = process.exit.bind(process);",
+        "process.exit = (code) => {",
+        '  const delay = Number(process.env.SOLARSQL_TEST_EXIT_DELAY_MS ?? "0");',
+        "  if (delay > 0) {",
+        "    const until = Date.now() + delay;",
+        "    while (Date.now() < until) { /* deliberately block the event loop, to model real work finishing just before the process actually closes */ }",
+        "  }",
+        "  return originalExit(code);",
+        "};",
+      ].join("\n"));
+      const result = spawnSync(process.execPath, ["--import", preload, join(dir, "src/build/cli.ts"), ...args, config], {
+        cwd: dir, encoding: "utf8", timeout: 30_000,
+        env: { ...process.env, SOLARSQL_TEST_EXIT_DELAY_MS: String(delayMs) },
+      });
+      assert.ifError(result.error);
+      assert.equal(result.signal, null);
+      return result;
+    },
   };
 }
 
@@ -395,6 +416,29 @@ test('human build commands validate deadlines before imports and bound their dir
     assert.doesNotMatch(invalid.stderr, /human invalid deadline imported/);
     assert.match(invalid.stderr, /requires an integer/);
   }
+});
+
+test('a machine report received before the child closes is not discarded as a timeout', t => {
+  const f = fixture(t);
+  // The report worker sends its report and then keeps the process open past
+  // the deadline before it really exits. A parent that only clears its
+  // timer on close would race the deadline and report a false timeout for
+  // a build that had already finished and reported success.
+  const timed = f.runWithExitDelay(1500, 'inspect', '--timeout-ms', '500');
+  assert.equal(timed.status, 0, timed.stderr);
+  const report = JSON.parse(timed.stdout);
+  assert.equal(report.ok, true, JSON.stringify(report));
+});
+
+test('a human worker exit code received before the child closes is not discarded as a timeout', t => {
+  const f = fixture(t);
+  // The human worker finishes its real work and then keeps the process
+  // open past the deadline before it really exits. A parent that only
+  // clears its timer on close would race the deadline and report a false
+  // timeout for a build that had already finished successfully.
+  const timed = f.runWithExitDelay(1500, 'build', '--timeout-ms', '500');
+  assert.equal(timed.status, 0, timed.stderr);
+  assert.doesNotMatch(timed.stderr, /exceeded its 500ms time budget/);
 });
 
 test('human build timeout retains a complete generated destination when atomic replacement has started', t => {

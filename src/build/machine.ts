@@ -49,6 +49,17 @@ export async function announceMigrationLock(path: string): Promise<void> {
   });
 }
 
+// Sent once, just before the human-worker child calls process.exit. If the
+// parent receives it before its own deadline fires, the child's real work
+// is already done and the deadline should not kill it out from under a
+// result the caller is about to get anyway.
+export async function announceWorkerDone(code: number): Promise<void> {
+  if (!directSend || !protocolToken) return;
+  await new Promise<void>((resolve, reject) => {
+    directSend({ protocol, token: protocolToken, type: "worker-done", code }, error => error ? reject(error) : resolve());
+  });
+}
+
 export async function printReport(report: unknown): Promise<void> {
   if (send) {
     await new Promise<void>((resolve, reject) => send({ protocol, token: reportProtocolToken, type: "report", report }, error => error ? reject(error) : resolve()));
@@ -111,6 +122,14 @@ export async function runHuman(cli: string, args: string[], timeoutMs: number): 
     child.send({ protocol, token: protocolToken, type: "migration-lock-ack", nonce: value.nonce });
   };
   child.on("message", announceLock);
+  const announceDone = (message: unknown) => {
+    const value = message as { protocol?: unknown; token?: unknown; type?: unknown; code?: unknown };
+    if (value?.protocol !== protocol || value.token !== protocolToken || value.type !== "worker-done" || typeof value.code !== "number") return;
+    // The child's real work is already done; do not let a still-armed
+    // deadline kill it and discard that result.
+    clearTimeout(timer);
+  };
+  child.on("message", announceDone);
   const [code, signal] = await new Promise<[number | null, NodeJS.Signals | null]>(resolve => {
     child.once("close", (code, signal) => resolve([code, signal]));
   });
@@ -154,6 +173,9 @@ async function collectReport(cli: string, args: string[], options: ProcessOption
     const value = message as { protocol?: unknown; token?: unknown; type?: unknown; report?: unknown };
     if (value?.protocol !== protocol || value.token !== reportToken || value.type !== "report") return;
     reports.push(value.report);
+    // The report has already arrived; the deadline exists to stop a hang,
+    // not to discard a result the caller already has.
+    clearTimeout(timer);
   });
   child.on("error", error => { failure = error; });
   const [code, signal] = await new Promise<[number | null, NodeJS.Signals | null]>(resolve => {
