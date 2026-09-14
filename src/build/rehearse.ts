@@ -42,6 +42,25 @@ function validateChecks(checks: unknown): asserts checks is RehearsalChecks {
     if (!value || typeof value !== 'object' || Array.isArray(value) || Object.values(value).some(sql => typeof sql !== 'string')) {
       throw new Error(`${key} must be an object of names and SQL strings`);
     }
+    if (key === 'assertions') validateAssertionParams(value as Record<string, string>);
+  }
+}
+
+// An assertion runs with no bound values, unlike a case: rehearseSnapshot's
+// assertion stage calls .all() with nothing bound. node:sqlite silently
+// binds an unbound named parameter to NULL rather than throwing, so a
+// stray :param neutralizes the assertion's own predicate instead of
+// failing loudly. checks.queries is exempt: it is only ever compared by
+// column shape (.columns()), never executed with bound values, so a
+// parameter there carries no false-success risk.
+function validateAssertionParams(assertions: Record<string, string>): void {
+  for (const [name, sql] of Object.entries(assertions)) {
+    const slots = namedSlots(sql);
+    const anonymous = namedParams(sql).anonymous;
+    if (slots.length > 0 || anonymous.length > 0) {
+      const used = [...slots.map(s => s.sqlName), ...anonymous.map(() => '?')];
+      throw new Error(`assertion ${JSON.stringify(name)} takes no parameters, but uses ${used.join(', ')}; bind real values with a case instead`);
+    }
   }
 }
 

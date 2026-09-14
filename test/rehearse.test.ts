@@ -259,6 +259,55 @@ test('checks.cases rejects malformed case definitions', () => {
   }
 });
 
+test('an assertion rejects a named or anonymous parameter, instead of silently binding it to NULL', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const named = rehearseSnapshot(db, 'select 1', {
+      assertions: { noOrphans: 'select count(*) = 0 as ok from sqlite_master where name = :missing' },
+    });
+    assert.equal(named.ok, false);
+    assert.equal(named.diagnostics[0]!.code, 'CHECKS_INVALID', JSON.stringify(named));
+    assert.match(named.diagnostics[0]!.message, /assertion "noOrphans" takes no parameters, but uses :missing/);
+
+    const anonymous = rehearseSnapshot(db, 'select 1', {
+      assertions: { bad: 'select count(*) = 0 as ok from sqlite_master where name = ?' },
+    });
+    assert.equal(anonymous.ok, false);
+    assert.equal(anonymous.diagnostics[0]!.code, 'CHECKS_INVALID', JSON.stringify(anonymous));
+    assert.match(anonymous.diagnostics[0]!.message, /assertion "bad" takes no parameters, but uses \?/);
+  } finally { db.close(); }
+});
+
+test('an assertion that ignored its own named parameter no longer reports a false ok for a real violation', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table users (id integer primary key) strict');
+    db.exec('create table orders (id integer primary key, user_id integer not null) strict');
+    db.exec('insert into users (id) values (1)');
+    db.exec('insert into orders (id, user_id) values (1, 1), (2, 2), (3, 3)'); // 2 and 3 reference a nonexistent user
+    const result = rehearseSnapshot(db, 'select 1', {
+      assertions: { noOrphans: 'select count(*) = 0 as ok from orders o where o.user_id = :uid and not exists (select 1 from users u where u.id = o.user_id)' },
+    });
+    // Before the fix this reported ok: true (the unbound :uid made the
+    // WHERE clause vacuous). Now it is rejected before the check ever runs.
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics[0]!.code, 'CHECKS_INVALID', JSON.stringify(result));
+  } finally { db.close(); }
+});
+
+test('checks.queries keeps accepting a named parameter, since it is only ever compared by column shape', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table items (id integer primary key, value text not null) strict');
+    db.exec("insert into items values (1, 'kept')");
+    const result = rehearseSnapshot(db, 'select 1', {
+      queries: { oldRead: 'select id, value from items where id = :id' },
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.queries, ['oldRead']);
+  } finally { db.close(); }
+});
+
 test('a case round-trips an array parameter through JSON text for any JSON-safe element', async () => {
   const { test: property } = await import('@hegeldev/hegel');
   const gs = await import('@hegeldev/hegel/generators');
