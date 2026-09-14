@@ -38,6 +38,7 @@ If you want to cite an internal document, write its substance in place instead.
 - Comments say why: the constraint, or the alternative that was refused. Each module starts with its responsibility and its boundary.
 - `.claude-team/` holds task specs, reports, library comparisons, and their experiment artifacts. It is gitignored. Do not commit or reference its contents from committed content.
 - A release follows `docs/releasing.md`. `npm publish` and a change of the repository's visibility are the owner's to run.
+- Rewriting git history, force-pushing, or otherwise mutating a remote or a published tag is the owner's to run. An existing instruction that authorizes such an action for one situation does not extend to a materially larger version of that action later (more refs, more history, or a scope the owner did not describe); name the concrete refs, commits, or tags it is about to change and any known downstream consumers (for example, published package registry metadata), and confirm that expanded scope with the owner, before running it.
 
 ## Commands
 
