@@ -109,6 +109,7 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0094](adr/0094-a-shared-migration-sequence-is-a-build-time-error.md) | A shared migration sequence is a build-time error |
 | [0095](adr/0095-an-assert-predicate-normalizes-to-0-or-1-at-run-time.md) | An assert predicate normalizes to 0 or 1 at run time |
 | [0096](adr/0096-migration-runs-builds-checks-before-writing-a-file.md) | `migration` runs every `build` check before it writes a file |
+| [0097](adr/0097-check-in-or-is-null-narrows-like-in-alone.md) | `CHECK col IN (...) OR col IS NULL` narrows like `IN (...)` alone |
 
 ## Measurements
 

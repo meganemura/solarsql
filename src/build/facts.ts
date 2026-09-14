@@ -6,7 +6,7 @@
 // Boundary: nothing here reads SQL text beyond what scan.ts provides. Nothing
 // here produces TypeScript; typegen.ts does that from these facts.
 import { DatabaseSync, constants } from "node:sqlite";
-import { aliasMap, cteNames, definitions, isKeyword, quoteIdent, significant, tokenize, unquote } from "./scan.ts";
+import { aliasMap, cteNames, definitions, isKeyword, quoteIdent, significant, tokenize, type Token, unquote } from "./scan.ts";
 
 export type ColumnFact = {
   name: string;
@@ -229,6 +229,26 @@ export class Engine {
   }
 }
 
+// A CHECK predicate of the form `<in-list> OR <column> IS NULL`, in
+// either order, admits nothing the bare IN list doesn't already admit:
+// SQLite passes any CHECK whose result is NULL, whatever the predicate
+// says, so this one disjunct can be dropped before the exact-match check
+// below. Any other OR is left alone (ADR 0097).
+function stripRedundantIsNull(expression: readonly Token[], column: string): readonly Token[] {
+  const isNullClause = (a: Token | undefined, b: Token | undefined, c: Token | undefined): boolean =>
+    a?.type === "ident" && a.depth === 1 && unquote(a.text).toLowerCase() === column.toLowerCase()
+    && isKeyword(b, "is") && b!.depth === 1 && isKeyword(c, "null") && c!.depth === 1;
+  if (expression.length > 4 && isKeyword(expression.at(-4), "or") && expression.at(-4)!.depth === 1
+    && isNullClause(expression.at(-3), expression.at(-2), expression.at(-1))) {
+    return expression.slice(0, -4);
+  }
+  if (expression.length > 4 && isNullClause(expression[0], expression[1], expression[2])
+    && isKeyword(expression[3], "or") && expression[3]!.depth === 1) {
+    return expression.slice(4);
+  }
+  return expression;
+}
+
 // Only a complete IN check bounds the domain. OR and permissive collations
 // can admit values beyond the listed literals; punctuation inside text is data.
 function oneOfLiterals(definition: string, column: string): (string | number)[] | null {
@@ -238,7 +258,7 @@ function oneOfLiterals(definition: string, column: string): (string | number)[] 
     if (!isKeyword(tokens[i]!, "check") || tokens[i]!.depth !== 0 || tokens[i + 1]?.text !== "(") continue;
     const end = tokens.findIndex((t, j) => j > i + 1 && t.text === ")" && t.depth === 0);
     if (end < 0) continue;
-    const expression = tokens.slice(i + 2, end);
+    const expression = stripRedundantIsNull(tokens.slice(i + 2, end), column);
     if (expression[0]?.type !== "ident" || unquote(expression[0].text).toLowerCase() !== column.toLowerCase()
       || !expression[1] || !isKeyword(expression[1], "in") || expression[2]?.text !== "("
       || expression.at(-1)?.text !== ")" || expression.at(-1)?.depth !== 1) continue;

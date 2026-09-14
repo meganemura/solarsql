@@ -102,5 +102,6 @@ Use `newId()` for text identities.
 
 CHECK narrowing requires a complete `column IN (literal, ...)` predicate.
 Mixed affinity, non-BINARY collations, and complex predicates retain the scalar type (ADR 0061).
+`column IN (literal, ...) OR column IS NULL`, in either order, narrows the same as `IN (literal, ...)` alone: SQLite passes any CHECK whose result is NULL, so the OR IS NULL disjunct admits nothing new. Any other OR disjunct still retains the scalar type (ADR 0097).
 
 The build reads STRICT and WITHOUT ROWID from SQLite metadata. Comments do not enable table options.

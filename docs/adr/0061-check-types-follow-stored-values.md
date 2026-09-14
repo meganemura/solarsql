@@ -33,3 +33,4 @@ A generated caller test compiles the inferred contract, including precise text e
 Some generated literal types become string or number types after regeneration.
 The broader contract admits values that SQLite already accepts.
 Ordinary text enums and integer flags retain their literal unions when the complete predicate proves that restriction.
+ADR 0097 narrows one further shape: `column IN (literal, ...) OR column IS NULL`, which SQLite already treats the same as `IN (literal, ...)` alone.
