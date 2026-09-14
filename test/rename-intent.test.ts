@@ -83,6 +83,19 @@ test("rename declarations reject malformed, unused, duplicate, chained, conflict
   }
 });
 
+test("a rename intent that differs from the declared DDL only in case is rejected, not folded", () => {
+  const current = open(["create table t (a text)"]);
+  const target = open(["create table t (b text)"]);
+  try {
+    const plan = diff(introspect(current), introspect(target), [{ table: "t", from: "A", to: "b" }]);
+    assert.equal(plan.kind, "blocked");
+    if (plan.kind === "blocked") assert.match(plan.reason, /missing source column.*case/i);
+  } finally {
+    current.close();
+    target.close();
+  }
+});
+
 test("a generated rename preserves populated values and row identifiers", () => {
   let cases = 0;
   hegel.test(tc => {

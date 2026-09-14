@@ -264,6 +264,17 @@ function sameSqliteName(left: string, right: string): boolean {
   return normalizeName(left) === normalizeName(right);
 }
 
+// requiredDrops and renameIntentPlan below, and tableStatements's own
+// removed/added comparison above, all match a supplied table or column name
+// against the declared DDL with exact === , not this fold. A rename intent's
+// `to` is written into the generated SQL and into the rebuild's working
+// column map exactly as supplied (tableStatements, above); folding the match
+// here without also folding every one of those uses would let an intent
+// spelled in a different case rename a column under that spelling while the
+// rebuild's copy step still looks it up by the declared DDL spelling,
+// silently dropping the column's rows. Case-exact matching fails closed
+// instead.
+
 export function dropReference(drop: DropIntent): string {
   return drop.kind === "table" ? `table ${quoteIdent(drop.table)}` : `column ${quoteIdent(drop.table)}.${quoteIdent(drop.column)}`;
 }
@@ -337,8 +348,8 @@ function renameIntentPlan(current: Schema, target: Schema, renames: readonly Ren
     if (!table || !targetTable) return { kind: "blocked", reason: `rename intent ${quoteIdent(rename.table)}.${quoteIdent(rename.from)} -> ${quoteIdent(rename.to)} has a missing source or target table.` };
     const sourceColumns = new Set(table.columns.map(column => column.name));
     const targetColumns = new Set(targetTable.columns.map(column => column.name));
-    if (!sourceColumns.has(rename.from)) return { kind: "blocked", reason: `rename intent ${quoteIdent(rename.table)}.${quoteIdent(rename.from)} -> ${quoteIdent(rename.to)} has a missing source column.` };
-    if (!targetColumns.has(rename.to)) return { kind: "blocked", reason: `rename intent ${quoteIdent(rename.table)}.${quoteIdent(rename.from)} -> ${quoteIdent(rename.to)} has a missing target column.` };
+    if (!sourceColumns.has(rename.from)) return { kind: "blocked", reason: `rename intent ${quoteIdent(rename.table)}.${quoteIdent(rename.from)} -> ${quoteIdent(rename.to)} has a missing source column. Match the declared DDL spelling exactly, including its case.` };
+    if (!targetColumns.has(rename.to)) return { kind: "blocked", reason: `rename intent ${quoteIdent(rename.table)}.${quoteIdent(rename.from)} -> ${quoteIdent(rename.to)} has a missing target column. Match the declared DDL spelling exactly, including its case.` };
     if (sourceColumns.has(rename.to)) return { kind: "blocked", reason: `rename intent ${quoteIdent(rename.table)}.${quoteIdent(rename.from)} -> ${quoteIdent(rename.to)} conflicts with an existing source column.` };
     if (targetColumns.has(rename.from)) return { kind: "blocked", reason: `rename intent ${quoteIdent(rename.table)}.${quoteIdent(rename.from)} -> ${quoteIdent(rename.to)} is unused because its source remains in the target schema.` };
     const fromKey = `${rename.table}\u0000${rename.from}`;

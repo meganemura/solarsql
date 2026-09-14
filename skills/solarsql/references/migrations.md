@@ -45,6 +45,7 @@ npx solarsql migration remove_obsolete_orders --intent changes.json
 The strings are SQLite object names. Do not add SQL quotes. A table named
 `order.lines` remains one `table` string, and a column named `old.value`
 remains one `column` string. The generator quotes these names in SQL.
+Match the declared DDL spelling exactly, including its case; SQLite itself treats two differently cased identifiers as the same name, but this intent file does not.
 
 The file must have only `version`, `drops`, and `renames`. Its version is `1`.
 Each drop entry must be a `table` with `table`, or a `column` with `table` and
@@ -80,6 +81,7 @@ quotes. The generator rejects unknown fields, a missing source or target,
 duplicate, conflicting, chained, or unused declarations. It writes `ALTER
 TABLE ... RENAME COLUMN ...` before safe additions and preserves the renamed
 values and row identifiers.
+Match the declared DDL spelling exactly, including its case; SQLite itself treats two differently cased identifiers as the same name, but this intent file does not.
 
 An exact column drop in `drops` may share the same migration with a declared
 rename and a safe nullable addition. The drop does not become another rename.

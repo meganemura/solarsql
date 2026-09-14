@@ -42,6 +42,19 @@ test("ordinary table and column removals need their exact intent", () => {
   }
 });
 
+test("a destructive intent that differs from the declared DDL only in case is rejected, not folded", () => {
+  const current = open(["create table t (a text, b text)"]);
+  const target = open(["create table t (b text)"]);
+  try {
+    const plan = diff(introspect(current), introspect(target), [], [{ kind: "column", table: "t", column: "A" }]);
+    assert.equal(plan.kind, "blocked");
+    if (plan.kind === "blocked") assert.match(plan.reason, /does not match a removed ordinary object/);
+  } finally {
+    current.close();
+    target.close();
+  }
+});
+
 test("a rename consumes its source column before the drop check", () => {
   const current = open([schema(["before"])]);
   const target = open([schema(["after"])]);
