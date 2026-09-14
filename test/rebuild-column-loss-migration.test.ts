@@ -37,6 +37,33 @@ test("a rebuild that never knew about a concurrently added column refuses to rep
   );
 });
 
+test("a rebuild-refusal error names the file that most recently (re-)introduced a column, not the file that first ever did", () => {
+  const base = "create table t (id text primary key not null, y text not null) strict";
+  const addX = "alter table t add column x text";
+  const dropX = "alter table t drop column x";
+  const reAddX = "alter table t add column x text";
+
+  const beforeReAdd = open([base, addX, dropX]);
+  const target = "create table t (id text primary key not null, y text) strict"; // drop NOT NULL on y
+  const plan = diff(introspect(beforeReAdd), introspect(open([target])));
+  assert.equal(plan.kind, "ok");
+  if (plan.kind !== "ok") return;
+  const file5 = render(5, "y_nullable", plan.statements, plan.rebuilds ?? []);
+
+  assert.throws(
+    () => applied(
+      [base + ";", addX + ";", dropX + ";", reAddX + ";", file5.sql],
+      ["0001_base.sql", "0002_add_x.sql", "0003_drop_x.sql", "0004_readd_x.sql", "0005_y_nullable.sql"],
+    ),
+    (e: unknown) => {
+      assert.ok(e instanceof BuildError, String(e));
+      assert.match(e.message, /0005_y_nullable\.sql rebuilds table "t" without knowledge of column "x", added by 0004_readd_x\.sql/);
+      assert.doesNotMatch(e.message, /0002_add_x\.sql/);
+      return true;
+    },
+  );
+});
+
 test("a rebuild that redeclares a concurrently added column under the same name refuses to replay, instead of nulling its value", () => {
   const base = "create table customers (id text primary key not null, email text not null, name text not null) strict";
   const targetA = "create table customers (id text primary key not null, email text, name text not null, fax text) strict"; // branch A rebuilds AND independently adds fax

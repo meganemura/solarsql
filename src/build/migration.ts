@@ -42,14 +42,21 @@ export function open(statements: readonly string[]): DatabaseSync {
 // omit it and get the engine's own message unwrapped, as before.
 export function applied(files: readonly string[], names?: readonly string[]): DatabaseSync {
   const db = new DatabaseSync(":memory:");
-  // Which migration first introduced a given table's column, so a refusal
-  // below can name it. Rebuilt on the fly: applied() starts from an empty
-  // database, so every column that ever exists was introduced by exactly
-  // one file in this same history.
-  const firstIntroducedBy = new Map<string, string>();
+  // Which migration most recently (re-)introduced a given table's column,
+  // so a refusal below can name it accurately even when the column was
+  // dropped and later re-added.
+  const introducedBy = new Map<string, string>();
   let schema = introspect(db);
   for (const [i, file] of files.entries()) {
     const label = names ? names[i]! : `migration file ${i + 1} of ${files.length}`;
+    // `schema` here is still the shape this file starts from (the previous
+    // iteration's introspect(), or the empty database for the first file).
+    // A key present after this file runs and absent from `before` was
+    // (re-)introduced by it.
+    const before = new Set<string>();
+    for (const [tableName, table] of schema.tables) {
+      for (const column of table.columns) before.add(`${tableName} ${column.name}`);
+    }
     for (const { table, columns } of parseRebuildRecords(file)) {
       const actual = schema.tables.get(table);
       if (!actual) continue;
@@ -57,7 +64,7 @@ export function applied(files: readonly string[], names?: readonly string[]): Da
       const action = `Delete ${label} and run \`solarsql migration\` again against the merged schema.`;
       const unknown = actual.columns.map((c) => c.name).find((n) => !recorded.has(n));
       if (unknown !== undefined) {
-        const addedBy = firstIntroducedBy.get(`${table} ${unknown}`) ?? "an earlier migration";
+        const addedBy = introducedBy.get(`${table} ${unknown}`) ?? "an earlier migration";
         throw new BuildError(
           `migration ${label} rebuilds table ${quoteIdent(table)} without knowledge of column ${quoteIdent(unknown)}, added by ${addedBy}. ` +
           `A database that replays ${label} loses ${quoteIdent(unknown)} and its data. ` +
@@ -100,7 +107,7 @@ export function applied(files: readonly string[], names?: readonly string[]): Da
     for (const [tableName, table] of schema.tables) {
       for (const column of table.columns) {
         const key = `${tableName} ${column.name}`;
-        if (!firstIntroducedBy.has(key)) firstIntroducedBy.set(key, label);
+        if (!before.has(key)) introducedBy.set(key, label);
       }
     }
   }
