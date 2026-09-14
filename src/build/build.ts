@@ -16,6 +16,7 @@ import { applied, diff, introspect, open, type DropIntent, type Rename, type Ren
 import type { MigrationIntent } from "./migration-intent.ts";
 import { migrationSequence, nextMigrationFile, withMigrationLock, writeNewMigration } from "./migration-files.ts";
 import { created, indexTarget, quoteIdent, triggerTarget } from "./scan.ts";
+import { sqliteName } from "./scope.ts";
 import { shellArgument } from "./shell.ts";
 import { writeGeneratedFile } from "./output.ts";
 import { BuildError, Typer, brandName, isSelect, type Analysis, type Brand } from "./typegen.ts";
@@ -314,7 +315,9 @@ export async function build(configPath: string, options: BuildOptions = {}): Pro
   }
   try {
     const brands = new Map<string, Brand>();
-    for (const t of engine.tables()) {
+    const tables = engine.tables();
+    const byName = new Map(tables.map((t) => [sqliteName(t.name), t]));
+    for (const t of tables) {
       const pk = t.columns.filter((c) => c.pk > 0);
       const m = owner.get(t.name);
       if (!m || t.virtual) continue;
@@ -323,6 +326,21 @@ export async function build(configPath: string, options: BuildOptions = {}): Pro
       // brand is never nullable (ADR 0018, ADR 0029).
       if (!t.strict) {
         throw new BuildError(`table ${t.name} is not STRICT. Add \`strict\` after the closing parenthesis, so the engine rejects a value that does not match the declared type.`);
+      }
+      // pragma_foreign_key_list echoes whatever a REFERENCES clause
+      // declares, with no check that the target resolves. SQLite itself
+      // only validates a foreign key against real rows at write time, so a
+      // stale or misspelled target would otherwise pass every build check
+      // here, apply cleanly as a migration, and only fail on the table's
+      // first write in production.
+      for (const fk of t.foreignKeys) {
+        const target = byName.get(sqliteName(fk.table));
+        if (!target) throw new BuildError(`table ${t.name} has a foreign key to ${fk.table}, which no module declares. Fix the table name, or declare the missing table.`);
+        // An omitted column list resolves to the target's own primary key.
+        const targetColumn = fk.to ?? target.columns.find((c) => c.pk > 0)?.name ?? null;
+        if (!targetColumn || !target.columns.some((c) => sqliteName(c.name) === sqliteName(targetColumn!))) {
+          throw new BuildError(`table ${t.name} has a foreign key to ${fk.table}(${fk.to ?? "its primary key"}), which has no such column. Fix the column name, or declare it on ${fk.table}.`);
+        }
       }
       // Id is a string contract. Other primary keys retain their storage type.
       if (pk.length === 1 && pk[0]!.type.toUpperCase() === "TEXT") brands.set(t.name, { table: t.name, column: pk[0]!.name, typeName: brandName(t.name), module: m.name });

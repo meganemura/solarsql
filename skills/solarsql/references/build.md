@@ -101,6 +101,7 @@ Shared SQL reports all its catalog locations.
 | `has no primary key. Declare one` | `id text primary key not null` |
 | `is not STRICT. Add` | add `strict` after the closing parenthesis |
 | `is declared by module` | one owner per table |
+| `has a foreign key to` | fix the foreign key's target table or column name |
 | `which maps to no TypeScript type` | use `text`, `integer`, `real`, `blob`, or `any` |
 | `needs one CREATE TABLE statement` (and `CREATE INDEX`, `CREATE VIEW`, `CREATE TRIGGER`, `CREATE VIRTUAL TABLE ... USING fts5(...)`) | one CREATE statement per call |
 | `A trigger belongs to the module of its table or view` | move the trigger to the owner of its table or view |

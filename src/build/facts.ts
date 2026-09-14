@@ -23,7 +23,9 @@ export type ColumnFact = {
   hidden: boolean;
 };
 
-export type ForeignKeyFact = { table: string; from: string; to: string };
+// `to` is null when the REFERENCES clause omits its column list; SQLite
+// then resolves the parent key to the target table's own primary key.
+export type ForeignKeyFact = { table: string; from: string; to: string | null };
 
 export type TableFact = {
   name: string;
@@ -115,7 +117,7 @@ export class Engine {
       generated: c.hidden === 2 || c.hidden === 3,
       hidden: c.hidden === 1,
     }));
-    const foreignKeys = (this.db.prepare(`select "table", "from", "to" from pragma_foreign_key_list(?) order by id, seq`).all(name) as { table: string; from: string; to: string }[]).map((f) => ({
+    const foreignKeys = (this.db.prepare(`select "table", "from", "to" from pragma_foreign_key_list(?) order by id, seq`).all(name) as { table: string; from: string; to: string | null }[]).map((f) => ({
       table: f.table,
       from: f.from,
       to: f.to,

@@ -383,6 +383,78 @@ describe("solarsql build", () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  test("a foreign key to a table no module declares is refused, even with no write command touching the table", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/customers/module.ts");
+      writeFileSync(schema, readFileSync(schema, "utf8") + `
+export const referrals = table(\`
+  create table referrals (
+    id text primary key not null,
+    customer_id text references nosuchtable(id)
+  ) strict
+\`);
+`);
+      await expectBuildError(dir, /table referrals has a foreign key to nosuchtable, which no module declares/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a foreign key to a real table's nonexistent column is refused", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/customers/module.ts");
+      writeFileSync(schema, readFileSync(schema, "utf8") + `
+export const referrals = table(\`
+  create table referrals (
+    id text primary key not null,
+    customer_id text references customers(nope)
+  ) strict
+\`);
+`);
+      await expectBuildError(dir, /table referrals has a foreign key to customers\(nope\), which has no such column/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a foreign key with no column list resolves to the target's primary key and builds", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/customers/module.ts");
+      writeFileSync(schema, readFileSync(schema, "utf8") + `
+export const referrals = table(\`
+  create table referrals (
+    id text primary key not null,
+    customer_id text references customers
+  ) strict
+\`);
+`);
+      await build(join(dir, "example/solarsql.config.ts"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a foreign key whose target spelling differs only in case still resolves and builds", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/customers/module.ts");
+      writeFileSync(schema, readFileSync(schema, "utf8") + `
+export const referrals = table(\`
+  create table referrals (
+    id text primary key not null,
+    customer_id text references Customers(id)
+  ) strict
+\`);
+`);
+      await build(join(dir, "example/solarsql.config.ts"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("an expression column without a cast is refused with the fix in the message", async () => {
     const dir = copy();
     try {
