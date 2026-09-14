@@ -207,10 +207,10 @@ function assertParameterContracts(value:unknown):void {
   const result=value as {valid:{ok:boolean;rows:unknown[];changes:number};errors:string[];count:number};
   assert.deepEqual(result.valid,{ok:true,rows:[{label:'done',value:'second'}],changes:2});
   assert.deepEqual(result.errors,[
-    'unexpected parameter: "stale"',
-    'missing parameter: ":id"',
-    'unexpected parameter: "stale"',
-    'missing parameter: ":id"; unexpected parameter: "stale"',
+    'unexpected parameter: "stale" (query byId declares: :id)',
+    'missing parameter: ":id" (query byId declares: :id)',
+    'unexpected parameter: "stale" (query literal declares: :value)',
+    'missing parameter: ":id"; unexpected parameter: "stale" (command write declares: $allowed, :id, :label, @value)',
   ]);
   assert.equal(result.count,1);
 }

@@ -24,7 +24,7 @@ export function durable(storage: StorageLike, options: AdapterOptions = {}): Dat
   const all = <Q extends Query<string, Entry>>(query: Q, ...args: ParamsArg<Q>): Promise<Row<Q>[]> =>
     observed(options.observe, "query", query.name, async () => {
       const params=(args[0] ?? {}) as Record<string,unknown>;
-      validateParams([query.meta], params);
+      validateParams([query.meta], params, `query ${query.name}`);
       return rows(query.sql, query.meta, params) as Row<Q>[];
     }, () => "ok");
 
@@ -37,13 +37,13 @@ export function durable(storage: StorageLike, options: AdapterOptions = {}): Dat
     // The storage is local, so a batch of reads is the reads in order.
     batch: <const R extends readonly Read<Query<string, Entry>>[]>(reads: R): Promise<BatchRows<R>> =>
       observed(options.observe, "batch", reads.map((r) => r.query.name).join("+"), async () => {
-        for (const item of reads) validateParams([item.query.meta], item.params);
+        for (const item of reads) validateParams([item.query.meta], item.params, `query ${item.query.name}`);
         return reads.map((r) => rows(r.query.sql, r.query.meta, r.params)) as unknown as BatchRows<R>;
       }, () => "ok"),
     run: <C extends Command<GeneratedMap, PlanShape<GeneratedMap>>>(command: C, ...args: ParamsArg<C>): Promise<CommandResult<C>> =>
       observed(options.observe, "command", command.name, async () => {
         const params = (args[0] ?? {}) as Record<string, SqlValue>;
-        validateParams([...command.meta.statements, ...(command.meta.returns ? [command.meta.returns] : [])], params);
+        validateParams([...command.meta.statements, ...(command.meta.returns ? [command.meta.returns] : [])], params, `command ${command.name}`);
         const token = assertToken();
         try {
           const out = storage.transactionSync(() => {

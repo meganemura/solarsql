@@ -205,7 +205,7 @@ test('missing parameters report the exact generated keys', async () => {
   assert.throws(()=>bindValues({params:[':id','@id'],encode:[],json:[],reads:[]},{}),{message:'missing parameters: ":id", "@id"'});
   assert.throws(()=>bindValues({params:['id'],encode:[],json:[],reads:[]},{}),{message:'missing parameter: "id"'});
   assert.throws(()=>bindValues({params:['id'],encode:[],json:[],reads:[]},Object.create({id:1})),{message:'missing parameter: "id"'});
-  assert.doesNotThrow(()=>validateParams([{params:['id'],encode:[],json:[],reads:[]}],{id:null}));
+  assert.doesNotThrow(()=>validateParams([{params:['id'],encode:[],json:[],reads:[]}],{id:null},'query x'));
 });
 
 test('operation parameter contracts use own exact keys across statement subsets', async () => {
@@ -213,6 +213,7 @@ test('operation parameter contracts use own exact keys across statement subsets'
   const {test:property}=await import('@hegeldev/hegel');
   const gs=await import('@hegeldev/hegel/generators');
   const name=gs.fromRegex('[:@$]?[a-z][a-z0-9_]{0,6}');
+  const subject='query x';
   property(tc=>{
     const expected=[...new Set(tc.draw(gs.arrays(name,{minSize:1,maxSize:8})))];
     const midpoint=Math.ceil(expected.length/2);
@@ -222,13 +223,14 @@ test('operation parameter contracts use own exact keys across statement subsets'
     const params=Object.assign(Object.create(Object.fromEntries(expected.map(key=>[key,99]))),Object.fromEntries([...own,...extras].map(key=>[key,1])));
     const missing=expected.filter(key=>!own.includes(key)).sort();
     const unexpected=[...extras].sort();
-    if(missing.length===0&&unexpected.length===0)assert.doesNotThrow(()=>validateParams(metas,params));
+    if(missing.length===0&&unexpected.length===0)assert.doesNotThrow(()=>validateParams(metas,params,subject));
     else {
       const parts=[
         ...(missing.length?[`missing parameter${missing.length>1?'s':''}: ${missing.map(key=>JSON.stringify(key)).join(', ')}`]:[]),
         ...(unexpected.length?[`unexpected parameter${unexpected.length>1?'s':''}: ${unexpected.map(key=>JSON.stringify(key)).join(', ')}`]:[]),
       ];
-      assert.throws(()=>validateParams(metas,params),{message:parts.join('; ')});
+      const declared=[...expected].sort();
+      assert.throws(()=>validateParams(metas,params,subject),{message:`${parts.join('; ')} (${subject} declares: ${declared.length?declared.join(', '):'none'})`});
     }
   },{testCases:1000});
 });

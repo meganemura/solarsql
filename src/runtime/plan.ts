@@ -54,7 +54,7 @@ export function bindValues(meta: StatementMeta, params: Record<string, unknown>)
   });
 }
 
-export function validateParams(metas: readonly StatementMeta[], params: Record<string, unknown>): void {
+export function validateParams(metas: readonly StatementMeta[], params: Record<string, unknown>, subject: string): void {
   const keys = [...new Set(metas.flatMap(meta => meta.params))].sort();
   const wanted = new Set(keys);
   const missing = keys.filter(key => !Object.hasOwn(params, key) || params[key] === undefined);
@@ -63,7 +63,7 @@ export function validateParams(metas: readonly StatementMeta[], params: Record<s
     ...(missing.length > 0 ? [`missing parameter${missing.length > 1 ? "s" : ""}: ${missing.map(key => JSON.stringify(key)).join(", ")}`] : []),
     ...(unexpected.length > 0 ? [`unexpected parameter${unexpected.length > 1 ? "s" : ""}: ${unexpected.map(key => JSON.stringify(key)).join(", ")}`] : []),
   ];
-  if (parts.length > 0) throw new Error(parts.join("; "));
+  if (parts.length > 0) throw new Error(`${parts.join("; ")} (${subject} declares: ${keys.length > 0 ? keys.join(", ") : "none"})`);
 }
 
 // The assert name when an error is the guard trigger firing, else null.

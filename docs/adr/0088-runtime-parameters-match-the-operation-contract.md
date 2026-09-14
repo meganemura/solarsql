@@ -25,3 +25,7 @@ It compares each diagnostic with the complete sorted difference.
 A command uses disjoint parameters in two statements, an assert, and `returns` on Node, local D1, and a Durable Object.
 Each target accepts the complete object and rejects extra, inherited, batch, and command mismatches before an invalid write.
 Existing adapter tests retain JSON encoding, null values, parameter order, and calls without parameters.
+
+## Consequences
+
+- The thrown message names the query or command that rejected the call, and what it declares. A caller checking several statements against one parameter object can then tell which one raised it, without bisecting the calls by hand.

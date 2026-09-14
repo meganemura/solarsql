@@ -28,7 +28,7 @@ export function d1(binding: D1Like, options: AdapterOptions = {}): Database {
   const all = <Q extends Query<string, Entry>>(query: Q, ...args: ParamsArg<Q>): Promise<Row<Q>[]> =>
     observed(options.observe, "query", query.name, async (report) => {
       const params=(args[0] ?? {}) as Record<string, unknown>;
-      validateParams([query.meta], params);
+      validateParams([query.meta], params, `query ${query.name}`);
       const result = await prepared(query.sql, query.meta, params).all();
       report(engineMeta([result]));
       return parseJson<Row<Q> & Record<string, unknown>>((result.results ?? []) as Record<string, unknown>[], query.meta.json, "d1");
@@ -42,7 +42,7 @@ export function d1(binding: D1Like, options: AdapterOptions = {}): Database {
     },
     batch: <const R extends readonly Read<Query<string, Entry>>[]>(reads: R): Promise<BatchRows<R>> =>
       observed(options.observe, "batch", reads.map((r) => r.query.name).join("+"), async (report) => {
-        for (const item of reads) validateParams([item.query.meta], item.params);
+        for (const item of reads) validateParams([item.query.meta], item.params, `query ${item.query.name}`);
         const results = await binding.batch(reads.map((r) => prepared(r.query.sql, r.query.meta, r.params)));
         report(engineMeta(results));
         return reads.map((r, i) => parseJson((results[i]?.results ?? []) as Record<string, unknown>[], r.query.meta.json, "d1")) as unknown as BatchRows<R>;
@@ -50,7 +50,7 @@ export function d1(binding: D1Like, options: AdapterOptions = {}): Database {
     run: <C extends Command<GeneratedMap, PlanShape<GeneratedMap>>>(command: C, ...args: ParamsArg<C>): Promise<CommandResult<C>> =>
       observed(options.observe, "command", command.name, async (report) => {
         const params = (args[0] ?? {}) as Record<string, SqlValue>;
-        validateParams([...command.meta.statements, ...(command.meta.returns ? [command.meta.returns] : [])], params);
+        validateParams([...command.meta.statements, ...(command.meta.returns ? [command.meta.returns] : [])], params, `command ${command.name}`);
         const token = assertToken();
         const hasAssert = command.plan.some((item) => typeof item !== "string");
         const statements = command.plan.map((item, i) => {
