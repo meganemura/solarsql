@@ -149,6 +149,18 @@ describe("Engine", () => {
     assert.deepEqual(plan("select id from t where id in (select value from json_each(:ids))"), []);
   });
 
+  test("fullScans does not report a derived-table alias as a scanned table", () => {
+    const e = new Engine([`create table orders (id text primary key not null, status text not null) strict`]);
+    const scans = e.fullScans("select id from (select * from orders limit 5) sub where sub.status='x'");
+    assert.deepEqual(scans, ["orders"]);
+  });
+
+  test("fullScans does not report a CTE name as a scanned table", () => {
+    const e = new Engine([`create table orders (id text primary key not null, status text not null) strict`]);
+    const scans = e.fullScans("with c as (select * from orders limit 5) select id from c where status='x'");
+    assert.deepEqual(scans, ["orders"]);
+  });
+
   test("prepare rejects an unknown column with the engine's message", () => {
     assert.throws(() => engine.prepare("select nope from orders"), /no such column: nope/);
   });

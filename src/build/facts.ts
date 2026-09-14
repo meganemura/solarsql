@@ -6,7 +6,7 @@
 // Boundary: nothing here reads SQL text beyond what scan.ts provides. Nothing
 // here produces TypeScript; typegen.ts does that from these facts.
 import { DatabaseSync, constants } from "node:sqlite";
-import { aliasMap, definitions, isKeyword, quoteIdent, significant, tokenize, unquote } from "./scan.ts";
+import { aliasMap, cteNames, definitions, isKeyword, quoteIdent, significant, tokenize, unquote } from "./scan.ts";
 
 export type ColumnFact = {
   name: string;
@@ -164,8 +164,11 @@ export class Engine {
   // filter written as `(:p is null or col = :p)` disables the index, and
   // this is how the build tells the agent.
   fullScans(sql: string): string[] {
-    // The plan names the alias; the text maps it back to the table.
+    // The plan names the alias; the text maps it back to the table. A CTE
+    // reference or a derived table's alias is not a real table, and must
+    // not be reported as one.
     const aliases = aliasMap(sql);
+    const ctes = cteNames(sql);
     const out: string[] = [];
     for (const r of this.db.prepare(`explain query plan ${sql}`).all()) {
       const detail = (r as { detail: string }).detail;
@@ -175,7 +178,8 @@ export class Engine {
       const m = /^SCAN\s+(\S+)(?:\s+USING\s+(?:COVERING\s+)?INDEX\s+\S+)?$/.exec(detail);
       if (!m) continue;
       const alias = unquote(m[1]!);
-      const table = aliases.get(alias) ?? alias;
+      if (ctes.has(alias)) continue;
+      const table = aliases.has(alias) ? aliases.get(alias)! : alias;
       if (table && !out.includes(table)) out.push(table);
     }
     return out;

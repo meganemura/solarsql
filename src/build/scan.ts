@@ -365,6 +365,39 @@ export function columnRef(expr: string): { alias: string | null; column: string 
   return null;
 }
 
+// The CTEs a leading WITH clause declares, by name. fullScans and similar
+// name-vs-table checks must not mistake a CTE reference for a real schema
+// table that happens to share its name.
+export function cteNames(sql: string): Set<string> {
+  const t = significant(tokenize(sql));
+  const names = new Set<string>();
+  if (!isKeyword(t[0], "with")) return names;
+  let i = 1;
+  if (isKeyword(t[i], "recursive")) i++;
+  while (t[i] && t[i]!.type === "ident") {
+    names.add(unquote(t[i]!.text));
+    i++;
+    // An optional (col, col, ...) column list after the CTE name.
+    if (t[i]?.text === "(") {
+      const depth = t[i]!.depth;
+      while (t[i] && !(t[i]!.text === ")" && t[i]!.depth === depth)) i++;
+      i++;
+    }
+    if (isKeyword(t[i], "as")) i++;
+    if (isKeyword(t[i], "not") && isKeyword(t[i + 1], "materialized")) i += 2;
+    else if (isKeyword(t[i], "materialized")) i++;
+    // The CTE's own (select ...) body.
+    if (t[i]?.text === "(") {
+      const depth = t[i]!.depth;
+      while (t[i] && !(t[i]!.text === ")" && t[i]!.depth === depth)) i++;
+      i++;
+    }
+    if (t[i]?.text === ",") { i++; continue; }
+    break;
+  }
+  return names;
+}
+
 // Alias to table name for every `FROM t [AS] a`, `JOIN t [AS] a`, and the
 // comma-separated entries of a FROM list, at any depth. A subquery or a
 // table-valued function maps its alias to null.
