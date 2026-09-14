@@ -15,6 +15,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 - Fixed: `INDEXED BY` and `NOT INDEXED` no longer shadow a table's own alias, so a parameter compared against that table keeps its narrow inferred type.
 - Fixed: a table rebuild now refuses to replay when it does not know about a column the table actually has, instead of silently dropping that column or nulling its data; this can happen when a rebuild is merged behind a sibling migration that added a column after the rebuild was generated (ADR 0099).
 - Fixed: a RETURNING clause on INSERT, UPDATE, or DELETE types a CAST or a JSON constructor the same way a SELECT's item list would, instead of failing every expression but a bare column (ADR 0100).
+- Fixed: `rehearse` rejects a named or anonymous parameter in a `checks.assertions` entry, instead of silently binding it to `NULL` and letting the assertion's predicate pass regardless of the real data.
 
 ## 0.4.0 (2026-09-14)
 
