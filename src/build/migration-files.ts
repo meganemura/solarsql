@@ -1,6 +1,6 @@
 // Responsibility: append migration files in replay order without replacing history.
 // Boundary: schema comparison and SQL generation belong to build.ts and migration.ts.
-import { closeSync, openSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, linkSync, openSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { render } from "./migration.ts";
 import { BuildError } from "./typegen.ts";
@@ -32,11 +32,25 @@ export function nextMigrationFile(names: readonly string[], name: string, statem
   return file;
 }
 
+// A timeout can stop a worker mid-write. Writing the full content to a
+// temporary file first, then linking it into place only after that write
+// returns, means a killed process leaves no file at the final name: the
+// two steps run in order, so the final name only ever exists once the
+// content behind it is complete. A hard link, not a rename, keeps the
+// EEXIST failure when a migration of that name already exists; some
+// filesystems without hard-link support (for example exFAT) cannot run
+// this path, which a rename-based write would not have required.
 export function writeNewMigration(dir: string, file: { filename: string; sql: string }): void {
-  try { writeFileSync(join(dir, file.filename), file.sql, { flag: "wx" }); }
-  catch (error) {
+  const target = join(dir, file.filename);
+  const temporary = join(dir, `.${file.filename}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`);
+  writeFileSync(temporary, file.sql, { flag: "wx" });
+  try {
+    linkSync(temporary, target);
+  } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new BuildError(`Migration ${file.filename} already exists. Preserve it and rerun generation against the current history.`);
     throw error;
+  } finally {
+    unlinkSync(temporary);
   }
 }
 

@@ -3,8 +3,8 @@
 // shapes the design rules out. Each case works on a copy of the example.
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { build, migration } from "../src/build/build.ts";
@@ -428,6 +428,33 @@ test('migration file publication is exclusive and generation locks are released'
   await assert.rejects(withMigrationLock(dir,()=>{throw new Error('fixture failure')}),/fixture failure/);
   await withMigrationLock(dir,()=>{});
   assert.equal(existsSync(join(dir,'.solarsql-generation.lock')),false);
+});
+
+test('a migration write killed before its link leaves no file at the final name', async t => {
+  const dir = mkdtempSync(join(tmpdir(),'solarsql-migration-killed-'));
+  t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const filename = '0001_initial.sql';
+  const sql = 'create table t(n integer) strict;';
+  const fixture = join(root,'test/fixtures/interrupted-migration-write.ts');
+  const child = spawn(process.execPath,[fixture,dir,filename,sql],{stdio:['ignore','pipe','pipe']});
+  const killed = new Promise<{code:number|null;signal:NodeJS.Signals|null}>((resolvePromise,reject) => {
+    let ready = '';
+    child.stdout!.on('data', chunk => {
+      ready += String(chunk);
+      if (ready.includes('about to link')) child.kill('SIGKILL');
+    });
+    child.on('error', reject);
+    child.on('exit', (code,signal) => resolvePromise({code,signal}));
+    t.after(() => child.kill('SIGKILL'));
+  });
+  const {signal} = await killed;
+  assert.equal(signal,'SIGKILL');
+  assert.equal(existsSync(join(dir,filename)),false);
+  const stray = readdirSync(dir).find(name => name.startsWith(`.${filename}.`) && name.endsWith('.tmp'));
+  assert.ok(stray, 'a temporary artifact from the interrupted write remains');
+  writeNewMigration(dir,{filename,sql});
+  assert.equal(readFileSync(join(dir,filename),'utf8'),sql);
+  assert.throws(()=>writeNewMigration(dir,{filename,sql:'drop table t;'}),/already exists/);
 });
 
 test('migration numbering rejects ambiguous history and unsafe lexical rollover', () => {
