@@ -178,3 +178,107 @@ test("a Durable Object's runtime migrate() also refuses a rebuild that does not 
 
   assert.deepEqual({ ...db.prepare("select * from t where id='x'").get() }, { id: "x", a: 5, b: 10 });
 });
+
+test("two independent rebuilds of the same table, each dropping NOT NULL on a different column, refuse to replay when the later one's recorded shape is stale", () => {
+  const base = "create table t (id text primary key not null, a text not null, c text not null) strict";
+  const targetA = "create table t (id text primary key not null, a text, c text not null) strict"; // branch A: drops NOT NULL on a, never heard of B's change to c
+  const targetB = "create table t (id text primary key not null, a text not null, c text) strict"; // branch B: drops NOT NULL on c, independently of A
+
+  const currentDb = open([base]);
+  const planA = diff(introspect(currentDb), introspect(open([targetA])));
+  assert.equal(planA.kind, "ok");
+  if (planA.kind !== "ok") return;
+  const fileA = render(3, "a_nullable", planA.statements, planA.rebuilds ?? []);
+
+  const planB = diff(introspect(currentDb), introspect(open([targetB])));
+  assert.equal(planB.kind, "ok");
+  if (planB.kind !== "ok") return;
+  const fileB = render(2, "c_nullable", planB.statements, planB.rebuilds ?? []);
+
+  // A live database: base, then B (drops NOT NULL on c), matching what a
+  // real deploy already did before the renumbered A ever runs.
+  const live = new DatabaseSync(":memory:");
+  live.exec(base);
+  for (const s of splitStatements(fileB.sql)) live.exec(s);
+  const cBefore = live.prepare(`select "notnull" from pragma_table_xinfo(?) where name = ?`).get("t", "c") as { notnull: number };
+  assert.equal(cBefore.notnull, 0);
+
+  assert.throws(
+    () => applied([base + ";", fileB.sql, fileA.sql], ["0001_base.sql", "0002_c_nullable.sql", "0003_a_nullable.sql"]),
+    (e: unknown) => {
+      assert.ok(e instanceof BuildError, String(e));
+      assert.match(e.message, /0003_a_nullable\.sql rebuilds table "t" with a stale declaration of column "c"/);
+      return true;
+    },
+  );
+
+  // The refusal is a build-time replay check on a fresh in-memory database,
+  // not an action on `live`; confirm B's change (c's NOT NULL already
+  // dropped) is still the live database's actual shape, not "c" reverted
+  // to NOT NULL and not any other mutation.
+  const cAfter = live.prepare(`select "notnull" from pragma_table_xinfo(?) where name = ?`).get("t", "c") as { notnull: number };
+  assert.equal(cAfter.notnull, 0);
+});
+
+test("a Durable Object's runtime migrate() also refuses a rebuild with a stale declaration of a column a sibling rebuild changed", () => {
+  const base = "create table t (id text primary key not null, a text not null, c text not null) strict";
+  const targetA = "create table t (id text primary key not null, a text, c text not null) strict";
+  const targetB = "create table t (id text primary key not null, a text not null, c text) strict";
+
+  const currentDb = open([base]);
+  const planA = diff(introspect(currentDb), introspect(open([targetA])));
+  if (planA.kind !== "ok") throw new Error("planA blocked");
+  const fileA = render(3, "a_nullable", planA.statements, planA.rebuilds ?? []);
+  const planB = diff(introspect(currentDb), introspect(open([targetB])));
+  if (planB.kind !== "ok") throw new Error("planB blocked");
+  const fileB = render(2, "c_nullable", planB.statements, planB.rebuilds ?? []);
+
+  const db = new DatabaseSync(":memory:");
+  migrate(db, [{ name: "0001_base.sql", sql: base + ";" }, { name: "0002_c_nullable.sql", sql: fileB.sql }]);
+
+  assert.throws(
+    () => migrate(db, [
+      { name: "0001_base.sql", sql: base + ";" },
+      { name: "0002_c_nullable.sql", sql: fileB.sql },
+      { name: "0003_a_nullable.sql", sql: fileA.sql },
+    ]),
+    (e: unknown) => {
+      assert.ok(e instanceof MigrationHistoryError, String(e));
+      assert.equal(e.code, "REBUILD_LOSES_COLUMN");
+      assert.match(e.message, /rebuilds table "t" with a stale declaration of column "c"/);
+      return true;
+    },
+  );
+
+  // The refusal runs before "0003_a_nullable.sql"'s statements execute, on
+  // the same database migrate() operates on directly (not a copy): B's
+  // change (c's NOT NULL already dropped) is still there, unmutated.
+  const row = db.prepare(`select "notnull" from pragma_table_xinfo(?) where name = ?`).get("t", "c") as { notnull: number };
+  assert.equal(row.notnull, 0);
+});
+
+test("a single rebuild that changes a column's declared shape, with no conflicting sibling, still replays", () => {
+  const base = "create table t (id text primary key not null, a text not null) strict";
+  const target = "create table t (id text primary key not null, a text) strict"; // drops NOT NULL on a
+  const current = open([base]);
+  const plan = diff(introspect(current), introspect(open([target])));
+  assert.equal(plan.kind, "ok");
+  if (plan.kind !== "ok") return;
+  const file = render(2, "a_nullable", plan.statements, plan.rebuilds ?? []);
+  const db = applied([base + ";", file.sql], ["0001_base.sql", "0002_a_nullable.sql"]);
+  const row = db.prepare(`select "notnull" from pragma_table_xinfo(?) where name = ?`).get("t", "a") as { notnull: number };
+  assert.equal(row.notnull, 0);
+});
+
+test("a Durable Object's runtime migrate() also accepts a single rebuild that changes a column's declared shape, with no conflicting sibling", () => {
+  const base = "create table t (id text primary key not null, a text not null) strict";
+  const target = "create table t (id text primary key not null, a text) strict";
+  const current = open([base]);
+  const plan = diff(introspect(current), introspect(open([target])));
+  if (plan.kind !== "ok") throw new Error("plan blocked");
+  const file = render(2, "a_nullable", plan.statements, plan.rebuilds ?? []);
+  const db = new DatabaseSync(":memory:");
+  migrate(db, [{ name: "0001_base.sql", sql: base + ";" }, { name: "0002_a_nullable.sql", sql: file.sql }]);
+  const row = db.prepare(`select "notnull" from pragma_table_xinfo(?) where name = ?`).get("t", "a") as { notnull: number };
+  assert.equal(row.notnull, 0);
+});

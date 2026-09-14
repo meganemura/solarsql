@@ -8,7 +8,7 @@
 // runtime/plan.ts defines.
 import type { AdapterOptions, BatchRows, Command, CommandResult, Database, Entry, GeneratedMap, ParamsArg, PlanShape, Query, Read, Row, SqlValue, StatementMeta } from "./index.ts";
 import { GUARD_CLEANUP, assertFailure, assertStatement, assertToken, bindValues, constraintFailure, observed, outcomeOf, parseJson, validateParams } from "./runtime/plan.ts";
-import { parseRebuildRecords, quoteIdent, significant, splitStatements, tokenize } from "./build/scan.ts";
+import { definitions, parseRebuildRecords, quoteIdent, significant, splitStatements, tokenize } from "./build/scan.ts";
 
 // The part of DurableObjectStorage this adapter uses. Structural, so no
 // type package is needed.
@@ -147,7 +147,8 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
       // caught here too, the same as any other column.
       const actualColumns = storage.sql.exec(`select name from pragma_table_xinfo(?) where hidden in (0, 2, 3)`, table).toArray().map((r) => String(r.name));
       if (actualColumns.length === 0) continue;
-      const unknown = actualColumns.find((n) => !columns.includes(n));
+      const recorded = new Map(columns.map((c) => [c.name, c.def]));
+      const unknown = actualColumns.find((n) => !recorded.has(n));
       if (unknown !== undefined) {
         // Every earlier file in this history is already applied here (this
         // loop only reaches files past the recorded history), so there is
@@ -155,6 +156,21 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
         throw new MigrationHistoryError(
           "REBUILD_LOSES_COLUMN",
           `Migration ${file.name} rebuilds table ${quoteIdent(table)} without knowledge of column ${quoteIdent(unknown)}. This database has already applied every earlier migration, so ${quoteIdent(unknown)}'s data on ${quoteIdent(table)} would be lost if this migration ran. Regenerate ${file.name} against the current schema.`,
+          file.name,
+        );
+      }
+      // The declaration text, not just the column list: the same shape
+      // definitions() gives applied() via Column.def, read here from the
+      // table's own CREATE TABLE text so a column whose declared shape
+      // changed since this file was generated is caught the same way an
+      // unknown column is.
+      const schemaRow = storage.sql.exec(`select sql from sqlite_schema where type = 'table' and name = ?`, table).toArray()[0];
+      const defs = schemaRow ? definitions(String(schemaRow.sql)) : null;
+      const changed = actualColumns.find((n) => (defs?.columns.get(n) ?? "") !== (recorded.get(n) ?? ""));
+      if (changed !== undefined) {
+        throw new MigrationHistoryError(
+          "REBUILD_LOSES_COLUMN",
+          `Migration ${file.name} rebuilds table ${quoteIdent(table)} with a stale declaration of column ${quoteIdent(changed)}. This database has already applied every earlier migration, so replaying ${file.name} would lose that column's current shape on ${quoteIdent(table)}. Regenerate ${file.name} against the current schema.`,
           file.name,
         );
       }

@@ -841,15 +841,22 @@ export function nonNullFilterAlias(expr: string): string | null {
 }
 
 // A migration file that rebuilds a table records, in one comment line
-// render() writes, the exact columns tableStatements saw for that table at
-// generation time -- not the columns it kept. Replay checks the table's
-// actual columns against this list before the rebuild runs (ADR 0099). A
-// file with no such line, or one that fails to parse, has nothing recorded:
-// callers treat that the same as an empty list, not as an error, so a file
-// written before this feature existed replays exactly as it did before.
-export type RebuildRecord = { table: string; columns: string[] };
+// render() writes, the shape tableStatements saw for that table at
+// generation time: each column's normalized declaration text (the same
+// text definitions()/normalize() already produce, and Column.def already
+// holds), not only its name. Replay compares the table's actual shape,
+// immediately before the file runs, against this record (ADR 0101). A
+// table whose CREATE statement has no explicit column-definition list
+// (definitions() finds none) records every column's declaration as the
+// empty string, on both sides, so the comparison is vacuous for that
+// table -- the same as having nothing recorded. A file with no such line,
+// or one that fails to parse, has nothing recorded: callers treat that
+// the same as an empty list, not as an error, so a file written before
+// this feature existed, or under ADR 0099's column-name-only format,
+// replays exactly as it did before.
+export type RebuildRecord = { table: string; columns: { name: string; def: string }[] };
 
-const REBUILD_HEADER = "-- Rebuilds from these columns: ";
+export const REBUILD_HEADER = "-- Rebuilds from this shape: ";
 
 export function parseRebuildRecords(sql: string): RebuildRecord[] {
   const line = sql.split("\n").find((l) => l.startsWith(REBUILD_HEADER));
@@ -861,7 +868,11 @@ export function parseRebuildRecords(sql: string): RebuildRecord[] {
       v !== null && typeof v === "object" &&
       typeof (v as { table?: unknown }).table === "string" &&
       Array.isArray((v as { columns?: unknown }).columns) &&
-      (v as { columns: unknown[] }).columns.every((c) => typeof c === "string"),
+      (v as { columns: unknown[] }).columns.every((c) =>
+        c !== null && typeof c === "object" &&
+        typeof (c as { name?: unknown }).name === "string" &&
+        typeof (c as { def?: unknown }).def === "string",
+      ),
     );
   } catch {
     return [];

@@ -14,6 +14,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 - Fixed: a migration replay error names the failing statement's position within its file, when the file holds more than one statement.
 - Fixed: `INDEXED BY` and `NOT INDEXED` no longer shadow a table's own alias, so a parameter compared against that table keeps its narrow inferred type.
 - Fixed: a table rebuild now refuses to replay when it does not know about a column the table actually has, instead of silently dropping that column or nulling its data; this can happen when a rebuild is merged behind a sibling migration that added a column after the rebuild was generated (ADR 0099).
+- Fixed: a table rebuild now refuses to replay when a column it rebuilds has a different declared shape than its generator saw, not only when the column is unknown to it; this can happen when two branches each rebuild the same table for unrelated reasons (ADR 0101).
 - Fixed: a write plan item with a computed RETURNING expression (a CAST, a JSON constructor) now fails with "RETURNING clause is discarded at run time", the same refusal a bare RETURNING column already got, instead of a "wrap it in cast(...)" error the expression already satisfies (ADR 0100).
 - Fixed: `rehearse` rejects a named or anonymous parameter in a `checks.assertions` entry, instead of silently binding it to `NULL` and letting the assertion's predicate pass regardless of the real data.
 
