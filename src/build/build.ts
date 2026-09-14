@@ -255,6 +255,17 @@ export async function build(configPath: string, options: BuildOptions = {}): Pro
   const buildStarted = performance.now();
   const write = options.write ?? true;
   const loaded = await load(configPath, write);
+  return buildLoaded(loaded, options, buildStarted);
+}
+
+// build()'s own check body. migration() calls this on a configuration it
+// has already loaded itself, so a schema or command change that would fail
+// build() also fails migration() before a migration file exists (ADR
+// 0096), without importing the configuration file a second time: the
+// import's own side effects (a `process.on` listener, for one, in a test
+// harness) would otherwise run twice.
+async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted = performance.now()): Promise<BuildResult> {
+  const write = options.write ?? true;
   const { config, configDir, modules } = loaded;
   const library = config.library ?? "solarsql";
   checkImports(modules);
@@ -633,7 +644,17 @@ function migrationStatus(configDir: string, config: Config, modules: readonly Mo
 // Write the next migration file, and the bundle a Durable Object imports.
 export async function migration(configPath: string, name: string, intent: MigrationIntent = emptyIntent): Promise<{ filename: string | null; reason: string | null; drops?: DropIntent[]; renames?: Rename[]; renameCandidates?: RenameRepair[] }> {
   if (!/^[a-z0-9_]+$/.test(name)) throw new BuildError(`migration name must match [a-z0-9_]+: ${name}`);
-  const { config, configDir, modules } = await load(configPath);
+  // build() enforces the module boundary, STRICT/primary-key, foreign-key
+  // target, and command-plan rules before this function ever touches the
+  // migrations directory. Loading the configuration once and running
+  // build's own check body on that one load, write: false, means a
+  // schema or command change that would fail build() also fails
+  // migration() before a file exists, instead of only surfacing on a
+  // later, separate build --check (ADR 0096). A second full import would
+  // run the configuration's own import-time side effects twice.
+  const loaded = await load(configPath);
+  await buildLoaded(loaded, { write: false });
+  const { config, configDir, modules } = loaded;
   const dir = resolve(configDir, config.migrations);
   mkdirSync(dir, { recursive: true });
   return await withMigrationLock(dir, () => {

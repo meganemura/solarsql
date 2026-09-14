@@ -247,6 +247,27 @@ describe("solarsql build", () => {
     }
   });
 
+  test("migration refuses a command plan that writes another module's table, and writes no file", async () => {
+    const dir = copy();
+    try {
+      // A genuine schema change, so a migration would otherwise be
+      // pending and a file would otherwise be written.
+      const schema = join(dir, "example/modules/orders/module.ts");
+      writeFileSync(schema, readFileSync(schema, "utf8")
+        .replace("updated_at text\n", "updated_at text,\n    placed_at integer not null default 0\n")
+        .replace(`plan: ["update orders set note = :note where id = :id"],`, `plan: ["update customers set name = :note where id = :id"],`));
+      const before = readdirSync(join(dir, "example/migrations"));
+      await assert.rejects(migration(join(dir, "example/solarsql.config.ts"), "placed_at"), (e: unknown) => {
+        assert.ok(e instanceof BuildError, String(e));
+        assert.match(e.message, /module orders updates customers\. Module customers owns customers/);
+        return true;
+      });
+      assert.deepEqual(readdirSync(join(dir, "example/migrations")), before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a module imports another module through public.ts only", async () => {
     const dir = copy();
     try {

@@ -5,6 +5,7 @@ npx solarsql migration <name>
 ```
 
 The command writes `migrations/NNNN_<name>.sql` with the difference between the migration files applied in order and the declared schema, and rewrites `migrations/index.ts`, the same files as one module for a Durable Object.
+Before it writes a file, the command runs every check `build` runs, so a module-boundary violation, or another reason `build` would refuse, blocks generation instead of only surfacing on a later `build --check` (ADR 0096).
 `npx solarsql build` reports pending or blocked migrations after generating types; `npx solarsql build --check` fails while the files and schema differ.
 Every build keeps `index.ts` in step with the `.sql` files.
 
