@@ -8,6 +8,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 - Fixed: a CHECK column narrows to its literal union when the predicate is `column IN (literal, ...) OR column IS NULL`, the same as `IN (...)` alone (ADR 0097).
 - Fixed: a generated union type drops a string or number literal member once the bare `string` or `number` type is already a member of the same union (ADR 0098).
 - Fixed: a parameter-validation error names the query or command that rejected the call, and what it declares (ADR 0088).
+- Fixed: a trigger body's own closing `END` no longer ends early on a column, or a `new.`/`old.` reference, literally named `end`.
+- Fixed: `solarsql build` takes the same lock `solarsql migration` uses before it writes `migrations/index.ts`, so a build racing a migration no longer overwrites the migration's own result with a stale index (ADR 0060).
 
 ## 0.4.0 (2026-09-14)
 

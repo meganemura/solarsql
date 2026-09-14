@@ -26,3 +26,8 @@ The lock coordinates generators using this protocol on the same filesystem.
 It does not coordinate edits in separate git branches or arbitrary manual writers.
 A process crash can leave a lock; recovery requires checking that its owner has exited.
 Crossing a digit-width boundary can violate filename ordering and requires an explicit migration strategy.
+
+## Consequences
+
+The build command's own write of `migrations/index.ts` takes this same lock.
+It rereads the directory after acquiring the lock, so a build racing a migration writes the migration's own result.
