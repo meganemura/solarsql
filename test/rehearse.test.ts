@@ -92,3 +92,139 @@ test('rehearsal counts include legal sqlite-prefixed tables', () => {
     assert.deepEqual(result.after,{sqliteCache:2});
   } finally {db.close();}
 });
+
+test('a case executes a representative old query with named params before and after the migration', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table payloads(id integer primary key, payload text not null) strict; insert into payloads values (1, '{\"id\":1}')");
+    const result = rehearseSnapshot(db, "update payloads set payload = json_set(payload, '$.id', :id)", {
+      cases: { reader: { sql: "select json_extract(payload, '$.id') as id from payloads where id = :id", params: { ':id': 1 } } },
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.cases, ['reader']);
+  } finally { db.close(); }
+});
+
+// checks.queries only compares result columns, so a migration that keeps the
+// same column shape but breaks stored JSON passes it. A case executes the
+// query and catches this, the gap ADR 0057 names as a compilation-time limit.
+test('a case catches a migration that keeps the result shape but breaks stored JSON, where checks.queries would not', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table payloads(id integer primary key, payload text not null) strict; insert into payloads values(1, '{\"id\":1}')");
+    const asQuery = rehearseSnapshot(db, "update payloads set payload = 'not-json'", {
+      queries: { reader: "select json_extract(payload, '$.id') as id from payloads" },
+    });
+    assert.equal(asQuery.ok, true, JSON.stringify(asQuery));
+  } finally { db.close(); }
+  const db2 = new DatabaseSync(':memory:');
+  try {
+    db2.exec("create table payloads(id integer primary key, payload text not null) strict; insert into payloads values(1, '{\"id\":1}')");
+    const asCase = rehearseSnapshot(db2, "update payloads set payload = 'not-json'", {
+      cases: { reader: { sql: "select json_extract(payload, '$.id') as id from payloads", params: {} } },
+    });
+    assert.equal(asCase.ok, false);
+    assert.equal(asCase.diagnostics[0]!.code, 'CASE_COMPATIBILITY_FAILED', JSON.stringify(asCase));
+  } finally { db2.close(); }
+});
+
+test('a case rejects a bare parameter name used with more than one prefix in the same SQL', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const result = rehearseSnapshot(db, 'select 1', {
+      cases: { mixed: { sql: 'select :x as a, $x as b', params: { ':x': 1, '$x': 2 } } },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics[0]!.code, 'CHECKS_INVALID', JSON.stringify(result));
+    assert.match(result.diagnostics[0]!.message, /more than one prefix/);
+  } finally { db.close(); }
+});
+
+test('a case requires params keyed by the full prefixed name, not the bare name', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const missing = rehearseSnapshot(db, 'select 1', {
+      cases: { badkey: { sql: 'select :id as id', params: { id: 1 } } },
+    });
+    assert.equal(missing.ok, false);
+    assert.equal(missing.diagnostics[0]!.code, 'CHECKS_INVALID', JSON.stringify(missing));
+    assert.match(missing.diagnostics[0]!.message, /missing parameter: :id/);
+    const extra = rehearseSnapshot(db, 'select 1', {
+      cases: { toomany: { sql: 'select :id as id', params: { ':id': 1, id: 2 } } },
+    });
+    assert.equal(extra.ok, false);
+    assert.equal(extra.diagnostics[0]!.code, 'CHECKS_INVALID', JSON.stringify(extra));
+    assert.match(extra.diagnostics[0]!.message, /unexpected parameter: id/);
+  } finally { db.close(); }
+});
+
+test('a case binds an array or object parameter as JSON text, readable with json_ functions', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const result = rehearseSnapshot(db, 'select 1', {
+      cases: {
+        nested: {
+          sql: "select json_array_length(:arr) as n, json_extract(:obj, '$.k') as k",
+          params: { ':arr': [1, 2, 3], ':obj': { k: 'v' } },
+        },
+      },
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.cases, ['nested']);
+  } finally { db.close(); }
+});
+
+test('a case is rejected when the migration changes its result columns or breaks its execution', () => {
+  for (const [sql, message] of [
+    ['alter table t drop column note', 'Result columns changed for case reader'],
+    ['alter table t rename to t2', 'no such table: t'],
+  ] as const) {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec('create table t(id integer primary key, note text)');
+      const result = rehearseSnapshot(db, sql, {
+        cases: { reader: { sql: 'select * from t where id = :id', params: { ':id': 1 } } },
+      });
+      assert.equal(result.ok, false);
+      assert.equal(result.diagnostics[0]!.code, 'CASE_COMPATIBILITY_FAILED', JSON.stringify(result));
+      assert.equal(result.diagnostics[0]!.message, message);
+    } finally { db.close(); }
+  }
+});
+
+test('checks.cases rejects malformed case definitions', () => {
+  const malformed: [Record<string, unknown>, RegExp][] = [
+    [{ sql: 'select ? as id', params: {} }, /anonymous parameter/],
+    [{ sql: 'select :id as id', params: { ':id': 1n } }, /BigInt/],
+    [{ sql: 'select :id as id', params: { ':id': new Uint8Array([1, 2]) } }, /BLOB/],
+    [{ sql: 'select :id as id', params: { ':id': Number.NaN } }, /finite number/],
+    [{ sql: 'select :id as id', params: { ':id': Number.POSITIVE_INFINITY } }, /finite number/],
+    [{ sql: 'update t set a = 1', params: {} }, /SELECT or VALUES/],
+    [{ sql: 'select 1', params: {}, note: 'oops' }, /unknown field/],
+  ];
+  for (const [kase, message] of malformed) {
+    const db = new DatabaseSync(':memory:');
+    try {
+      const result = rehearseSnapshot(db, 'select 1', { cases: { probe: kase } } as unknown as Parameters<typeof rehearseSnapshot>[2]);
+      assert.equal(result.ok, false);
+      assert.equal(result.diagnostics[0]!.code, 'CHECKS_INVALID', JSON.stringify(result));
+      assert.match(result.diagnostics[0]!.message, message);
+    } finally { db.close(); }
+  }
+});
+
+test('a case round-trips an array parameter through JSON text for any JSON-safe element', async () => {
+  const { test: property } = await import('@hegeldev/hegel');
+  const gs = await import('@hegeldev/hegel/generators');
+  property(tc => {
+    const values = tc.draw(gs.arrays(gs.integers()));
+    const db = new DatabaseSync(':memory:');
+    try {
+      const result = rehearseSnapshot(db, 'select 1', {
+        cases: { roundtrip: { sql: 'select json_array_length(:values) as n', params: { ':values': values } } },
+      });
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.equal(db.prepare('select json_array_length(?) as n').get(JSON.stringify(values))!.n, values.length);
+    } finally { db.close(); }
+  });
+});

@@ -5,7 +5,7 @@ import { channel } from 'node:diagnostics_channel';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { quoteIdent, significant, splitStatements, tokenize } from './scan.ts';
+import { namedParams, namedSlots, quoteIdent, significant, splitStatements, tokenize } from './scan.ts';
 import { catalogStatement } from './statements.ts';
 
 const lifecycle = channel('solarsql.rehearse');
@@ -19,7 +19,9 @@ function phase(name: string): () => void {
   return () => lifecycle.publish({ phase: name, event: 'end', ms: performance.now() - start });
 }
 
-export type RehearsalChecks = { queries?: Record<string, string>; assertions?: Record<string, string> };
+export type RehearsalCaseValue = string | number | boolean | null | RehearsalCaseValue[] | { [key: string]: RehearsalCaseValue };
+export type RehearsalCase = { sql: string; params: Record<string, RehearsalCaseValue> };
+export type RehearsalChecks = { queries?: Record<string, string>; assertions?: Record<string, string>; cases?: Record<string, RehearsalCase> };
 export type RehearsalResult = {
   version: 1;
   ok: boolean;
@@ -28,17 +30,73 @@ export type RehearsalResult = {
   after: Record<string, number>;
   queries: string[];
   assertions: string[];
+  cases: string[];
   diagnostics: { code: string; message: string }[];
 };
 
 function validateChecks(checks: unknown): asserts checks is RehearsalChecks {
-  if (!checks || typeof checks !== 'object' || Array.isArray(checks)) throw new Error('Checks must be an object with queries and/or assertions');
+  if (!checks || typeof checks !== 'object' || Array.isArray(checks)) throw new Error('Checks must be an object with queries, assertions, and/or cases');
   for (const [key, value] of Object.entries(checks)) {
-    if (!['queries', 'assertions'].includes(key)) throw new Error(`Unknown checks field ${key}; use queries or assertions`);
+    if (!['queries', 'assertions', 'cases'].includes(key)) throw new Error(`Unknown checks field ${key}; use queries, assertions, or cases`);
+    if (key === 'cases') { validateCases(value); continue; }
     if (!value || typeof value !== 'object' || Array.isArray(value) || Object.values(value).some(sql => typeof sql !== 'string')) {
       throw new Error(`${key} must be an object of names and SQL strings`);
     }
   }
+}
+
+// JSON has no BLOB or BigInt literal; a case that needs one must encode it
+// as a string itself, the same repair the build asks for on generated params.
+function validateCaseValue(name: string, slot: string, value: unknown): void {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new Error(`case ${JSON.stringify(name)} parameter ${slot} must be a finite number`);
+    return;
+  }
+  if (typeof value === 'bigint') throw new Error(`case ${JSON.stringify(name)} parameter ${slot} is a BigInt; bind it as a string instead`);
+  if (value instanceof Uint8Array || value instanceof ArrayBuffer) throw new Error(`case ${JSON.stringify(name)} parameter ${slot} is a BLOB; bind it as a string instead`);
+  if (Array.isArray(value)) { value.forEach((v, i) => validateCaseValue(name, `${slot}[${i}]`, v)); return; }
+  if (typeof value === 'object') { for (const [k, v] of Object.entries(value)) validateCaseValue(name, `${slot}.${k}`, v); return; }
+  throw new Error(`case ${JSON.stringify(name)} parameter ${slot} has an unsupported value type`);
+}
+
+// A case names its slots by the full SQLite name (":id", not "id") so that
+// distinct prefixes for the same bare name cannot collide, matching the
+// bind convention storageOf() already uses in src/node.ts.
+function validateCases(cases: unknown): asserts cases is Record<string, RehearsalCase> {
+  if (!cases || typeof cases !== 'object' || Array.isArray(cases)) throw new Error('cases must be an object of names and case definitions');
+  for (const [name, kase] of Object.entries(cases)) {
+    if (!kase || typeof kase !== 'object' || Array.isArray(kase)) throw new Error(`case ${JSON.stringify(name)} must be an object with sql and params`);
+    const unexpected = Object.keys(kase).filter(f => f !== 'sql' && f !== 'params');
+    if (unexpected.length > 0) throw new Error(`case ${JSON.stringify(name)} has unknown field${unexpected.length > 1 ? 's' : ''}: ${unexpected.join(', ')}`);
+    const sql = (kase as Record<string, unknown>).sql;
+    const params = (kase as Record<string, unknown>).params;
+    if (typeof sql !== 'string') throw new Error(`case ${JSON.stringify(name)}.sql must be a string`);
+    if (!params || typeof params !== 'object' || Array.isArray(params)) throw new Error(`case ${JSON.stringify(name)}.params must be an object`);
+    catalogStatement(sql, 'read');
+    if (namedParams(sql).anonymous.length > 0) throw new Error(`case ${JSON.stringify(name)} uses an anonymous parameter; name every slot`);
+    const slots = namedSlots(sql);
+    const mixed = [...new Set(slots.filter(s => s.key === s.sqlName).map(s => s.sqlName))];
+    if (mixed.length > 0) throw new Error(`case ${JSON.stringify(name)} uses one parameter name with more than one prefix: ${mixed.join(', ')}`);
+    const slotNames = new Set(slots.map(s => s.sqlName));
+    const missing = [...slotNames].filter(n => !Object.hasOwn(params, n) || (params as Record<string, unknown>)[n] === undefined);
+    const extra = Object.keys(params).filter(k => !slotNames.has(k));
+    if (missing.length > 0) throw new Error(`case ${JSON.stringify(name)} is missing parameter${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}`);
+    if (extra.length > 0) throw new Error(`case ${JSON.stringify(name)} has unexpected parameter${extra.length > 1 ? 's' : ''}: ${extra.join(', ')}`);
+    for (const slot of slotNames) validateCaseValue(name, slot, (params as Record<string, unknown>)[slot]);
+  }
+}
+
+// SQLite has no boolean bind type, so a boolean case value takes SQLite's own
+// storage convention (0/1), the same convention CHECK constraints compare
+// against elsewhere in this codebase. Arrays and objects go through as JSON
+// text, the same repair the build documentation asks callers to apply.
+function encodeCaseParams(params: Record<string, RehearsalCaseValue>): Record<string, string | number | null> {
+  return Object.fromEntries(Object.entries(params).map(([k, v]) => {
+    if (typeof v === 'boolean') return [k, v ? 1 : 0];
+    if (typeof v === 'object' && v !== null) return [k, JSON.stringify(v)];
+    return [k, v];
+  }));
 }
 
 function counts(db: DatabaseSync): Record<string, number> {
@@ -57,7 +115,7 @@ export async function rehearse(database: string, sql: string, checks: RehearsalC
   let source: DatabaseSync | undefined;
   let copy: DatabaseSync | undefined;
   const stage = 'SNAPSHOT_FAILED';
-  const result: RehearsalResult = { version: 1, ok: false, sql, before: {}, after: {}, queries: [], assertions: [], diagnostics: [] };
+  const result: RehearsalResult = { version: 1, ok: false, sql, before: {}, after: {}, queries: [], assertions: [], cases: [], diagnostics: [] };
   try {
     let end = phase('open-source');
     source = new DatabaseSync(database, { readOnly: true });
@@ -97,7 +155,7 @@ export async function rehearse(database: string, sql: string, checks: RehearsalC
 // synchronous and allows property tests without filesystem scheduling.
 export function rehearseSnapshot(db: DatabaseSync, sql: string, checks: RehearsalChecks = {}): RehearsalResult {
   let stage = 'CHECKS_INVALID';
-  const result: RehearsalResult = { version: 1, ok: false, sql, before: {}, after: {}, queries: [], assertions: [], diagnostics: [] };
+  const result: RehearsalResult = { version: 1, ok: false, sql, before: {}, after: {}, queries: [], assertions: [], cases: [], diagnostics: [] };
   try {
     // A misspelled check must fail, rather than silently approve less evidence.
     validateChecks(checks);
@@ -116,6 +174,14 @@ export function rehearseSnapshot(db: DatabaseSync, sql: string, checks: Rehearsa
       const statement = db.prepare(catalogStatement(query, 'read'));
       old.set(name, JSON.stringify(statement.columns().map(c => ({name:c.name, type:c.type}))));
     }
+    const caseColumns = new Map<string, string>();
+    stage = 'CASE_BASELINE_FAILED';
+    for (const [name, kase] of Object.entries(checks.cases ?? {})) {
+      const statement = db.prepare(catalogStatement(kase.sql, 'read'));
+      caseColumns.set(name, JSON.stringify(statement.columns().map(c => ({name:c.name, type:c.type}))));
+      statement.setAllowBareNamedParameters(false);
+      statement.all(encodeCaseParams(kase.params));
+    }
     stage = 'MIGRATION_FAILED';
     const statements = splitStatements(sql);
     for (const statement of statements) {
@@ -132,6 +198,15 @@ export function rehearseSnapshot(db: DatabaseSync, sql: string, checks: Rehearsa
       const columns = db.prepare(catalogStatement(query, 'read')).columns().map(c => ({name:c.name, type:c.type}));
       if (JSON.stringify(columns) !== old.get(name)) throw new Error(`Result columns changed for query ${name}`);
       result.queries.push(name);
+    }
+    stage = 'CASE_COMPATIBILITY_FAILED';
+    for (const [name, kase] of Object.entries(checks.cases ?? {})) {
+      const statement = db.prepare(catalogStatement(kase.sql, 'read'));
+      const columns = JSON.stringify(statement.columns().map(c => ({name:c.name, type:c.type})));
+      if (columns !== caseColumns.get(name)) throw new Error(`Result columns changed for case ${name}`);
+      statement.setAllowBareNamedParameters(false);
+      statement.all(encodeCaseParams(kase.params));
+      result.cases.push(name);
     }
     stage = 'ASSERTION_FAILED';
     for (const [name, query] of Object.entries(checks.assertions ?? {})) {

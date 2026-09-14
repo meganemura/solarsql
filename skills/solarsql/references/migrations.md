@@ -197,6 +197,34 @@ Assertions execute after migration and must each return one row with one value e
 Use assertions for application-specific data requirements. Row counts alone do not prove value preservation.
 The command rehearses proposed SQL, not migration history adoption or a remote deployment.
 
+A query check compares result columns only; it does not execute the query.
+A migration can keep the same columns and still break stored data, for example when it turns a JSON column into plain text.
+Add a `cases` map to `checks.json` to run a representative old query with real parameters and catch this:
+
+```json
+{
+  "cases": {
+    "reader": {
+      "sql": "select json_extract(payload, '$.id') as id from items where id = :id",
+      "params": { ":id": 1 }
+    }
+  }
+}
+```
+
+Each case is one read statement (SELECT or VALUES, WITH allowed) with named parameters; an anonymous `?` parameter is rejected.
+A `params` key is the full name written in the SQL, prefix included (`:id`, `@id`, or `$id`), not the bare name (`id`).
+This matches the prefix that Node's adapter itself binds by, and it stops two parameters that share a bare name under different prefixes from colliding.
+A string, a finite number, a boolean, or null binds as itself.
+An array or an object binds as its JSON text, readable through `json_extract`, `json_each`, and similar functions.
+A BLOB (`Uint8Array`) or a BigInt has no JSON representation and is rejected; encode it as a string instead.
+
+The command runs every case before the migration and again after it, inside the same rehearsal.
+Both runs must execute without error, and the result columns must still match, or the rehearsal fails.
+This is stronger than a query check: a case proves the statement still executes against real rows, not only that its column shape is unchanged.
+A successful case is reported by name only; its SQL, parameters, and rows never appear in the result.
+A successful case does not prove that the returned values are equal before and after the migration, and it does not prove compatibility with a remote D1 database or Durable Object.
+
 For a slow local snapshot, run `node spike/11-backup-lifecycle.ts` from a source checkout.
 It measures each backup phase, checks WAL rows and implicit row identities, and stops after 20 seconds (ADR 0063).
 
