@@ -10,6 +10,9 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 - Fixed: a parameter-validation error names the query or command that rejected the call, and what it declares (ADR 0088).
 - Fixed: a trigger body's own closing `END` no longer ends early on a column, or a `new.`/`old.` reference, literally named `end`.
 - Fixed: `solarsql build` takes the same lock `solarsql migration` uses before it writes `migrations/index.ts`, so a build racing a migration no longer overwrites the migration's own result with a stale index (ADR 0060).
+- Fixed: a colliding migration sequence number names every file that shares it, not only one, and the diagnostic carries a machine-readable `action` field (ADR 0094).
+- Fixed: a migration replay error names the failing statement's position within its file, when the file holds more than one statement.
+- Fixed: `INDEXED BY` and `NOT INDEXED` no longer shadow a table's own alias, so a parameter compared against that table keeps its narrow inferred type.
 
 ## 0.4.0 (2026-09-14)
 

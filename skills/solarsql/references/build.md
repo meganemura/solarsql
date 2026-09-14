@@ -137,4 +137,4 @@ Both commands give the report worker a 30,000 millisecond deadline. Use `--timeo
 `BUILD_TIMEOUT` has the expired `timeoutMs` and tells the caller to use a larger budget after it inspects the import and build work.
 A missing generated file requires a build first. A stale file or pending migration produces exit 1 and diagnostics with a recovery action.
 `build --json` provides machine-readable generation results; combine it with `--check` for verification.
-`BUILD_FAILED` preserves the error message, SQL when available, and catalog locations when available.
+`BUILD_FAILED` preserves the error message, SQL when available, catalog locations when available, and a machine-readable `action` string when the error names one (for example, a colliding migration sequence).
