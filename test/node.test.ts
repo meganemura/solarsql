@@ -40,6 +40,10 @@ describe("the example on node:sqlite", () => {
     assert.deepEqual(await db.run(orderCommands.confirm, { id: o1 }), { ok: false, kind: "assert", assert: "was_draft" });
   });
 
+  test("a passing or failing assert leaves no row in the guard table", () => {
+    assert.equal(raw.prepare("select count(*) as n from solarsql_assert").get()!.n, 0);
+  });
+
   test("a bulk update from JSON rows, the trigger's stamp, and a report through the view", async () => {
     const repriced = await db.run(orderCommands.reprice, { id: o1, lines: [{ id: "l1" as OrderLinesId, price: 2 }] });
     assert.equal(repriced.ok, true);

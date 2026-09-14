@@ -49,3 +49,4 @@ See v0-measurements.md, section 1.
 
 - The migration generator emits the guard table and the trigger in the first migration.
 - The library maps `SQLITE_CONSTRAINT_TRIGGER` with a known name to a typed assert failure.
+- ADR 0093 decides how the table is kept from growing without bound.

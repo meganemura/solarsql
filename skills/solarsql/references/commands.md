@@ -69,6 +69,8 @@ SQLite error text cannot separate table and column names that contain dots; the 
 
 A failed assert and a rejected row are values with one `kind`, and nothing of the plan stays written. Every other engine error is thrown.
 The adapter gives each command invocation a private guard identity, so a user trigger that raises the same public name remains an engine error.
+A command whose plan has an assert deletes every guard-table row once the plan and its returns clause finish reading.
+The table holds no rows between commands.
 `kind: "assert"` carries the union of the plan's assert names, so a `switch` on it is exhaustive.
 `changes` counts the rows the plan's statements inserted, updated, or deleted, the rows their triggers wrote included, as D1's `meta.changes` counts them, where an assert's `changes()` leaves a trigger's rows out; an assert and `returns` add nothing, and a plan that changed nothing gives 0.
 

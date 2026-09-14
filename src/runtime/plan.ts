@@ -18,6 +18,13 @@ begin
 end`,
 ];
 
+// Deletes every row in the guard table. An adapter appends this as the last
+// statement of a plan that has at least one assert, once every assert has
+// passed and any returns clause has read what it needs: a passing assert's
+// row has no further use, so nothing keeps the table from returning to zero
+// between commands (ADR 0093).
+export const GUARD_CLEANUP = `delete from ${GUARD_TABLE}`;
+
 const ASSERT_IDENTITY = "solarsql:assert:";
 
 export function assertToken(): string {

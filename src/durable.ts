@@ -7,7 +7,7 @@
 // Boundary: no SQL is composed here beyond the assert statement that
 // runtime/plan.ts defines.
 import type { AdapterOptions, BatchRows, Command, CommandResult, Database, Entry, GeneratedMap, ParamsArg, PlanShape, Query, Read, Row, SqlValue, StatementMeta } from "./index.ts";
-import { assertFailure, assertStatement, assertToken, bindValues, constraintFailure, observed, outcomeOf, parseJson, validateParams } from "./runtime/plan.ts";
+import { GUARD_CLEANUP, assertFailure, assertStatement, assertToken, bindValues, constraintFailure, observed, outcomeOf, parseJson, validateParams } from "./runtime/plan.ts";
 import { significant, splitStatements, tokenize } from "./build/scan.ts";
 
 // The part of DurableObjectStorage this adapter uses. Structural, so no
@@ -48,6 +48,7 @@ export function durable(storage: StorageLike, options: AdapterOptions = {}): Dat
         try {
           const out = storage.transactionSync(() => {
             let changes = 0;
+            const hasAssert = command.plan.some((item) => typeof item !== "string");
             command.plan.forEach((item, i) => {
               const sql = typeof item === "string" ? item : assertStatement(item.name, item.predicate, token);
               const before = totalChanges(storage);
@@ -55,6 +56,11 @@ export function durable(storage: StorageLike, options: AdapterOptions = {}): Dat
               if (typeof item === "string") changes += totalChanges(storage) - before;
             });
             const resultRows = command.returns === null ? [] : rows(command.returns, command.meta.returns!, params);
+            // A passing assert's row has no further use once the plan and
+            // its returns clause have read what they need; deleting it
+            // here, after returns and still inside this transaction, keeps
+            // the guard table at zero rows between commands (ADR 0093).
+            if (hasAssert) storage.sql.exec(GUARD_CLEANUP).toArray();
             return { rows: resultRows, changes };
           });
           return { ok: true, ...out } as CommandResult<C>;
