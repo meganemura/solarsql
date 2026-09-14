@@ -86,40 +86,28 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0071](adr/0071-preserve-sqlite-parameter-slots.md) | Preserve SQLite named-parameter slots |
 | [0072](adr/0072-node-commands-use-savepoints.md) | Node commands use savepoints |
 | [0073](adr/0073-tests-own-runtimes-on-first-use.md) | Tests own runtimes on first use |
-
 | [0074](adr/0074-json-values-follow-decoded-output.md) | JSON values follow decoded output |
-
 | [0075](adr/0075-blob-literals-keep-their-sqlite-type.md) | BLOB literals keep their SQLite type |
-
 | [0076](adr/0076-json-decoding-follows-the-whole-expression.md) | JSON decoding follows the whole expression |
-
 | [0077](adr/0077-casts-follow-complete-sql-expressions.md) | Casts follow complete SQL expressions |
-
 | [0078](adr/0078-json-object-types-follow-decoded-keys.md) | JSON object types follow decoded keys |
-
 | [0079](adr/0079-json-aggregate-types-retain-sql-ordering.md) | JSON aggregate types retain SQL ordering |
-
 | [0080](adr/0080-numeric-tokens-retain-sqlite-spellings.md) | Numeric tokens retain SQLite spellings |
-
 | [0081](adr/0081-observation-cannot-change-database-outcomes.md) | Observation cannot change database outcomes |
-
 | [0082](adr/0082-unknown-errors-retain-their-identity.md) | Unknown errors retain their identity |
-
 | [0083](adr/0083-unique-index-failures-name-the-index.md) | Unique index failures name the index |
-
 | [0084](adr/0084-example-suites-own-selected-runtimes.md) | Example suites own selected runtimes |
-
 | [0085](adr/0085-cli-discovery-precedes-project-loading.md) | CLI discovery precedes project loading |
-
 | [0086](adr/0086-assert-results-have-invocation-identities.md) | Assert results have invocation identities |
-
 | [0087](adr/0087-ambiguous-constraint-targets-remain-errors.md) | Ambiguous constraint targets remain errors |
-
 | [0088](adr/0088-runtime-parameters-match-the-operation-contract.md) | Runtime parameters match the operation contract |
 | [0089](adr/0089-machine-cli-has-a-time-budget.md) | Machine CLI reports have a time budget |
 | [0090](adr/0090-automatic-destructive-migrations-need-intent.md) | Automatic destructive migrations need an exact intent |
 | [0091](adr/0091-column-renames-use-the-migration-intent.md) | Column renames use the migration intent |
 | [0092](adr/0092-project-cli-has-a-time-budget.md) | Project-loading CLI commands have a time budget |
+| [0093](adr/0093-assert-rows-are-deleted-at-the-end-of-the-plan.md) | Assert rows are deleted at the end of the plan |
+| [0094](adr/0094-a-shared-migration-sequence-is-a-build-time-error.md) | A shared migration sequence is a build-time error |
+| [0095](adr/0095-an-assert-predicate-normalizes-to-0-or-1-at-run-time.md) | An assert predicate normalizes to 0 or 1 at run time |
 
 ## Measurements
 
