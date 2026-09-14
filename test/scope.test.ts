@@ -5,6 +5,7 @@ import { test } from "node:test";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
 import { Engine } from "../src/build/facts.ts";
+import { unionType } from "../src/build/scope.ts";
 import { Typer, type Brand } from "../src/build/typegen.ts";
 
 function fixture(left = true, right = true, matches = true): Engine {
@@ -159,4 +160,14 @@ test("later RIGHT JOIN nullability reaches earlier derived and CTE sources", () 
       "select id from a left join b using(id)",
     ]) verify(engine, sql);
   } finally { engine.close(); }
+});
+
+test("a union drops a literal member the bare string or number type already covers", () => {
+  assert.equal(unionType("string", "null", '"formula"', '"cask"'), "string | null");
+  assert.equal(unionType('"a"', '"b"', "string"), "string");
+  assert.equal(unionType("1", "2", "number"), "number");
+  assert.equal(unionType('"a"', '"b"'), '"a" | "b"');
+  assert.equal(unionType("1", "2"), "1 | 2");
+  assert.equal(unionType("string", "number"), "string | number");
+  assert.equal(unionType('"a"', "null"), '"a" | null');
 });

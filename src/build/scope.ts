@@ -178,5 +178,13 @@ export function unionMembers(...types: string[]): string[] {
       }
     }
   }
-  return parts;
+  // A string-literal or numeric-literal member is already assignable to
+  // string or number; once the union also carries the bare type, keep
+  // only the bare type. A union of literals alone, with no bare string or
+  // number member, is untouched (ADR 0098).
+  const hasString = parts.includes("string");
+  const hasNumber = parts.includes("number");
+  if (!hasString && !hasNumber) return parts;
+  return parts.filter((part) =>
+    !(hasString && /^"(?:[^"\\]|\\.)*"$/.test(part)) && !(hasNumber && /^-?\d+(?:\.\d+)?$/.test(part)));
 }

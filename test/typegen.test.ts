@@ -240,6 +240,20 @@ describe("row type soundness", () => {
     } finally { engine.close(); }
   });
 
+  test("a UNION ALL branch's CHECK-narrowed literal type does not survive next to the other branch's bare scalar type", () => {
+    const engine = new Engine([
+      `create table a (tool text not null) strict`,
+      `create table b (kind text not null check (kind in ('formula', 'cask'))) strict`,
+    ]);
+    try {
+      const t = new Typer(engine, new Map());
+      assert.deepEqual(
+        t.analyze(`select cast('tool' as text) as kind from a union all select kind from b`, "m").columns,
+        [{ name: "kind", type: "string | null", json: false }],
+      );
+    } finally { engine.close(); }
+  });
+
   test("JSON filters narrow only the outer alias whose NULL rows they exclude", () => {
     const engine = new Engine([
       "create table a(id text primary key, n integer not null) strict",
