@@ -152,6 +152,14 @@ describe("shapes", () => {
     assert.deepEqual([...aliasMap("select * from orders")], [["orders", "orders"]]);
   });
 
+  test("aliasMap does not treat INDEXED BY or NOT INDEXED as an alias", () => {
+    assert.deepEqual([...aliasMap("update orders indexed by orders_status set status = :status where orders.id = :id")], [["orders", "orders"]]);
+    assert.deepEqual([...aliasMap("update orders not indexed set status = :status where orders.id = :id")], [["orders", "orders"]]);
+    assert.deepEqual([...aliasMap("delete from orders indexed by orders_status where orders.id = :id")], [["orders", "orders"]]);
+    assert.deepEqual([...aliasMap("delete from orders not indexed where orders.id = :id")], [["orders", "orders"]]);
+    assert.deepEqual([...aliasMap("select * from orders indexed by orders_status where orders.id = :id")], [["orders", "orders"]]);
+  });
+
   test("paramSites classifies parameters", () => {
     const sites = paramSites("update orders set status = :status, note = :note where id = :id and :qty < qty and customer_id in (select id from customers where name like :name)");
     assert.deepEqual(sites.get("status"), [{ kind: "set", column: "status" }]);

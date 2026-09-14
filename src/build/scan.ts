@@ -404,7 +404,7 @@ export function cteNames(sql: string): Set<string> {
 export function aliasMap(sql: string, outerOnly = false): Map<string, string | null> {
   const map = new Map<string, string | null>();
   const t = significant(tokenize(sql));
-  const stop = new Set(["on", "where", "group", "order", "left", "right", "inner", "outer", "cross", "natural", "join", "using", "limit", "full", "union", "except", "intersect", "having", "window", "as", "set", "returning"]);
+  const stop = new Set(["on", "where", "group", "order", "left", "right", "inner", "outer", "cross", "natural", "join", "using", "limit", "full", "union", "except", "intersect", "having", "window", "as", "set", "returning", "indexed", "not"]);
   const endsFrom = new Set(["where", "group", "order", "limit", "having", "union", "except", "intersect", "returning", "set"]);
   // Depths at which a FROM list is open, so a comma there starts an entry.
   const openFrom = new Set<number>();

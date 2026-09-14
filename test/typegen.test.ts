@@ -275,6 +275,28 @@ describe("row type soundness", () => {
       engine.close();
     }
   });
+
+  test("INDEXED BY and NOT INDEXED do not widen a branded or CHECK-narrowed parameter type", () => {
+    const engine = new Engine([
+      "create table orders (id text primary key not null, status text not null check (status in ('draft', 'confirmed'))) strict",
+      "create index orders_status_idx on orders(status)",
+    ]);
+    try {
+      const t = new Typer(engine, new Map([["orders", { table: "orders", column: "id", typeName: "OrdersId", module: "m" }]]));
+      const shapes: [string, string, string][] = [
+        ["select", "select id, status from orders {HINT} where orders.id = :id and orders.status = :status", "select id, status from orders where orders.id = :id and orders.status = :status"],
+        ["update", "update orders {HINT} set status = 'confirmed' where orders.id = :id and orders.status = :status", "update orders set status = 'confirmed' where orders.id = :id and orders.status = :status"],
+        ["delete", "delete from orders {HINT} where orders.id = :id and orders.status = :status", "delete from orders where orders.id = :id and orders.status = :status"],
+      ];
+      for (const [label, withHintTemplate, without] of shapes) {
+        const baseline = t.analyze(without, "m").params;
+        for (const hint of ["indexed by orders_status_idx", "not indexed"]) {
+          const withHint = withHintTemplate.replace("{HINT}", hint);
+          assert.deepEqual(t.analyze(withHint, "m").params, baseline, `${label} / ${hint}`);
+        }
+      }
+    } finally { engine.close(); }
+  });
 });
 
 test("origin columns retain NULL from views, query scopes, scalar subqueries, and wildcard joins", () => {
