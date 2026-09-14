@@ -42,8 +42,8 @@ export const orderCommands = commands(generated, {
 ## The parts
 
 - `plan`: SQL statements (`select`, `values`, `insert`, `update`, `delete`, `replace`, including WITH forms) and asserts, in order. Each SQL item contains one statement.
-- `assert(name, predicate)`: any SQL expression that yields 0 or 1, with the parameters of the command: a comparison, `exists (...)`, `not exists (...)` over a join. When it yields 0 the whole plan rolls back, and the result names the assert.
-- `changes()` in an assert counts the rows of the statement right before it. The build refuses an assert with `changes()` elsewhere.
+- `assert(name, predicate)`: any SQL expression, with the parameters of the command: a comparison, `exists (...)`, `not exists (...)` over a join. SQLite's own truthiness decides pass or fail, the same as inside a `WHERE` clause: NULL, and text or a blob SQLite cannot read as a nonzero number, count as false. When the predicate is false the whole plan rolls back, and the result names the assert.
+- `changes()` in an assert counts the rows of the statement right before it. The build refuses an assert with `changes()` elsewhere, and refuses `changes()` inside `returns` too, since `returns` runs after the plan's last statement.
 - `returns`: optional, one `select` or `values` statement that runs last in the same transaction and gives the rows of the result. Without it, `rows` is empty.
 - The build refuses writes in `returns`, multiple statements per item, transaction control, PRAGMA, and schema changes. The adapter owns the transaction.
 - Parameters are shared across the plan: `:id` is one value with one type. Two statements that give it two types are refused; the message names both.

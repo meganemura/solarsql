@@ -94,6 +94,7 @@ Shared SQL reports all its catalog locations.
 | `is used with two different types` | give the two places of the parameter one type, or use two parameters |
 | `of this statement is` | the same statement text sits in two commands with two types; give it a type of its own, or split it |
 | `uses changes(), which counts the statement right before it` | put the assert right after the statement it counts |
+| `the returns clause uses changes()` | read the command's changes result instead |
 | `RETURNING clause is discarded` | move the read into the command's `returns` field instead |
 | `use a named parameter (:name) instead of` | replace `?` with `:name` |
 | `Use its public.ts, or declare readsAll for a report module` | a read of another module's table: read through the owner's `public.ts`, or declare `readsAll` on a report module; a write (`inserts into`, `updates`, `deletes from`) moves to the owner |

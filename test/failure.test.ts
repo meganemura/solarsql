@@ -122,6 +122,7 @@ test('generated command callers receive index targets on Node, D1, and Durable O
   const {node}=await import('../src/node.ts');
   const {ddl,conflict}=await import('./index-failure-fixture.ts');
   const {ddl:collisionDdl,collisions}=await import('./assert-collision-fixture.ts');
+  const {ddl:nullPredicateDdl,nullPredicateResults}=await import('./assert-null-predicate-fixture.ts');
   const {ddl:ambiguousDdl,ambiguousFailures}=await import('./ambiguous-constraint-fixture.ts');
   const {ddl:parameterDdl,parameterContracts}=await import('./parameter-contract-fixture.ts');
   const {workerMiniflare}=await import('./worker.ts');
@@ -141,6 +142,16 @@ test('generated command callers receive index targets on Node, D1, and Durable O
     assert.deepEqual(result.messages.map(message=>message.includes('same_name')),[true,true]);
     assert.equal(result.count,0);
   }finally{collisionRaw.close();}
+  const nullPredicateRaw=new DatabaseSync(':memory:');
+  try {
+    nullPredicateRaw.exec(nullPredicateDdl);
+    const result=await nullPredicateResults(node(nullPredicateRaw));
+    assert.deepEqual(result.results,[
+      {ok:false,kind:'assert',assert:'is_confirmed'},
+      {ok:false,kind:'assert',assert:'is_confirmed'},
+    ]);
+    assert.equal(result.count,0);
+  }finally{nullPredicateRaw.close();}
   const ambiguousRaw=new DatabaseSync(':memory:');
   try {
     ambiguousRaw.exec(ambiguousDdl);
@@ -161,12 +172,20 @@ test('generated command callers receive index targets on Node, D1, and Durable O
     assertParameterContracts(await parameterContracts(node(parameterRaw)));
   }finally{parameterRaw.close();}
   const root=resolve(import.meta.dirname,'..');
-  const mf=workerMiniflare(resolve(root,'test/index-failure-worker.ts'),root,{durableObjects:{INDEX:'IndexFailure',COLLISION:'AssertCollision',AMBIGUOUS:'AmbiguousConstraint',PARAMETERS:'ParameterContract'}});
+  const mf=workerMiniflare(resolve(root,'test/index-failure-worker.ts'),root,{durableObjects:{INDEX:'IndexFailure',COLLISION:'AssertCollision',NULLPREDICATE:'NullPredicateAssert',AMBIGUOUS:'AmbiguousConstraint',PARAMETERS:'ParameterContract'}});
   t.after(()=>mf.dispose());
   for(const path of ['/','/do']) assert.deepEqual(await (await mf.dispatchFetch('http://localhost'+path)).json(),expected);
   for(const path of ['/collision','/collision-do']) {
     const result=await (await mf.dispatchFetch('http://localhost'+path)).json() as {messages:string[];count:number};
     assert.deepEqual(result.messages.map(message=>message.includes('same_name')),[true,true]);
+    assert.equal(result.count,0);
+  }
+  for(const path of ['/null-predicate','/null-predicate-do']) {
+    const result=await (await mf.dispatchFetch('http://localhost'+path)).json() as {results:unknown[];count:number};
+    assert.deepEqual(result.results,[
+      {ok:false,kind:'assert',assert:'is_confirmed'},
+      {ok:false,kind:'assert',assert:'is_confirmed'},
+    ]);
     assert.equal(result.count,0);
   }
   for(const path of ['/ambiguous','/ambiguous-do']) {

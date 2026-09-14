@@ -31,9 +31,14 @@ export function assertToken(): string {
   return crypto.randomUUID();
 }
 
+// The predicate is any SQL expression; SQLite's own truthiness decides
+// pass or fail here, the same as inside a WHERE clause. Wrapping it keeps
+// the stored value exactly 0 or 1, so a NULL or non-numeric predicate
+// fails as a normal assert instead of failing the guard table's own NOT
+// NULL/STRICT constraint (ADR 0095).
 export function assertStatement(name: string, predicate: string, token?: string): string {
   const identity = token === undefined ? name : `${ASSERT_IDENTITY}${token}:${name}`;
-  return `insert into ${GUARD_TABLE} (name, ok) select '${identity}', (${predicate})`;
+  return `insert into ${GUARD_TABLE} (name, ok) select '${identity}', (case when (${predicate}) then 1 else 0 end)`;
 }
 
 // Values in the order SQLite numbers the named parameters. A missing value

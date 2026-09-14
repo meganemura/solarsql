@@ -568,6 +568,10 @@ function checkCommands(m: Module, entries: readonly { key: string; analysis: Ana
           throw new BuildError(`command ${m.name}.${c.name}: assert ${item.name} uses changes(), which counts the statement right before it. Put it right after that statement.`);
         }
       }
+      if (c.returns && /\bchanges\s*\(/i.test(c.returns)) {
+        failureKeys = [c.returns];
+        throw new BuildError(`command ${m.name}.${c.name}: the returns clause uses changes(), which counts the plan's last statement. Read the command's changes result instead.`);
+      }
     } catch (error) {
       const locations = new Set([
         `${join(m.dir, "module.ts")}: command ${c.catalog}.${c.name}`,

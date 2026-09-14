@@ -387,6 +387,20 @@ describe("solarsql build", () => {
     }
   });
 
+  test("changes() in a returns clause is refused", async () => {
+    const dir = copy();
+    try {
+      const commands = join(dir, "example/modules/orders/module.ts");
+      writeFileSync(commands, readFileSync(commands, "utf8").replace(
+        `returns: "select id, note, updated_at from orders where id = :id",`,
+        `returns: "select id, note, updated_at, cast(changes() as integer) as n from orders where id = :id",`,
+      ));
+      await expectBuildError(dir, /command orders\.annotate: the returns clause uses changes\(\)/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a table that is not STRICT is refused with the fix in the message", async () => {
     const dir = copy();
     try {
