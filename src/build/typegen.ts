@@ -817,7 +817,7 @@ function updateTarget(sql: string): string | null {
   return t[i]?.type === "ident" ? unquote(t[i]!.text) : null;
 }
 
-function isSelect(sql: string): boolean {
+export function isSelect(sql: string): boolean {
   const tokens = significant(tokenize(sql));
   const first = isKeyword(tokens[0], "with")
     ? tokens.find((token) => token.depth === 0 && ["select", "values", "insert", "update", "delete", "replace"].some((verb) => isKeyword(token, verb)))

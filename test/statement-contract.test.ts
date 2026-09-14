@@ -33,6 +33,10 @@ test("shared SQL must satisfy each catalog role", () => project(`const sql = "de
 export const c = commands(generated, { change: { plan: [sql] } });
 export const q = queries(generated, { bad: sql });`, true));
 test("assert predicate cannot append a statement", () => project(`export const c = commands(generated, { bad: { plan: [assert("guard", "1); delete from items; --")] } });`, true));
+for (const sql of ["insert into items (id, value) values ('a','b') returning id", "update items set value='x' where id='a' returning id"]) {
+  test(`plan refuses ${sql}`, () => project(`export const c = commands(generated, { bad: { plan: [${JSON.stringify(sql)}] } });`, /RETURNING clause is discarded/));
+}
+test("plan still allows a bare select with output columns", () => project(`export const c = commands(generated, { good: { plan: ["select id from items"] } });`, false));
 test("CTEs, read plans, and quoted or commented semicolons remain valid", () => project(`
 export const q = queries(generated, { good: "with x as (select id from items) select id from x; -- trailing ;" });
 export const c = commands(generated, { good: { plan: [

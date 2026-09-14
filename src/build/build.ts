@@ -18,7 +18,7 @@ import { migrationSequence, nextMigrationFile, withMigrationLock, writeNewMigrat
 import { created, indexTarget, quoteIdent, triggerTarget } from "./scan.ts";
 import { shellArgument } from "./shell.ts";
 import { writeGeneratedFile } from "./output.ts";
-import { BuildError, Typer, brandName, type Analysis, type Brand } from "./typegen.ts";
+import { BuildError, Typer, brandName, isSelect, type Analysis, type Brand } from "./typegen.ts";
 import { catalogStatement } from "./statements.ts";
 
 export type Module = {
@@ -349,6 +349,14 @@ export async function build(configPath: string, options: BuildOptions = {}): Pro
             throw new BuildError("A query or returns must not write to the database.", sql);
           }
           analysis = typer.analyze(sql, m.name);
+          // A plan item's own rows are never collected at run time; only a
+          // command's `returns` clause is. A write plan item with its own
+          // RETURNING clause would silently drop that data, so refuse it
+          // here. A select/values plan item is unaffected: it is a
+          // documented, valid plan item on its own terms.
+          if (!m.readStatements.has(key) && !isSelect(sql) && analysis.returnsRows) {
+            throw new BuildError("A plan item's RETURNING clause is discarded at run time. Move the read into the command's `returns` field instead.", sql);
+          }
           checkBoundary(engine, m, owner, sql);
         } catch (error) {
           throw withLocations(error, m.statementUses.get(key)!, sql);
