@@ -2,7 +2,17 @@
 
 The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0, a minor version may change the API; the entry says what changed.
 
-## Unreleased
+## 0.4.0 (2026-09-14)
+
+- Added: `checks.cases` in rehearsal executes named-parameter queries before and after a migration, catching failures that a column check alone misses. A top-level boolean parameter is rejected; SQLite bind values have none.
+
+- Added: `build`, `build --check`, and `migration` run the project configuration import in a worker with a time budget, superseding ADR 0089 for these commands (ADR 0092).
+
+- Added: a migration intent file carries a column rename, so the generator emits `RENAME COLUMN` instead of a drop and an add (ADR 0091).
+
+- Added: automatic migration generation refuses a dropped table or column without an exact migration intent (ADR 0090).
+
+- Added: `inspect` and `build --json` report workers run with a time budget (ADR 0089).
 
 - Added: runtime parameter objects must match each generated operation before SQL executes (ADR 0088).
 
