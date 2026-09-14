@@ -433,7 +433,7 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
     }
 
     const migration = migrationStatus(configDir, config, modules);
-    const index = migrationsIndex(resolve(configDir, config.migrations), write);
+    const index = await migrationsIndex(resolve(configDir, config.migrations), write);
     const inspection = options.inspect ? { sqlite: String(engine.db.prepare("select sqlite_version() as version").get()!.version), operations } : undefined;
     return { modules: results, migration, index, scans, reads, ms: Math.round(performance.now() - buildStarted), ...(inspection ? { inspection } : {}) };
   } finally {
@@ -612,15 +612,26 @@ function migrationFiles(dir: string): { name: string; sql: string }[] {
 
 // index.ts follows the .sql files. The migration command writes both; a
 // file edited by hand, or merged, would leave the Durable Object with other
-// SQL than D1 gets, so the build keeps the two in step.
-function migrationsIndex(dir: string, write: boolean): BuildResult["index"] {
+// SQL than D1 gets, so the build keeps the two in step. A concurrent
+// `solarsql migration` can add a file between this function's first read
+// and its own write; the same lock migration() already holds for that
+// write (ADR 0060) is reacquired here, and the read is repeated once
+// inside it, so a build that raced a migration writes the migration's own
+// result, not a snapshot from before it ran.
+async function migrationsIndex(dir: string, write: boolean): Promise<BuildResult["index"]> {
   const files = migrationFiles(dir);
   if (files.length === 0) return { path: null, changed: false };
   const path = join(dir, "index.ts");
   const wanted = emitMigrationsIndex(files);
   const changed = !existsSync(path) || readFileSync(path, "utf8") !== wanted;
-  if (changed && write) writeGeneratedFile(path, wanted);
-  return { path, changed };
+  if (!changed || !write) return { path, changed };
+  return await withMigrationLock(dir, () => {
+    const currentFiles = migrationFiles(dir);
+    const currentWanted = emitMigrationsIndex(currentFiles);
+    const stillChanged = !existsSync(path) || readFileSync(path, "utf8") !== currentWanted;
+    if (stillChanged) writeGeneratedFile(path, currentWanted);
+    return { path, changed: stillChanged };
+  });
 }
 
 const emptyIntent: MigrationIntent = { drops: [], renames: [] };

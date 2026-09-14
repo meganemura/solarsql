@@ -2,11 +2,12 @@
 // Boundary: schema inference and migration SQL have their own in-process tests.
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { migration } from "../src/build/build.ts";
 
 const root = resolve(import.meta.dirname, "..");
 const config = "example/team's $config.ts";
@@ -58,6 +59,30 @@ function fixture(t: TestContext) {
       assert.ifError(result.error);
       assert.equal(result.signal, null);
       return result;
+    },
+    runPausedAtLock(releaseFlag: string, ...args: string[]) {
+      const preload = join(dir, "pause-at-lock.mjs");
+      writeFileSync(preload, [
+        'import fs from "node:fs";',
+        'import { syncBuiltinESMExports } from "node:module";',
+        "const openSync = fs.openSync;",
+        "fs.openSync = (path, flags, mode) => {",
+        '  const target = process.env.SOLARSQL_TEST_LOCK_TARGET;',
+        '  if (target && typeof path === "string" && path.endsWith(target) && flags === "wx") {',
+        '    console.error("lock attempt: " + path);',
+        '    const release = process.env.SOLARSQL_TEST_RELEASE_FLAG;',
+        "    const sab = new Int32Array(new SharedArrayBuffer(4));",
+        "    while (release && !fs.existsSync(release)) { Atomics.wait(sab, 0, 0, 25); }",
+        '    console.error("lock attempt released: " + path);',
+        "  }",
+        "  return openSync(path, flags, mode);",
+        "};",
+        "syncBuiltinESMExports();",
+      ].join("\n"));
+      return spawn(process.execPath, ["--import", preload, join(dir, "src/build/cli.ts"), ...args, config], {
+        cwd: dir,
+        env: { ...process.env, SOLARSQL_TEST_LOCK_TARGET: ".solarsql-generation.lock", SOLARSQL_TEST_RELEASE_FLAG: releaseFlag },
+      });
     },
     runWithExitDelay(delayMs: number, ...args: string[]) {
       const preload = join(dir, "delay-exit.mjs");
@@ -487,6 +512,57 @@ test('migration timeout keeps the first retained lock after project code forges 
     .filter(name => /^\.index\.ts\.\d+\.[0-9a-f]+\.tmp$/.test(name));
   assert.equal(temporary.length, 1);
   assert.match(readFileSync(join(f.dir, "example/migrations", temporary[0]!), "utf8"), /atomic_timeout/);
+});
+
+test("build re-reads migration files inside the lock, not a snapshot from before a concurrent migration finished", async (t) => {
+  const f = fixture(t);
+  // A migration already exists, so migrationsIndex has something to compare against.
+  f.edit("updated_at text\n", "updated_at text,\n    placed_at integer not null default 0\n");
+  const first = f.run("migration", "placed_at");
+  assert.equal(first.status, 0, first.stderr);
+
+  const migrationsDir = join(f.dir, "example/migrations");
+  const indexPath = join(migrationsDir, "index.ts");
+  // Force build's own pre-lock check to see the index as stale, independent
+  // of the concurrent migration below, so it deterministically takes the lock.
+  writeFileSync(indexPath, readFileSync(indexPath, "utf8") + "\n// force stale for this test\n");
+
+  const releaseFlag = join(f.dir, "release-lock");
+  const child = f.runPausedAtLock(releaseFlag, "build");
+  t.after(() => { try { child.kill("SIGKILL"); } catch { /* already exited */ } });
+
+  let stderr = "";
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("build never attempted the lock; stderr so far: " + stderr)), 20_000);
+    child.stderr!.on("data", (chunk) => {
+      stderr += String(chunk);
+      if (stderr.includes("lock attempt: ")) { clearTimeout(timer); resolve(); }
+    });
+    child.on("error", (error) => { clearTimeout(timer); reject(error); });
+  });
+
+  // A second, concurrent change: a real migration, generated and written
+  // in-process while the build child above is paused right before it
+  // would take the same lock.
+  f.edit("placed_at integer not null default 0\n", "placed_at integer not null default 0,\n    cancelled_at integer\n");
+  const result = await migration(join(f.dir, config), "cancelled_at");
+  assert.ok(result.filename, JSON.stringify(result));
+  const afterMigration = readFileSync(indexPath, "utf8");
+  assert.match(afterMigration, /cancelled_at/);
+
+  writeFileSync(releaseFlag, "");
+
+  const [code, exitStderr] = await new Promise<[number | null, string]>((resolve, reject) => {
+    let out = stderr;
+    child.stderr!.on("data", (chunk) => { out += String(chunk); });
+    child.on("error", reject);
+    child.on("close", (code) => resolve([code, out]));
+  });
+  assert.equal(code, 0, exitStderr);
+
+  // build must not have overwritten the migration's own, already-current
+  // index.ts with a snapshot from before the migration ran.
+  assert.equal(readFileSync(indexPath, "utf8"), afterMigration);
 });
 
 test('machine report transport flushes large diagnostics before exit', t => {
