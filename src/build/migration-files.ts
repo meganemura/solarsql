@@ -6,17 +6,39 @@ import { render } from "./migration.ts";
 import { BuildError } from "./typegen.ts";
 import { announceMigrationLock } from "./machine.ts";
 
+// solarsql has no way to check which migration files a database has
+// already applied, so every message here says that plainly instead of
+// making the rename conditional on a fact the tool cannot verify.
+const cannotCheckDeployment = "solarsql cannot check a database's applied-migrations state itself; know which file, if any, is already deployed before renaming one.";
+
 export function migrationSequence(names: readonly string[]): { maximum: number; width: number } {
-  let maximum = -1;
-  let width = 4;
-  for (const name of [...names].sort()) {
+  const sorted = [...names].sort();
+  const parsed = sorted.map((name) => {
     const match = /^(\d{4,})_[a-z0-9_]+\.sql$/.exec(name);
-    const sequence = match ? Number(match[1]) : NaN;
-    if (!Number.isSafeInteger(sequence) || sequence <= maximum) {
-      throw new BuildError(`Migration history has an invalid or ambiguous sequence at ${name}: rename it to a unique, increasing NNNN_name.sql number if no database has applied it, or write a new migration that reconciles the colliding files if one already has.`);
+    return { name, sequence: match ? Number(match[1]) : NaN, width: match ? match[1]!.length : 0 };
+  });
+  for (const entry of parsed) {
+    if (!Number.isSafeInteger(entry.sequence)) {
+      const action = `Rename ${entry.name} to a unique, increasing NNNN_name.sql number.`;
+      throw new BuildError(`Migration history has an invalid sequence at ${entry.name}. ${action} ${cannotCheckDeployment}`, undefined, action);
     }
-    maximum = sequence;
-    width = Math.max(width, match![1]!.length);
+  }
+  let maximum = -1;
+  let previous: string | null = null;
+  let width = 4;
+  for (const entry of parsed) {
+    if (entry.sequence <= maximum) {
+      const colliding = parsed.filter((p) => p.sequence === entry.sequence).map((p) => p.name);
+      if (colliding.length > 1) {
+        const action = `Rename all but one of ${colliding.join(", ")} to a unique, increasing NNNN_name.sql number, or write a new migration that reconciles them.`;
+        throw new BuildError(`Migration history has colliding sequence numbers at ${colliding.join(", ")}. ${action} ${cannotCheckDeployment}`, undefined, action);
+      }
+      const action = `Rename ${entry.name} to a digit width consistent with ${previous}.`;
+      throw new BuildError(`Migration history has an ambiguous replay order at ${entry.name}: its digit width does not match ${previous}, so sort order disagrees with numeric order. ${action} ${cannotCheckDeployment}`, undefined, action);
+    }
+    maximum = entry.sequence;
+    previous = entry.name;
+    width = Math.max(width, entry.width);
   }
   return { maximum, width };
 }

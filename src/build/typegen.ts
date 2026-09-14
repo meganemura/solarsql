@@ -13,10 +13,14 @@ import { aliasMap, columnRef, findCall, isKeyword, leadingComment, namedParams, 
 export class BuildError extends Error {
   readonly sql: string | undefined;
   readonly locations: string[] = [];
-  constructor(message: string, sql?: string) {
+  // A short next step for a JSON diagnostic consumer (build --json's own
+  // "action" field); undefined when the message has no single next step.
+  readonly action: string | undefined;
+  constructor(message: string, sql?: string, action?: string) {
     super(sql === undefined ? message : `${message}\n  in: ${sql.replace(/\s+/g, " ").trim()}`);
     this.name = "BuildError";
     this.sql = sql;
+    this.action = action;
   }
 }
 

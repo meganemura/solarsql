@@ -288,7 +288,7 @@ try {
   process.exit(code);
 } catch (e) {
   if (args.includes("--json") || ["inspect", "rehearse", "analyze"].includes(args[0] ?? "")) {
-    await printReport({ version: 1, ok: false, diagnostics: [{ code: "BUILD_FAILED", message: e instanceof Error ? e.message : String(e), sql: e instanceof BuildError ? e.sql : undefined, locations: e instanceof BuildError ? e.locations : [] }] });
+    await printReport({ version: 1, ok: false, diagnostics: [{ code: "BUILD_FAILED", message: e instanceof Error ? e.message : String(e), sql: e instanceof BuildError ? e.sql : undefined, locations: e instanceof BuildError ? e.locations : [], action: e instanceof BuildError ? e.action : undefined }] });
   } else if (e instanceof BuildError) console.error(`error: ${e.message}`);
   else console.error(e);
   if (isCliWorker()) await announceWorkerDone(1);

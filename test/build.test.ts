@@ -190,7 +190,14 @@ describe("solarsql build", () => {
       const migrations = join(dir, "example/migrations");
       writeFileSync(join(migrations, "0006_add_a.sql"), "alter table customers add column note_a text;\n");
       writeFileSync(join(migrations, "0006_add_b.sql"), "alter table customers add column note_b text;\n");
-      await expectBuildError(dir, /invalid or ambiguous sequence/);
+      await assert.rejects(build(join(dir, "example/solarsql.config.ts")), (e: unknown) => {
+        assert.ok(e instanceof BuildError, String(e));
+        assert.match(e.message, /colliding sequence numbers/);
+        assert.match(e.message, /0006_add_a\.sql/);
+        assert.match(e.message, /0006_add_b\.sql/);
+        assert.ok(e.action?.includes("0006_add_a.sql") && e.action.includes("0006_add_b.sql"), e.action ?? "");
+        return true;
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -589,9 +596,10 @@ test('a migration write killed before its link leaves no file at the final name'
 });
 
 test('migration numbering rejects ambiguous history and unsafe lexical rollover', () => {
-  for (const names of [['custom.sql'],['0001_a.sql','0001_b.sql'],['9999_a.sql','10000_b.sql']]) {
-    assert.throws(()=>nextMigrationFile(names,'next',[]),/invalid or ambiguous/);
-  }
+  assert.throws(() => nextMigrationFile(['custom.sql'], 'next', []), /invalid sequence at custom\.sql/);
+  assert.throws(() => nextMigrationFile(['0001_a.sql', '0001_b.sql'], 'next', []), /colliding sequence numbers at 0001_a\.sql, 0001_b\.sql/);
+  assert.throws(() => nextMigrationFile(['0001_a.sql', '0001_b.sql', '0001_c.sql'], 'next', []), /colliding sequence numbers at 0001_a\.sql, 0001_b\.sql, 0001_c\.sql/);
+  assert.throws(() => nextMigrationFile(['9999_a.sql', '10000_b.sql'], 'next', []), /ambiguous replay order at 9999_a\.sql.*10000_b\.sql/);
   assert.throws(()=>nextMigrationFile(['9999_last.sql'],'next',[]),/replay before/);
   assert.equal(nextMigrationFile(['00001_a.sql','00009_b.sql'],'next',[]).filename,'00010_next.sql');
 });

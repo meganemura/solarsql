@@ -314,6 +314,23 @@ test('JSON failures retain SQL and source locations', t => {
   assert.deepEqual(snapshot(f.dir), before);
 });
 
+test('a colliding migration sequence reports every file and an action in JSON', t => {
+  const f = fixture(t);
+  const migrations = join(f.dir, 'example/migrations');
+  writeFileSync(join(migrations, '0006_add_a.sql'), 'alter table customers add column note_a text;\n');
+  writeFileSync(join(migrations, '0006_add_b.sql'), 'alter table customers add column note_b text;\n');
+  for (const args of [['inspect'], ['build', '--check', '--json']]) {
+    const result = f.run(...args);
+    assert.equal(result.status, 1);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.diagnostics[0].code, 'BUILD_FAILED');
+    assert.match(report.diagnostics[0].message, /colliding sequence numbers/);
+    assert.match(report.diagnostics[0].message, /0006_add_a\.sql/);
+    assert.match(report.diagnostics[0].message, /0006_add_b\.sql/);
+    assert.ok(typeof report.diagnostics[0].action === 'string' && report.diagnostics[0].action.length > 0, JSON.stringify(report.diagnostics[0]));
+  }
+});
+
 test('machine build reports survive configuration and module output', t => {
   const f = fixture(t);
   const path = join(f.dir, config);
