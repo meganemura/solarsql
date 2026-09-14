@@ -215,8 +215,9 @@ Add a `cases` map to `checks.json` to run a representative old query with real p
 Each case is one read statement (SELECT or VALUES, WITH allowed) with named parameters; an anonymous `?` parameter is rejected.
 A `params` key is the full name written in the SQL, prefix included (`:id`, `@id`, or `$id`), not the bare name (`id`).
 This matches the prefix that Node's adapter itself binds by, and it stops two parameters that share a bare name under different prefixes from colliding.
-A string, a finite number, a boolean, or null binds as itself.
-An array or an object binds as its JSON text, readable through `json_extract`, `json_each`, and similar functions.
+A string, a finite number, or null binds as itself.
+A boolean is rejected at the top level: no generated query parameter is ever a boolean, because SqlValue has none. Use 0 or 1 instead.
+An array or an object binds as its JSON text, readable through `json_extract`, `json_each`, and similar functions. A boolean nested inside one still binds correctly, because JSON itself has a boolean.
 A BLOB (`Uint8Array`) or a BigInt has no JSON representation and is rejected; encode it as a string instead.
 
 The command runs every case before the migration and again after it, inside the same rehearsal.

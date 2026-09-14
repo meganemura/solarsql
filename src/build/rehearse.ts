@@ -83,19 +83,28 @@ function validateCases(cases: unknown): asserts cases is Record<string, Rehearsa
     const extra = Object.keys(params).filter(k => !slotNames.has(k));
     if (missing.length > 0) throw new Error(`case ${JSON.stringify(name)} is missing parameter${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}`);
     if (extra.length > 0) throw new Error(`case ${JSON.stringify(name)} has unexpected parameter${extra.length > 1 ? 's' : ''}: ${extra.join(', ')}`);
-    for (const slot of slotNames) validateCaseValue(name, slot, (params as Record<string, unknown>)[slot]);
+    for (const slot of slotNames) validateCaseParamValue(name, slot, (params as Record<string, unknown>)[slot]);
   }
 }
 
-// SQLite has no boolean bind type, so a boolean case value takes SQLite's own
-// storage convention (0/1), the same convention CHECK constraints compare
-// against elsewhere in this codebase. Arrays and objects go through as JSON
-// text, the same repair the build documentation asks callers to apply.
+// SqlValue (src/index.ts) has no boolean; a real generated query parameter
+// is never one, so a top-level boolean would rehearse a bind shape no
+// caller can construct.
+function validateCaseParamValue(name: string, slot: string, value: unknown): void {
+  if (typeof value === 'boolean') {
+    throw new Error(`case ${JSON.stringify(name)} parameter ${slot} is a boolean; SqlValue has no boolean and no generated query parameter is ever one; bind 0 or 1 instead`);
+  }
+  validateCaseValue(name, slot, value);
+}
+
+// Arrays and objects go through as JSON text, the same repair the build
+// documentation asks callers to apply.
 function encodeCaseParams(params: Record<string, RehearsalCaseValue>): Record<string, string | number | null> {
   return Object.fromEntries(Object.entries(params).map(([k, v]) => {
-    if (typeof v === 'boolean') return [k, v ? 1 : 0];
     if (typeof v === 'object' && v !== null) return [k, JSON.stringify(v)];
-    return [k, v];
+    // validateCaseParamValue already rejected a top-level boolean; only a
+    // string, a finite number, or null remain here.
+    return [k, v as string | number | null];
   }));
 }
 

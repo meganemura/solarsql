@@ -174,6 +174,22 @@ test('a case binds an array or object parameter as JSON text, readable with json
   } finally { db.close(); }
 });
 
+test('a case binds a boolean nested inside an array or object, only rejecting one at the top level', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const result = rehearseSnapshot(db, 'select 1', {
+      cases: {
+        flags: {
+          sql: "select json_array_length(:flags) as n, json_extract(:obj, '$.active') as active",
+          params: { ':flags': [true, false], ':obj': { active: true } },
+        },
+      },
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.cases, ['flags']);
+  } finally { db.close(); }
+});
+
 test('a case is rejected when the migration changes its result columns or breaks its execution', () => {
   for (const [sql, message] of [
     ['alter table t drop column note', 'Result columns changed for case reader'],
@@ -199,6 +215,7 @@ test('checks.cases rejects malformed case definitions', () => {
     [{ sql: 'select :id as id', params: { ':id': new Uint8Array([1, 2]) } }, /BLOB/],
     [{ sql: 'select :id as id', params: { ':id': Number.NaN } }, /finite number/],
     [{ sql: 'select :id as id', params: { ':id': Number.POSITIVE_INFINITY } }, /finite number/],
+    [{ sql: 'select :id as id', params: { ':id': true } }, /boolean/],
     [{ sql: 'update t set a = 1', params: {} }, /SELECT or VALUES/],
     [{ sql: 'select 1', params: {}, note: 'oops' }, /unknown field/],
   ];
