@@ -135,7 +135,7 @@ export async function runHuman(cli: string, args: string[], timeoutMs: number): 
   });
   clearTimeout(timer);
   if (timedOut) {
-    const lock = args[0] === "migration" && migrationLock && existsSync(migrationLock)
+    const lock = (args[0] === "migration" || args[0] === "build") && migrationLock && existsSync(migrationLock)
       ? ` The migration lock remains at ${migrationLock}. Inspect it and remove it only after this worker has stopped.`
       : "";
     console.error(`error: The operation exceeded its ${timeoutMs}ms time budget. Inspect the configuration import and generated output before you set --timeout-ms to a larger positive budget.${lock}`);

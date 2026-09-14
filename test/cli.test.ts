@@ -531,6 +531,22 @@ test('migration timeout keeps the first retained lock after project code forges 
   assert.match(readFileSync(join(f.dir, "example/migrations", temporary[0]!), "utf8"), /atomic_timeout/);
 });
 
+test('build timeout names the held migration lock, the same way a migration timeout does', t => {
+  const f = fixture(t);
+  const indexPath = join(f.dir, "example/migrations/index.ts");
+  // Force build's own pre-lock check to see the index as stale, so it
+  // deterministically takes the lock the way build's own migrations-index
+  // staleness check makes it take this lock (ADR 0060).
+  writeFileSync(indexPath, readFileSync(indexPath, "utf8") + "\n// force stale for this test\n");
+  const timed = f.runAfterRenameStarts("migrations/index.ts", "build", "--timeout-ms", "500");
+  const lock = join(f.dir, "example/migrations/.solarsql-generation.lock");
+  assert.equal(timed.status, 1, timed.stderr);
+  assert.match(timed.stderr, /atomic replacement started/);
+  assert.match(timed.stderr, new RegExp(lock.replace(/[.*+?^\${}()|[\]\\]/g, "\\$&")));
+  assert.match(timed.stderr, /remove it only after this worker has stopped/);
+  assert.ok(existsSync(lock));
+});
+
 test("build re-reads migration files inside the lock, not a snapshot from before a concurrent migration finished", async (t) => {
   const f = fixture(t);
   // A migration already exists, so migrationsIndex has something to compare against.
