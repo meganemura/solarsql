@@ -297,6 +297,73 @@ describe("row type soundness", () => {
       }
     } finally { engine.close(); }
   });
+
+  test("a RETURNING expression on INSERT, UPDATE, and DELETE types the same way a SELECT's item would", () => {
+    const engine = new Engine([
+      // Mixed-case column to also exercise refNullable's sqliteName fix below.
+      "create table orders (id text primary key not null, Qty integer not null, price real not null) strict",
+    ]);
+    try {
+      const t = new Typer(engine, new Map());
+      const shapes: [string, string][] = [
+        ["insert", "insert into orders (id, Qty, price) values (:id, :qty, :price) returning id, Qty, cast(Qty as text) as qty_text, json_object('id', id, 'qty', Qty) as payload"],
+        ["update", "update orders set Qty = Qty + 1 where id = :id returning id, Qty, cast(Qty as text) as qty_text, json_object('id', id, 'qty', Qty) as payload"],
+        ["delete", "delete from orders where id = :id returning id, Qty, cast(Qty as text) as qty_text, json_object('id', id, 'qty', Qty) as payload"],
+      ];
+      for (const [label, sql] of shapes) {
+        const columns = t.analyze(sql, "m").columns;
+        assert.deepEqual(columns.map(c => c.name), ["id", "Qty", "qty_text", "payload"], label);
+        assert.equal(columns[0]!.type, "string", `${label} id`);
+        assert.equal(columns[1]!.type, "number", `${label} Qty`);
+        assert.equal(columns[2]!.type, "string | null", `${label} qty_text (a CAST around a bare column types nullable, the same as it does in a SELECT -- must not throw)`);
+        assert.equal(columns[3]!.json, true, `${label} payload`);
+        assert.match(columns[3]!.type, /"id":\s*string/, `${label} payload id field`);
+        assert.match(columns[3]!.type, /"qty":\s*number/, `${label} payload qty field`);
+      }
+    } finally { engine.close(); }
+  });
+
+  test("a RETURNING reference whose case differs from the declared column still narrows to non-null when the column is NOT NULL", () => {
+    const engine = new Engine([
+      "create table orders (id text primary key not null, Qty integer not null) strict",
+    ]);
+    try {
+      const t = new Typer(engine, new Map());
+      // coalesce's last argument is the one castNeverNull shape that actually
+      // calls columnNullable(ref) with a bare reference -- a plain
+      // cast(col as ...) never reaches that lookup at all (see the previous
+      // test's qty_text, which types nullable for that reason, matching a
+      // SELECT's identical CAST).
+      const columns = t.analyze("update orders set Qty = Qty + 1 where id = :id returning cast(coalesce(qty, qty) as integer) as x", "m").columns;
+      assert.equal(columns[0]!.type, "number", "a NOT NULL column referenced with different case, inside coalesce's last argument, must not widen to nullable");
+    } finally { engine.close(); }
+  });
+
+  test("a bare * in RETURNING expands to the target table's own columns", () => {
+    const engine = new Engine([
+      "create table orders (id text primary key not null, Qty integer not null) strict",
+    ]);
+    try {
+      const t = new Typer(engine, new Map());
+      const columns = t.analyze("update orders set Qty = Qty + 1 where id = :id returning *", "m").columns;
+      assert.deepEqual(columns.map(c => ({name: c.name, type: c.type})), [{name: "id", type: "string"}, {name: "Qty", type: "number"}]);
+    } finally { engine.close(); }
+  });
+
+  test("INSERT with an explicit column list still resolves a bare RETURNING column to its declared, non-null type", () => {
+    // Regression guard for the aliasMap prerequisite fix: before it, this
+    // exact shape (a column list immediately after the target table name)
+    // made aliasMap discard the table entirely, widening every bare RETURNING
+    // column here to nullable.
+    const engine = new Engine([
+      "create table orders (id text primary key not null, Qty integer not null) strict",
+    ]);
+    try {
+      const t = new Typer(engine, new Map());
+      const columns = t.analyze("insert into orders (id, Qty) values (:id, :qty) returning id, Qty", "m").columns;
+      assert.deepEqual(columns.map(c => c.type), ["string", "number"]);
+    } finally { engine.close(); }
+  });
 });
 
 test("origin columns retain NULL from views, query scopes, scalar subqueries, and wildcard joins", () => {

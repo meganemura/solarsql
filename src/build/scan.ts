@@ -404,11 +404,14 @@ export function cteNames(sql: string): Set<string> {
 export function aliasMap(sql: string, outerOnly = false): Map<string, string | null> {
   const map = new Map<string, string | null>();
   const t = significant(tokenize(sql));
-  const stop = new Set(["on", "where", "group", "order", "left", "right", "inner", "outer", "cross", "natural", "join", "using", "limit", "full", "union", "except", "intersect", "having", "window", "as", "set", "returning", "indexed", "not"]);
+  const stop = new Set(["on", "where", "group", "order", "left", "right", "inner", "outer", "cross", "natural", "join", "using", "limit", "full", "union", "except", "intersect", "having", "window", "as", "set", "returning", "indexed", "not", "values"]);
   const endsFrom = new Set(["where", "group", "order", "limit", "having", "union", "except", "intersect", "returning", "set"]);
   // Depths at which a FROM list is open, so a comma there starts an entry.
   const openFrom = new Set<number>();
-  const entry = (j: number): void => {
+  // allowCall is false for an UPDATE or INSERT/REPLACE target: the token
+  // after that table's name can be an INSERT column list, never a
+  // table-valued function's arguments the way a FROM-list entry's can.
+  const entry = (j: number, allowCall = true): void => {
     const first = t[j];
     if (!first) return;
     let table: string | null = null;
@@ -419,7 +422,7 @@ export function aliasMap(sql: string, outerOnly = false): Map<string, string | n
     } else if (first.type === "ident") {
       table = unquote(first.text);
       j++;
-      if (t[j]?.text === "(") {
+      if (allowCall && t[j]?.text === "(") {
         const d = t[j]!.depth;
         let k = j + 1;
         while (t[k] && !(t[k]!.text === ")" && t[k]!.depth === d)) k++;
@@ -447,7 +450,7 @@ export function aliasMap(sql: string, outerOnly = false): Map<string, string | n
       // refer to.
       let j = i + 1;
       if (isKeyword(t[j], "or")) j += 2;
-      entry(j);
+      entry(j, false);
     } else if (isKeyword(tok, "join")) {
       entry(i + 1);
     } else if (tok.text === "," && openFrom.has(tok.depth)) {
@@ -459,6 +462,16 @@ export function aliasMap(sql: string, outerOnly = false): Map<string, string | n
     }
   }
   return map;
+}
+
+// The text after a statement's own top-level RETURNING keyword -- found the
+// way accesses() finds a write's own table, not by matching earlier in the
+// text, so a RETURNING inside a CTE's own definition (not valid SQLite, but
+// not this function's job to reject) cannot be mistaken for the statement's.
+export function returningClause(sql: string): string | null {
+  const tokens = tokenize(sql);
+  const at = tokens.findIndex((t) => t.depth === 0 && isKeyword(t, "returning"));
+  return at === -1 ? null : sql.slice(tokens[at]!.end);
 }
 
 // Where a named parameter sits, for type inference:

@@ -160,6 +160,12 @@ describe("shapes", () => {
     assert.deepEqual([...aliasMap("select * from orders indexed by orders_status where orders.id = :id")], [["orders", "orders"]]);
   });
 
+  test("aliasMap self-aliases an INSERT target even with an explicit column list", () => {
+    assert.deepEqual([...aliasMap("insert into orders (id, qty) values (:id, :qty) returning id")], [["orders", "orders"]]);
+    assert.deepEqual([...aliasMap("insert or replace into orders (id, qty) values (:id, :qty) returning id")], [["orders", "orders"]]);
+    assert.deepEqual([...aliasMap("insert into orders values (:id, :qty) returning id")], [["orders", "orders"]]);
+  });
+
   test("paramSites classifies parameters", () => {
     const sites = paramSites("update orders set status = :status, note = :note where id = :id and :qty < qty and customer_id in (select id from customers where name like :name)");
     assert.deepEqual(sites.get("status"), [{ kind: "set", column: "status" }]);

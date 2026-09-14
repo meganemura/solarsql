@@ -8,7 +8,7 @@
 import { queryScope, querySources, sqliteName, unionType, unionMembers, type Cte } from "./scope.ts";
 import { GUARD_TABLE } from "../runtime/plan.ts";
 import type { ColumnFact, Engine, OutputColumn, TableFact } from "./facts.ts";
-import { aliasMap, columnRef, findCall, isKeyword, leadingComment, namedParams, nonNullFilterAlias, paramSites, quoteIdent, selectItems, significant, splitAtCommas, tokenize, unquote } from "./scan.ts";
+import { aliasMap, columnRef, findCall, isKeyword, leadingComment, namedParams, nonNullFilterAlias, paramSites, quoteIdent, returningClause, selectItems, significant, splitAtCommas, tokenize, unquote } from "./scan.ts";
 
 export class BuildError extends Error {
   readonly sql: string | undefined;
@@ -180,7 +180,7 @@ export class Typer {
     const outputs = this.engine.columns(sql);
     const returnsRows = outputs.length > 0;
     this.distinctOutputs(outputs, sql);
-    const columns = select ? this.scopeRows(sql, new Map(), new Set(), note) : outputs.map((out) => this.outputColumn(sql, out, null, aliases, new Set(), new Map(), note));
+    const columns = select ? this.scopeRows(sql, new Map(), new Set(), note) : this.returningColumns(sql, outputs, aliases, note);
     const params = names.map((name) => ({ name, ...this.paramType(sql, name, aliases, note) }));
     const scans = select && /\bwhere\b/i.test(sql) ? this.engine.fullScans(sql) : [];
     const usedTypes = [...columns.map((column) => column.type), ...params.map((param) => param.type)].join(" ").replace(/"(?:[^"\\]|\\.)*"/g, "");
@@ -415,6 +415,34 @@ export class Typer {
     });
   }
 
+  // RETURNING has one row source, the statement's own write target, so its
+  // items type by the same rules a SELECT's items do (ADR 0100). The
+  // scratch SELECT below stands in for the FROM list Engine.affinities
+  // needs, since wrapping the DML statement itself is invalid SQL.
+  private returningColumns(sql: string, outputs: OutputColumn[], aliases: Map<string, string | null>, note: (r: Resolved) => Resolved): Analysis["columns"] {
+    const bare = () => outputs.map((out) => this.outputColumn(sql, out, null, aliases, new Set(), new Map(), note));
+    const clause = returningClause(sql);
+    if (!clause) return bare();
+    const table = this.engine.accesses(sql).find((a) => a.action === "insert" || a.action === "update" || a.action === "delete")?.table;
+    if (!table) return bare();
+    const raw = selectItems(`select ${clause}`) ?? [];
+    const target = this.tables.get(table);
+    // RETURNING's only wildcard form SQLite accepts is a bare "*" (a
+    // qualified "t.*" is a syntax error there); it expands to the target
+    // table's own columns, in declaration order.
+    const items = raw.flatMap((item) => {
+      const tokens = significant(tokenize(item.expr));
+      if (tokens.length === 1 && tokens[0]!.text === "*" && target) {
+        return target.columns.map((c) => ({ ...item, text: quoteIdent(c.name), expr: quoteIdent(c.name), alias: null }));
+      }
+      return [item];
+    });
+    if (items.length !== outputs.length) return bare();
+    const scratch = `select ${items.map((i) => i.text).join(", ")} from ${quoteIdent(table)}`;
+    const affinities = this.engine.affinities(scratch);
+    return outputs.map((out, i) => this.outputColumn(sql, out, items[i]!, aliases, new Set(), affinities, note));
+  }
+
   private outputColumn(
     sql: string,
     out: OutputColumn,
@@ -462,7 +490,7 @@ export class Typer {
     const alias = ref.alias ?? this.aliasOfBareColumn(aliases, ref.column);
     const table = alias === null ? null : aliases.get(alias) ?? null;
     if (!table) return null;
-    const c = this.tables.get(table)?.columns.find((x) => x.name === ref.column);
+    const c = this.tables.get(table)?.columns.find((x) => sqliteName(x.name) === sqliteName(ref.column));
     if (!c) return null;
     void sql;
     return !c.notnull || (alias !== null && nullableAliases.has(alias));
