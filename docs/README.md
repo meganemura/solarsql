@@ -111,6 +111,7 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0096](adr/0096-migration-runs-builds-checks-before-writing-a-file.md) | `migration` runs every `build` check before it writes a file |
 | [0097](adr/0097-check-in-or-is-null-narrows-like-in-alone.md) | `CHECK col IN (...) OR col IS NULL` narrows like `IN (...)` alone |
 | [0098](adr/0098-unionmembers-drops-a-literal-member-string-or-number-already-covers.md) | `unionMembers` drops a literal member `string` or `number` already covers |
+| [0099](adr/0099-a-rebuild-records-the-columns-it-saw.md) | A table rebuild records the columns it saw, and replay refuses an unknown one |
 
 ## Measurements
 

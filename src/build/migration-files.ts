@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { render } from "./migration.ts";
 import { BuildError } from "./typegen.ts";
 import { announceMigrationLock } from "./machine.ts";
+import type { RebuildRecord } from "./scan.ts";
 
 // solarsql has no way to check which migration files a database has
 // already applied, so every message here says that plainly instead of
@@ -43,11 +44,11 @@ export function migrationSequence(names: readonly string[]): { maximum: number; 
   return { maximum, width };
 }
 
-export function nextMigrationFile(names: readonly string[], name: string, statements: readonly string[]) {
+export function nextMigrationFile(names: readonly string[], name: string, statements: readonly string[], rebuilds: readonly RebuildRecord[] = []) {
   const { maximum, width } = migrationSequence(names);
   const next = Math.max(1, maximum + 1);
   if (!Number.isSafeInteger(next)) throw new BuildError("Migration sequence exceeds the safe integer range. Review an explicit append-only migration strategy without renaming applied files.");
-  const file = render(next, name, statements, width);
+  const file = render(next, name, statements, rebuilds, width);
   if (names.some(previous => previous >= file.filename)) {
     throw new BuildError(`Migration ${file.filename} would replay before existing history. Review an explicit append-only migration strategy without renaming applied files.`);
   }

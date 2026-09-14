@@ -826,3 +826,31 @@ export function nonNullFilterAlias(expr: string): string | null {
   const ref = columnRef(tokens.slice(1, 4).map((token) => token.text).join(""));
   return ref?.alias ?? null;
 }
+
+// A migration file that rebuilds a table records, in one comment line
+// render() writes, the exact columns tableStatements saw for that table at
+// generation time -- not the columns it kept. Replay checks the table's
+// actual columns against this list before the rebuild runs (ADR 0099). A
+// file with no such line, or one that fails to parse, has nothing recorded:
+// callers treat that the same as an empty list, not as an error, so a file
+// written before this feature existed replays exactly as it did before.
+export type RebuildRecord = { table: string; columns: string[] };
+
+const REBUILD_HEADER = "-- Rebuilds from these columns: ";
+
+export function parseRebuildRecords(sql: string): RebuildRecord[] {
+  const line = sql.split("\n").find((l) => l.startsWith(REBUILD_HEADER));
+  if (!line) return [];
+  try {
+    const value: unknown = JSON.parse(line.slice(REBUILD_HEADER.length));
+    if (!Array.isArray(value)) return [];
+    return value.filter((v): v is RebuildRecord =>
+      v !== null && typeof v === "object" &&
+      typeof (v as { table?: unknown }).table === "string" &&
+      Array.isArray((v as { columns?: unknown }).columns) &&
+      (v as { columns: unknown[] }).columns.every((c) => typeof c === "string"),
+    );
+  } catch {
+    return [];
+  }
+}

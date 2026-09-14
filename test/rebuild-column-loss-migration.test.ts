@@ -1,0 +1,180 @@
+// Responsibility: a table rebuild that never knew about a column the table
+// actually has, at replay time, refuses instead of silently losing the
+// column or its data (ADR 0099).
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
+import { applied, diff, introspect, open, render } from "../src/build/migration.ts";
+import { splitStatements } from "../src/build/scan.ts";
+import { BuildError } from "../src/build/typegen.ts";
+import { migrate, MigrationHistoryError } from "../src/node.ts";
+
+test("a rebuild that never knew about a concurrently added column refuses to replay, instead of silently losing it", () => {
+  const base = "create table customers (id text primary key not null, email text not null, name text not null) strict";
+  const targetA = "create table customers (id text primary key not null, email text, name text not null) strict"; // branch A: drops NOT NULL on email, never heard of fax
+  const targetB = "create table customers (id text primary key not null, email text not null, name text not null, fax text) strict"; // branch B: adds fax
+
+  const currentDb = open([base]);
+  const planA = diff(introspect(currentDb), introspect(open([targetA])));
+  assert.equal(planA.kind, "ok");
+  if (planA.kind !== "ok") return;
+  const fileA = render(3, "email_nullable", planA.statements, planA.rebuilds ?? []);
+
+  const planB = diff(introspect(currentDb), introspect(open([targetB])));
+  assert.equal(planB.kind, "ok");
+  if (planB.kind !== "ok") return;
+  const fileB = render(2, "add_fax", planB.statements, planB.rebuilds ?? []);
+
+  assert.throws(
+    () => applied([base + ";", fileB.sql, fileA.sql], ["0001_base.sql", "0002_add_fax.sql", "0003_email_nullable.sql"]),
+    (e: unknown) => {
+      assert.ok(e instanceof BuildError, String(e));
+      assert.match(e.message, /0003_email_nullable\.sql rebuilds table "customers" without knowledge of column "fax", added by 0002_add_fax\.sql/);
+      assert.match(e.message, /Delete 0003_email_nullable\.sql and run `solarsql migration` again/);
+      assert.equal(e.action, 'Delete 0003_email_nullable.sql and run `solarsql migration` again against the merged schema.');
+      return true;
+    },
+  );
+});
+
+test("a rebuild that redeclares a concurrently added column under the same name refuses to replay, instead of nulling its value", () => {
+  const base = "create table customers (id text primary key not null, email text not null, name text not null) strict";
+  const targetA = "create table customers (id text primary key not null, email text, name text not null, fax text) strict"; // branch A rebuilds AND independently adds fax
+  const targetB = "create table customers (id text primary key not null, email text not null, name text not null, fax text) strict"; // branch B just adds fax
+
+  const currentDb = open([base]);
+  const planA = diff(introspect(currentDb), introspect(open([targetA])));
+  assert.equal(planA.kind, "ok");
+  if (planA.kind !== "ok") return;
+  const fileA = render(3, "email_nullable_and_fax", planA.statements, planA.rebuilds ?? []);
+
+  const planB = diff(introspect(currentDb), introspect(open([targetB])));
+  assert.equal(planB.kind, "ok");
+  if (planB.kind !== "ok") return;
+  const fileB = render(2, "add_fax", planB.statements, planB.rebuilds ?? []);
+
+  // A live database: base, then B (adds and populates fax), matching what a
+  // real deploy already did before the renumbered A ever runs.
+  const live = new DatabaseSync(":memory:");
+  live.exec(base);
+  live.exec(`insert into customers (id, email, name) values ('c1', 'a@b.com', 'Alice')`);
+  for (const s of splitStatements(fileB.sql)) live.exec(s);
+  live.exec(`update customers set fax = '555-1234' where id = 'c1'`);
+  assert.deepEqual({ ...live.prepare("select fax from customers where id='c1'").get() }, { fax: "555-1234" });
+
+  assert.throws(
+    () => applied([base + ";", fileB.sql, fileA.sql], ["0001_base.sql", "0002_add_fax.sql", "0003_email_nullable_and_fax.sql"]),
+    /rebuilds table "customers" without knowledge of column "fax"/,
+  );
+
+  // The refusal is a build-time replay check on a fresh in-memory database,
+  // not an action on `live`; confirm the live row is untouched regardless.
+  assert.deepEqual({ ...live.prepare("select fax from customers where id='c1'").get() }, { fax: "555-1234" });
+});
+
+test("a rebuild that intentionally drops a column it saw at generation time still replays", () => {
+  const before = ["create table t (id text primary key not null, extra text) strict"];
+  const target = open(["create table t (id text primary key not null) strict"]);
+  const current = open(before);
+  const plan = diff(introspect(current), introspect(target), [], [{ kind: "column", table: "t", column: "extra" }]);
+  assert.equal(plan.kind, "ok");
+  if (plan.kind !== "ok") return;
+  const file = render(2, "drop_extra", plan.statements, plan.rebuilds ?? []);
+  const db = applied([before[0]! + ";", "insert into t (id, extra) values ('a', 'x');", file.sql], ["0001_before.sql", "0002_insert.sql", "0003_drop_extra.sql"]);
+  assert.deepEqual({ ...db.prepare("select * from t").get() }, { id: "a" });
+});
+
+test("regenerating the rebuild against the merged schema replays cleanly and preserves the data", () => {
+  const base = "create table customers (id text primary key not null, email text not null, name text not null) strict";
+  const targetB = "create table customers (id text primary key not null, email text not null, name text not null, fax text) strict";
+  const currentDb = open([base]);
+  const planB = diff(introspect(currentDb), introspect(open([targetB])));
+  assert.equal(planB.kind, "ok");
+  if (planB.kind !== "ok") return;
+  const fileB = render(2, "add_fax", planB.statements, planB.rebuilds ?? []);
+
+  const live = new DatabaseSync(":memory:");
+  live.exec(base);
+  live.exec(`insert into customers (id, email, name) values ('c1', 'a@b.com', 'Alice')`);
+  for (const s of splitStatements(fileB.sql)) live.exec(s);
+  live.exec(`update customers set fax = '555-1234' where id = 'c1'`);
+
+  // The developer's repair: delete the refused file, generate a new one
+  // against the schema as it now stands (fax already present).
+  const mergedTarget = "create table customers (id text primary key not null, email text, name text not null, fax text) strict";
+  const regenerated = diff(introspect(live), introspect(open([mergedTarget])));
+  assert.equal(regenerated.kind, "ok");
+  if (regenerated.kind !== "ok") return;
+  const fileC = render(3, "email_nullable", regenerated.statements, regenerated.rebuilds ?? []);
+  for (const s of splitStatements(fileC.sql)) live.exec(s);
+  assert.deepEqual({ ...live.prepare("select * from customers where id='c1'").get() }, { id: "c1", email: "a@b.com", name: "Alice", fax: "555-1234" });
+});
+
+test("a Durable Object's runtime migrate() also refuses a rebuild that does not know about a column the table already has", () => {
+  const base = "create table customers (id text primary key not null, email text not null, name text not null) strict";
+  const targetA = "create table customers (id text primary key not null, email text, name text not null) strict";
+  const targetB = "create table customers (id text primary key not null, email text not null, name text not null, fax text) strict";
+
+  const currentDb = open([base]);
+  const planA = diff(introspect(currentDb), introspect(open([targetA])));
+  if (planA.kind !== "ok") throw new Error("planA blocked");
+  const fileA = render(3, "email_nullable", planA.statements, planA.rebuilds ?? []);
+  const planB = diff(introspect(currentDb), introspect(open([targetB])));
+  if (planB.kind !== "ok") throw new Error("planB blocked");
+  const fileB = render(2, "add_fax", planB.statements, planB.rebuilds ?? []);
+
+  const db = new DatabaseSync(":memory:");
+  migrate(db, [{ name: "0001_base.sql", sql: base + ";" }, { name: "0002_add_fax.sql", sql: fileB.sql }]);
+  db.exec(`insert into customers (id, email, name) values ('c1', 'a@b.com', 'Alice')`);
+  db.exec(`update customers set fax = '555-1234' where id = 'c1'`);
+
+  assert.throws(
+    () => migrate(db, [
+      { name: "0001_base.sql", sql: base + ";" },
+      { name: "0002_add_fax.sql", sql: fileB.sql },
+      { name: "0003_email_nullable.sql", sql: fileA.sql },
+    ]),
+    (e: unknown) => {
+      assert.ok(e instanceof MigrationHistoryError, String(e));
+      assert.equal(e.code, "REBUILD_LOSES_COLUMN");
+      assert.match(e.message, /rebuilds table "customers" without knowledge of column "fax"/);
+      return true;
+    },
+  );
+
+  assert.deepEqual({ ...db.prepare("select fax from customers where id='c1'").get() }, { fax: "555-1234" });
+});
+
+test("a Durable Object's runtime migrate() also refuses a rebuild that does not know about a concurrently added generated column", () => {
+  const base = "create table t (id text primary key not null, a integer not null) strict";
+  const targetA = "create table t (id text primary key not null, a integer) strict"; // branch A: drops NOT NULL on a, never heard of b
+  const targetB = "create table t (id text primary key not null, a integer not null, b integer as (a * 2) stored) strict"; // branch B: adds a STORED generated column
+
+  const currentDb = open([base]);
+  const planA = diff(introspect(currentDb), introspect(open([targetA])));
+  if (planA.kind !== "ok") throw new Error("planA blocked");
+  const fileA = render(3, "a_nullable", planA.statements, planA.rebuilds ?? []);
+  const planB = diff(introspect(currentDb), introspect(open([targetB])));
+  if (planB.kind !== "ok") throw new Error("planB blocked");
+  const fileB = render(2, "add_b", planB.statements, planB.rebuilds ?? []);
+
+  const db = new DatabaseSync(":memory:");
+  migrate(db, [{ name: "0001_base.sql", sql: base + ";" }, { name: "0002_add_b.sql", sql: fileB.sql }]);
+  db.exec("insert into t (id, a) values ('x', 5)");
+
+  assert.throws(
+    () => migrate(db, [
+      { name: "0001_base.sql", sql: base + ";" },
+      { name: "0002_add_b.sql", sql: fileB.sql },
+      { name: "0003_a_nullable.sql", sql: fileA.sql },
+    ]),
+    (e: unknown) => {
+      assert.ok(e instanceof MigrationHistoryError, String(e));
+      assert.equal(e.code, "REBUILD_LOSES_COLUMN");
+      assert.match(e.message, /rebuilds table "t" without knowledge of column "b"/);
+      return true;
+    },
+  );
+
+  assert.deepEqual({ ...db.prepare("select * from t where id='x'").get() }, { id: "x", a: 5, b: 10 });
+});

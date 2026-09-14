@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
-import { diff, introspect, open, shape, render } from "../src/build/migration.ts";
+import { applied, diff, introspect, open, shape, render } from "../src/build/migration.ts";
 import { splitStatements } from "../src/build/scan.ts";
 
 type ColumnType = "text" | "integer" | "real";
@@ -269,7 +269,7 @@ test("migration diff round-trips the declared schema", () => {
     if (appliedRenames.length > 0 && rebuilt) event("renamed-rebuild");
 
     // Apply the rendered file the way wrangler does: split, one transaction.
-    const file = render(1, "step", plan.statements).sql;
+    const file = render(1, "step", plan.statements, plan.rebuilds ?? []).sql;
     // Capture rowid identity per row before the migration, keyed by the
     // stable text id, so a rebuild that also renames a column is proven to
     // preserve row identity, not only the row count.
@@ -286,6 +286,16 @@ test("migration diff round-trips the declared schema", () => {
     assert.deepEqual(shape(introspect(current)), shape(introspect(target)), `shape mismatch after\n${file}`);
     const again = diff(introspect(current), introspect(target));
     assert.deepEqual(again, { kind: "ok", statements: [] }, `second diff not empty after\n${file}`);
+
+    // The recorded rebuild header must never cause a false refusal on the
+    // exact history it was generated for: replay through the same
+    // applied() build, build --check, and migration all use, from the base
+    // schema, with no live database in between.
+    try {
+      applied([[...ddl(s1), ...rowsFor(s1)].map((s) => `${s};`).join("\n"), file], ["0001_base.sql", "0002_step.sql"]);
+    } catch (e) {
+      throw new Error(`applied() refused a valid migration: ${(e as Error).message}\n${file}\n${JSON.stringify({ s1, s2, appliedRenames })}`);
+    }
 
     // Rows and rowids survive in every table that existed before and still exists.
     for (const t of s2.tables) {

@@ -9,7 +9,7 @@
 // (CREATE VIRTUAL TABLE) has no ALTER: a change drops it and creates it
 // again, and its shadow tables are the engine's own.
 import { DatabaseSync } from "node:sqlite";
-import { definitions, isKeyword, normalize, quoteIdent, splitStatements, tokenize, type Token } from "./scan.ts";
+import { definitions, isKeyword, normalize, parseRebuildRecords, quoteIdent, splitStatements, tokenize, type RebuildRecord, type Token } from "./scan.ts";
 import { BuildError } from "./typegen.ts";
 
 export type Column = { name: string; type: string; notnull: boolean; dflt: string | null; pk: number; def: string; generated: boolean };
@@ -26,7 +26,7 @@ export type RenameRepair = { table: string; from: string[]; to: string[] };
 // keeps a dot in a quoted identifier as one name instead of a table/column
 // separator. The CLI writes the SQL spelling only for its diagnostic.
 export type DropIntent = { kind: "table"; table: string } | { kind: "column"; table: string; column: string };
-export type Plan = { kind: "ok"; statements: string[] } | { kind: "blocked"; reason: string; drops?: DropIntent[]; renames?: Rename[]; renameCandidates?: RenameRepair[] };
+export type Plan = { kind: "ok"; statements: string[]; rebuilds?: RebuildRecord[] } | { kind: "blocked"; reason: string; drops?: DropIntent[]; renames?: Rename[]; renameCandidates?: RenameRepair[] };
 
 export function open(statements: readonly string[]): DatabaseSync {
   const db = new DatabaseSync(":memory:");
@@ -42,7 +42,30 @@ export function open(statements: readonly string[]): DatabaseSync {
 // omit it and get the engine's own message unwrapped, as before.
 export function applied(files: readonly string[], names?: readonly string[]): DatabaseSync {
   const db = new DatabaseSync(":memory:");
+  // Which migration first introduced a given table's column, so a refusal
+  // below can name it. Rebuilt on the fly: applied() starts from an empty
+  // database, so every column that ever exists was introduced by exactly
+  // one file in this same history.
+  const firstIntroducedBy = new Map<string, string>();
+  let schema = introspect(db);
   for (const [i, file] of files.entries()) {
+    const label = names ? names[i]! : `migration file ${i + 1} of ${files.length}`;
+    for (const { table, columns } of parseRebuildRecords(file)) {
+      const actual = schema.tables.get(table);
+      if (!actual) continue;
+      const unknown = actual.columns.map((c) => c.name).find((n) => !columns.includes(n));
+      if (unknown !== undefined) {
+        const addedBy = firstIntroducedBy.get(`${table} ${unknown}`) ?? "an earlier migration";
+        const action = `Delete ${label} and run \`solarsql migration\` again against the merged schema.`;
+        throw new BuildError(
+          `migration ${label} rebuilds table ${quoteIdent(table)} without knowledge of column ${quoteIdent(unknown)}, added by ${addedBy}. ` +
+          `A database that replays ${label} loses ${quoteIdent(unknown)} and its data. ` +
+          `Delete ${label} and run \`solarsql migration\` again against the merged schema.`,
+          undefined,
+          action,
+        );
+      }
+    }
     let statements: string[] = [];
     // Non-null only while a specific statement of this file is running, so
     // a failure at "begin" or "commit" itself (for example a deferred
@@ -61,6 +84,13 @@ export function applied(files: readonly string[], names?: readonly string[]): Da
     } catch (e) {
       const at = ordinal === null ? "" : `, statement ${ordinal} of ${statements.length}`;
       throw names ? new BuildError(`migration ${names[i]}${at}: ${(e as Error).message}`) : e;
+    }
+    schema = introspect(db);
+    for (const [tableName, table] of schema.tables) {
+      for (const column of table.columns) {
+        const key = `${tableName} ${column.name}`;
+        if (!firstIntroducedBy.has(key)) firstIntroducedBy.set(key, label);
+      }
     }
   }
   return db;
@@ -428,6 +458,7 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
   const changeTables: string[] = [];
   const createLast: string[] = [];
   const rebuilt = new Set<string>();
+  const rebuilds: RebuildRecord[] = [];
   let needsDefer = false;
 
   const renameIntent = renameIntentPlan(current, target, renames);
@@ -506,6 +537,7 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
       }
       rebuilt.add(name);
       needsDefer = true;
+      rebuilds.push({ table: name, columns: current_.columns.map((c) => c.name) });
     }
     changeTables.push(...plan.statements);
   }
@@ -530,7 +562,7 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
   }
   const statements = [...dropViews, ...dropFirst, ...dropTables, ...changeTables, ...createVirtuals, ...createLast];
   if (needsDefer) statements.unshift(`pragma defer_foreign_keys = on`);
-  return { kind: "ok", statements };
+  return { kind: "ok", statements, ...(rebuilds.length > 0 ? { rebuilds } : {}) };
 }
 
 // D1's HTTP API splits a request into statements on its own, and it keeps a
@@ -553,8 +585,10 @@ function triggerForD1(sql: string): string {
 
 // wrangler applies `migrations/<NNNN>_<name>.sql` in name order and records
 // each file in d1_migrations. The file holds statements separated by ';'.
-export function render(sequence: number, name: string, statements: readonly string[], width = 4): { filename: string; sql: string } {
+export function render(sequence: number, name: string, statements: readonly string[], rebuilds: readonly RebuildRecord[] = [], width = 4): { filename: string; sql: string } {
   const filename = `${String(sequence).padStart(width, "0")}_${name}.sql`;
-  const sql = `-- Migration ${filename}. Generated by solarsql from the declared schema.\n` + statements.map((s) => `${s.trim()};`).join("\n") + "\n";
+  const header = `-- Migration ${filename}. Generated by solarsql from the declared schema.\n`
+    + (rebuilds.length > 0 ? `-- Rebuilds from these columns: ${JSON.stringify(rebuilds)}\n` : "");
+  const sql = header + statements.map((s) => `${s.trim()};`).join("\n") + "\n";
   return { filename, sql };
 }

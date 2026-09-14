@@ -13,6 +13,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 - Fixed: a colliding migration sequence number names every file that shares it, not only one, and the diagnostic carries a machine-readable `action` field (ADR 0094).
 - Fixed: a migration replay error names the failing statement's position within its file, when the file holds more than one statement.
 - Fixed: `INDEXED BY` and `NOT INDEXED` no longer shadow a table's own alias, so a parameter compared against that table keeps its narrow inferred type.
+- Fixed: a table rebuild now refuses to replay when it does not know about a column the table actually has, instead of silently dropping that column or nulling its data; this can happen when a rebuild is merged behind a sibling migration that added a column after the rebuild was generated (ADR 0099).
 
 ## 0.4.0 (2026-09-14)
 

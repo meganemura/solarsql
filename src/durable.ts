@@ -8,7 +8,7 @@
 // runtime/plan.ts defines.
 import type { AdapterOptions, BatchRows, Command, CommandResult, Database, Entry, GeneratedMap, ParamsArg, PlanShape, Query, Read, Row, SqlValue, StatementMeta } from "./index.ts";
 import { GUARD_CLEANUP, assertFailure, assertStatement, assertToken, bindValues, constraintFailure, observed, outcomeOf, parseJson, validateParams } from "./runtime/plan.ts";
-import { significant, splitStatements, tokenize } from "./build/scan.ts";
+import { parseRebuildRecords, quoteIdent, significant, splitStatements, tokenize } from "./build/scan.ts";
 
 // The part of DurableObjectStorage this adapter uses. Structural, so no
 // type package is needed.
@@ -140,6 +140,25 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
   }
   const applied: string[] = [];
   for (const file of ordered.slice(history.length)) {
+    for (const { table, columns } of parseRebuildRecords(file.sql)) {
+      // pragma_table_xinfo, unlike pragma_table_info, includes a generated
+      // column -- the same shape introspect() (src/build/migration.ts)
+      // already reads, so a generated column a sibling migration added is
+      // caught here too, the same as any other column.
+      const actualColumns = storage.sql.exec(`select name from pragma_table_xinfo(?) where hidden in (0, 2, 3)`, table).toArray().map((r) => String(r.name));
+      if (actualColumns.length === 0) continue;
+      const unknown = actualColumns.find((n) => !columns.includes(n));
+      if (unknown !== undefined) {
+        // Every earlier file in this history is already applied here (this
+        // loop only reaches files past the recorded history), so there is
+        // no "not deployed yet" branch to offer, unlike applied()'s.
+        throw new MigrationHistoryError(
+          "REBUILD_LOSES_COLUMN",
+          `Migration ${file.name} rebuilds table ${quoteIdent(table)} without knowledge of column ${quoteIdent(unknown)}. This database has already applied every earlier migration, so ${quoteIdent(unknown)}'s data on ${quoteIdent(table)} would be lost if this migration ran. Regenerate ${file.name} against the current schema.`,
+          file.name,
+        );
+      }
+    }
     storage.transactionSync(() => {
       for (const statement of splitStatements(file.sql)) storage.sql.exec(statement).toArray();
       storage.sql.exec(`insert into ${HISTORY} (name, applied_at, sql) values (?, ?, ?)`, file.name, new Date().toISOString(), file.sql);

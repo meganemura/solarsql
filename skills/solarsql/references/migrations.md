@@ -12,6 +12,7 @@ Every build keeps `index.ts` in step with the `.sql` files.
 Generation appends after the highest numeric sequence, including gaps.
 History names use at least four digits followed by `_name.sql`; sequences must be unique and increase in filename order.
 Two branches that each generate the next file independently can collide on the same sequence number; `build`/`build --check` refuse that before merge, and if both files are already applied somewhere, the repair is a new migration that reconciles them, not a rename.
+After renumbering a file that rebuilds a table, run `build --check` again: a rebuild generated before a sibling migration merged in ahead of it may no longer know about every column that table now has, and replay refuses it rather than silently losing a column's data (ADR 0099). Delete the refused file and run `npx solarsql migration` again against the merged schema; it regenerates the rebuild with full knowledge of the current columns.
 Generation rejects a new name that would replay before existing history, including an unsafe digit-width rollover.
 Keep applied filenames unchanged when resolving a conflict.
 New SQL files use exclusive creation and generation holds `.solarsql-generation.lock` while comparing and writing history.

@@ -15,7 +15,7 @@ import { Engine, type Access, type OutputColumn } from "./facts.ts";
 import { applied, diff, introspect, open, type DropIntent, type Rename, type RenameRepair } from "./migration.ts";
 import type { MigrationIntent } from "./migration-intent.ts";
 import { migrationSequence, nextMigrationFile, withMigrationLock, writeNewMigration } from "./migration-files.ts";
-import { created, indexTarget, quoteIdent, triggerTarget } from "./scan.ts";
+import { created, indexTarget, quoteIdent, triggerTarget, type RebuildRecord } from "./scan.ts";
 import { sqliteName } from "./scope.ts";
 import { shellArgument } from "./shell.ts";
 import { writeGeneratedFile } from "./output.ts";
@@ -69,7 +69,7 @@ export type BuildResult = {
   // Per module: the statements this build added to and removed from the
   // generated file, so the CLI can say what changed.
   modules: { name: string; generatedPath: string; entries: number; changed: boolean; added: string[]; removed: string[]; ms: number }[];
-  migration: { pending: boolean; statements: string[]; reason: string | null; drops?: DropIntent[]; renames?: Rename[]; renameCandidates?: RenameRepair[] };
+  migration: { pending: boolean; statements: string[]; reason: string | null; drops?: DropIntent[]; renames?: Rename[]; renameCandidates?: RenameRepair[]; rebuilds?: RebuildRecord[] };
   // The bundle of the migration files a Durable Object imports. It is a
   // generated file too: the build rewrites it when a migration file changed,
   // and a check reports it stale. `path` is null when there are no files.
@@ -645,7 +645,7 @@ function migrationStatus(configDir: string, config: Config, modules: readonly Mo
   try {
     const plan = diff(introspect(current), introspect(target), intent.renames, intent.drops);
     if (plan.kind === "blocked") return { pending: true, statements: [], reason: plan.reason, ...(plan.drops ? { drops: plan.drops } : {}), ...(plan.renames ? { renames: plan.renames } : {}), ...(plan.renameCandidates ? { renameCandidates: plan.renameCandidates } : {}) };
-    return { pending: plan.statements.length > 0, statements: plan.statements, reason: null };
+    return { pending: plan.statements.length > 0, statements: plan.statements, reason: null, ...(plan.rebuilds ? { rebuilds: plan.rebuilds } : {}) };
   } finally {
     current.close();
     target.close();
@@ -675,7 +675,7 @@ export async function migration(configPath: string, name: string, intent: Migrat
     if (status.reason) return { filename: null, reason: status.reason, ...(status.drops ? { drops: status.drops } : {}), ...(status.renames ? { renames: status.renames } : {}), ...(status.renameCandidates ? { renameCandidates: status.renameCandidates } : {}) };
     let filename: string | null = null;
     if (status.pending) {
-      const file = nextMigrationFile(files.map(file => file.name), name, status.statements);
+      const file = nextMigrationFile(files.map(file => file.name), name, status.statements, status.rebuilds ?? []);
       writeNewMigration(dir, file);
       filename = file.filename;
     }
