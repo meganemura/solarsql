@@ -17,6 +17,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 - Fixed: a rebuild-refusal error names the migration that most recently (re-)introduced the at-risk column, instead of the first migration that ever did, when the column was dropped and later re-added (ADR 0099).
 - Fixed: a table rebuild now refuses to replay when a column it rebuilds has a different declared shape than its generator saw, not only when the column is unknown to it; this can happen when two branches each rebuild the same table for unrelated reasons (ADR 0101).
 - Fixed: a write plan item with a computed RETURNING expression (a CAST, a JSON constructor) now fails with "RETURNING clause is discarded at run time", the same refusal a bare RETURNING column already got, instead of a "wrap it in cast(...)" error the expression already satisfies (ADR 0100).
+- Fixed: a CAST wrapping a bare NOT NULL column reference (`cast(qty as text)`) now types non-null, the same as a CAST wrapping `coalesce`'s or `ifnull`'s NOT NULL last argument already did.
 - Fixed: `rehearse` rejects a named or anonymous parameter in a `checks.assertions` entry, instead of silently binding it to `NULL` and letting the assertion's predicate pass regardless of the real data.
 
 ## 0.4.0 (2026-09-14)

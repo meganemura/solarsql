@@ -315,7 +315,7 @@ describe("row type soundness", () => {
         assert.deepEqual(columns.map(c => c.name), ["id", "Qty", "qty_text", "payload"], label);
         assert.equal(columns[0]!.type, "string", `${label} id`);
         assert.equal(columns[1]!.type, "number", `${label} Qty`);
-        assert.equal(columns[2]!.type, "string | null", `${label} qty_text (a CAST around a bare column types nullable, the same as it does in a SELECT -- must not throw)`);
+        assert.equal(columns[2]!.type, "string", `${label} qty_text (a CAST around a bare NOT NULL column now narrows, the same as it does in a SELECT)`);
         assert.equal(columns[3]!.json, true, `${label} payload`);
         assert.match(columns[3]!.type, /"id":\s*string/, `${label} payload id field`);
         assert.match(columns[3]!.type, /"qty":\s*number/, `${label} payload qty field`);
@@ -329,13 +329,29 @@ describe("row type soundness", () => {
     ]);
     try {
       const t = new Typer(engine, new Map());
-      // coalesce's last argument is the one castNeverNull shape that actually
-      // calls columnNullable(ref) with a bare reference -- a plain
-      // cast(col as ...) never reaches that lookup at all (see the previous
-      // test's qty_text, which types nullable for that reason, matching a
-      // SELECT's identical CAST).
+      // coalesce's last argument is one of two castNeverNull shapes that
+      // call columnNullable(ref) with a bare reference; the other is a
+      // plain cast(col as ...) around nothing but the reference itself,
+      // covered by a dedicated test below.
       const columns = t.analyze("update orders set Qty = Qty + 1 where id = :id returning cast(coalesce(qty, qty) as integer) as x", "m").columns;
       assert.equal(columns[0]!.type, "number", "a NOT NULL column referenced with different case, inside coalesce's last argument, must not widen to nullable");
+    } finally { engine.close(); }
+  });
+
+  test("a CAST wrapping a bare column reference is non-null exactly when the column is", () => {
+    const engine = new Engine([
+      "create table orders (id text primary key not null, Qty integer not null, price real) strict",
+    ]);
+    try {
+      const t2 = new Typer(engine, new Map());
+      const a = t2.analyze("select cast(Qty as text) as t from orders", "m");
+      assert.equal(a.columns[0]!.type, "string", "Qty is declared NOT NULL");
+      const b = t2.analyze("select cast(qty as text) as t from orders", "m");
+      assert.equal(b.columns[0]!.type, "string", "qty resolves to the declared Qty column via sqliteName(), and Qty is NOT NULL");
+      const c = t2.analyze("select cast(price as text) as t from orders", "m");
+      assert.equal(c.columns[0]!.type, "string | null", "price has no NOT NULL declaration");
+      const d = t2.analyze("select cast(:p as text) as t from orders", "m");
+      assert.equal(d.columns[0]!.type, "string | null", "a parameter is not a column reference; columnRef(':p') is null, so this must stay nullable");
     } finally { engine.close(); }
   });
 

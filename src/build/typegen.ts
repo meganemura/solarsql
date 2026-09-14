@@ -793,9 +793,10 @@ export class Typer {
 
 // An expression column is `| null` unless its CAST wraps a shape the engine
 // never returns null for: count, total, a ranking window function, exists,
-// or coalesce/ifnull whose last argument is a literal or a NOT NULL column.
-// The call must be the whole expression, with only FILTER and OVER after
-// it, so `count(*) / nullif(x, 0)` stays nullable.
+// coalesce/ifnull whose last argument is a literal or a NOT NULL column, or
+// a bare column reference the schema declares NOT NULL. The call must be
+// the whole expression, with only FILTER and OVER after it, so
+// `count(*) / nullif(x, 0)` stays nullable.
 const neverNullCalls = new Set(["count", "total", "row_number", "rank", "dense_rank", "ntile", "coalesce", "ifnull"]);
 
 export function castNeverNull(expr: string, columnNullable: (ref: { alias: string | null; column: string }) => boolean | null): boolean {
@@ -810,6 +811,12 @@ export function castNeverNull(expr: string, columnNullable: (ref: { alias: strin
     const open = t[exists + 1];
     return open?.text === "(" && t.findIndex((token, i) => i > exists + 1 && token.text === ")" && token.depth === open.depth) === t.length - 1;
   }
+  // A CAST whose whole inner expression is one bare column reference (no
+  // call, no operator) is non-null exactly when that column is: the same
+  // rule the coalesce/ifnull branch below already applies to its last
+  // argument.
+  const bareColumn = columnRef(inner);
+  if (bareColumn !== null) return columnNullable(bareColumn) === false;
   if (first.type !== "ident" || t[1]?.text !== "(") return false;
   const fn = first.text.toLowerCase();
   if (!neverNullCalls.has(fn)) return false;
