@@ -88,6 +88,12 @@ Save `checks.json`:
     "initial": "select name from accounts order by name",
     "report": "with totals as (select account, cast(sum(amount) as integer) as total from invoices group by account) select a.name, t.total from accounts a left join totals t on t.account = a.name order by a.name"
   },
+  "cases": {
+    "byAccount": {
+      "sql": "select account, amount from invoices where account = :account",
+      "params": { ":account": "A" }
+    }
+  },
   "assertions": {
     "accounts": "select count(*) = 2 from accounts",
     "amounts": "select sum(amount) = 12 from invoices"
@@ -99,8 +105,9 @@ Save `checks.json`:
 npx solarsql rehearse app.sqlite change.sql checks.json
 ```
 
-The report lists row counts before and after, checked query names, and passed assertion names.
+The report lists row counts before and after, checked query and case names, and passed assertion names.
 Rehearsal checks a disposable backup and leaves the source database unchanged.
+A case also executes with its named parameters, before and after the change, not only its result columns; see the complete `cases` contract in [the migration reference](migrations.md#rehearse-with-existing-data).
 A misspelled field such as `assertion` fails with `CHECKS_INVALID`.
 Choose assertions that express your data invariants; unchanged row counts alone cannot prove preserved meaning.
 
