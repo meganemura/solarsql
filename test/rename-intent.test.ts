@@ -36,6 +36,25 @@ test("a singleton rename repair is structured, shell-safe, and composes with an 
   }
 });
 
+test("a two-column rename candidate has no exact mapping and both orders remain candidates", () => {
+  const current = open(['create table "order.lines" (id integer primary key, "old.a" text, "old.b" text)']);
+  const target = open(['create table "order.lines" (id integer primary key, "new.a" text, "new.b" text)']);
+  try {
+    const blocked = diff(introspect(current), introspect(target));
+    assert.equal(blocked.kind, "blocked");
+    if (blocked.kind !== "blocked") return;
+    assert.equal(blocked.renames, undefined, "a two-column change must not offer an inferred mapping");
+    assert.equal(blocked.renameCandidates?.length, 1);
+    const candidate = blocked.renameCandidates![0]!;
+    assert.equal(candidate.table, "order.lines");
+    assert.deepEqual([...candidate.from].sort(), ["old.a", "old.b"]);
+    assert.deepEqual([...candidate.to].sort(), ["new.a", "new.b"]);
+  } finally {
+    current.close();
+    target.close();
+  }
+});
+
 test("rename declarations reject malformed, unused, duplicate, chained, conflicting, and missing mappings", () => {
   assert.throws(() => parseMigrationIntent('{"version":1,"drops":[],"renames":[{"table":"t","from":"a","to":"b","extra":true}]}'), /Invalid migration intent/);
   const current = open(["create table t (a text, b text, c text)"]);

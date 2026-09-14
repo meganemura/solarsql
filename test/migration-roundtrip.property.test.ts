@@ -96,17 +96,36 @@ const schemaGen = gs.composite((tc): Schema => {
   return { tables, indexes };
 });
 
-type Edit = "add" | "drop" | "retype" | "nullability" | "check" | "index" | "table" | "fk";
-const editGen = gs.sampledFrom<Edit>(["add", "drop", "retype", "nullability", "check", "index", "table", "fk"]);
+type Edit = "add" | "drop" | "retype" | "nullability" | "check" | "index" | "table" | "fk" | "rename";
+const editGen = gs.sampledFrom<Edit>(["add", "drop", "retype", "nullability", "check", "index", "table", "fk", "rename"]);
 
 // One edit on a copy of the schema. Edits that do not apply leave it unchanged.
-function apply(s: Schema, edit: Edit, pick: <T>(xs: T[]) => T, column: Column): Schema {
+// A rename also reports what it renamed, so the caller can track a surviving
+// column's name through a chain of edits and hand diff() an unambiguous
+// Rename instead of relying on its own repair suggestion.
+//
+// isOriginalName and isVacatedOriginal keep that tracking sound (found by
+// running the property below and reading renameIntentPlan's rejections):
+// a rename must never retarget an s1-original name (isOriginalName), or a
+// later rename could reuse a name freed earlier and produce a from/to chain
+// that renameIntentPlan rejects; an add must never reintroduce a name an
+// active rename chain still has vacated (isVacatedOriginal), or the caller
+// could not tell a fresh column from the tracked original.
+function apply(
+  s: Schema,
+  edit: Edit,
+  pick: <T>(xs: T[]) => T,
+  column: Column,
+  isOriginalName: (table: "a" | "b", name: string) => boolean,
+  isVacatedOriginal: (table: "a" | "b", name: string) => boolean,
+): { schema: Schema; renamed: { table: "a" | "b"; from: string; to: string } | null } {
   const tables = s.tables.map((t) => ({ ...t, columns: t.columns.map((c) => ({ ...c })) }));
   let indexes = s.indexes.map((i) => ({ ...i, columns: [...i.columns] }));
   const t = pick(tables);
+  let renamed: { table: "a" | "b"; from: string; to: string } | null = null;
   switch (edit) {
     case "add":
-      if (!t.columns.some((c) => c.name === column.name)) t.columns.push(column);
+      if (!t.columns.some((c) => c.name === column.name) && !isVacatedOriginal(t.name, column.name)) t.columns.push(column);
       break;
     case "drop":
       if (t.columns.length > 0) {
@@ -139,23 +158,39 @@ function apply(s: Schema, edit: Edit, pick: <T>(xs: T[]) => T, column: Column): 
     case "fk":
       if (t.name === "b") t.fkToA = !t.fkToA;
       break;
+    case "rename":
+      if (t.columns.length > 0) {
+        const c = pick(t.columns);
+        if (column.name !== c.name && !t.columns.some((x) => x.name === column.name) && !isOriginalName(t.name, column.name)) {
+          renamed = { table: t.name, from: c.name, to: column.name };
+          c.name = column.name;
+          // An index on the renamed column must follow it, or ddl(s2) will
+          // reference a column name that no longer exists.
+          indexes = indexes.map((i) => (i.table === t.name ? { ...i, columns: i.columns.map((n) => (n === renamed!.from ? renamed!.to : n)) } : i));
+        }
+      }
+      break;
   }
-  return { tables, indexes };
+  return { schema: { tables, indexes }, renamed };
 }
 
 // The generator must stop in two cases: a table both loses and gains a column
 // (a rename it cannot infer), or an existing table gains a NOT NULL column
 // with no default (rows would have no value). In this generator only the
 // foreign-key column a_id is NOT NULL without a default.
-function expectedBlock(s1: Schema, s2: Schema): boolean {
+function expectedBlock(s1: Schema, s2: Schema, renames: readonly { table: "a" | "b"; from: string; to: string }[] = []): boolean {
   for (const t2 of s2.tables) {
     const t1 = s1.tables.find((t) => t.name === t2.name);
     if (!t1) continue;
     const n1 = new Set([...(t1.fkToA ? ["a_id"] : []), ...t1.columns.map((c) => c.name)]);
     const n2 = new Set([...(t2.fkToA ? ["a_id"] : []), ...t2.columns.map((c) => c.name)]);
-    const removed = [...n1].some((n) => !n2.has(n));
-    const added = [...n2].some((n) => !n1.has(n));
-    if (removed && added) return true;
+    const tableRenames = renames.filter((r) => r.table === t2.name);
+    // A supplied rename explains away one removed and one added name; only
+    // a mismatch it does not explain is a genuine, still-ambiguous rename
+    // candidate (mirroring renameRepairPlan's own source-adjusted check).
+    const removed = [...n1].filter((n) => !n2.has(n) && !tableRenames.some((r) => r.from === n));
+    const added = [...n2].filter((n) => !n1.has(n) && !tableRenames.some((r) => r.to === n));
+    if (removed.length > 0 && added.length > 0) return true;
     if (!t1.fkToA && t2.fkToA) return true;
   }
   return false;
@@ -168,56 +203,139 @@ test("migration diff round-trips the declared schema", () => {
   hegel.test((tc) => {
     const s1 = tc.draw(schemaGen);
     let s2 = s1;
+    // Tracks each surviving column's original (s1-side) name through a
+    // chain of edits, so an unambiguous rename can be supplied to diff()
+    // directly instead of relying on its own repair suggestion -- the
+    // suggestion path already has dedicated coverage in the pinned "loses
+    // and gains a column" test below. Keyed by the s1-side original name,
+    // valued by the column's current name.
+    const originalNames = new Map(s1.tables.map((t) => [t.name, new Set(t.columns.map((c) => c.name))]));
+    const chains = new Map<"a" | "b", Map<string, string>>();
+    const isOriginalName = (table: "a" | "b", name: string) => originalNames.get(table)?.has(name) ?? false;
+    const isVacatedOriginal = (table: "a" | "b", name: string) => chains.get(table)?.has(name) ?? false;
     const edits = tc.draw(gs.integers({ minValue: 1, maxValue: 3 }));
     for (let i = 0; i < edits; i++) {
       const edit = tc.draw(editGen);
       const column = tc.draw(columnGen);
-      s2 = apply(s2, edit, (xs) => xs[tc.draw(gs.integers({ minValue: 0, maxValue: xs.length - 1 }))]!, column);
+      const { schema, renamed } = apply(s2, edit, (xs) => xs[tc.draw(gs.integers({ minValue: 0, maxValue: xs.length - 1 }))]!, column, isOriginalName, isVacatedOriginal);
+      s2 = schema;
+      if (renamed) {
+        const chain = chains.get(renamed.table) ?? new Map<string, string>();
+        // isOriginalName above guarantees a rename never retargets an s1
+        // name, so a column's current name is an s1 original only while
+        // untouched. `from` is therefore either that untouched original, or
+        // (multi-hop) the live current name of one already in this chain --
+        // never a fresh column that happens to reuse an s1 name.
+        const viaChain = [...chain].find(([, current]) => current === renamed.from)?.[0];
+        const original = viaChain ?? (isOriginalName(renamed.table, renamed.from) ? renamed.from : undefined);
+        if (original !== undefined) {
+          chain.delete(original);
+          if (original !== renamed.to) chain.set(original, renamed.to);
+        }
+        chains.set(renamed.table, chain);
+      }
+      // A later drop or table removal can retire a tracked rename: once its
+      // s1 identity is gone from the working schema, diff() has nothing
+      // left to rename away from.
+      for (const [table, chain] of chains) {
+        const survivor = s2.tables.find((x) => x.name === table);
+        if (!survivor) { chains.delete(table); continue; }
+        for (const [original, to] of chain) {
+          if (!survivor.columns.some((c) => c.name === to)) chain.delete(original);
+        }
+      }
     }
+    const appliedRenames = [...chains].flatMap(([table, chain]) => [...chain].map(([from, to]) => ({ table, from, to })));
 
     const current = open([...ddl(s1), ...rowsFor(s1)]);
     const target = open(ddl(s2));
     const currentSchema = introspect(current);
     const targetSchema = introspect(target);
-    let plan = diff(currentSchema, targetSchema);
+    let plan = diff(currentSchema, targetSchema, appliedRenames);
     // This property studies the SQL transformation. It supplies the exact
     // removal set after first proving that the public default blocks it.
-    if (plan.kind === "blocked" && plan.drops) plan = diff(currentSchema, targetSchema, [], plan.drops);
+    if (plan.kind === "blocked" && plan.drops) plan = diff(currentSchema, targetSchema, appliedRenames, plan.drops);
 
-    if (expectedBlock(s1, s2)) {
+    if (expectedBlock(s1, s2, appliedRenames)) {
       event("blocked");
-      assert.equal(plan.kind, "blocked", `expected a block for ${JSON.stringify({ s1, s2 })}`);
+      assert.equal(plan.kind, "blocked", `expected a block for ${JSON.stringify({ s1, s2, appliedRenames })}`);
       return;
     }
-    assert.equal(plan.kind, "ok", JSON.stringify({ s1, s2, plan }));
+    assert.equal(plan.kind, "ok", JSON.stringify({ s1, s2, appliedRenames, plan }));
     if (plan.kind !== "ok") return;
-    event(plan.statements.some((s) => s.includes("_solarsql_new_")) ? "rebuild" : plan.statements.length === 0 ? "no-op" : "alter-only");
+    const rebuilt = plan.statements.some((s) => s.includes("_solarsql_new_"));
+    event(rebuilt ? "rebuild" : plan.statements.length === 0 ? "no-op" : "alter-only");
+    if (appliedRenames.length > 0) event("renamed");
+    if (appliedRenames.length > 0 && rebuilt) event("renamed-rebuild");
 
     // Apply the rendered file the way wrangler does: split, one transaction.
     const file = render(1, "step", plan.statements).sql;
+    // Capture rowid identity per row before the migration, keyed by the
+    // stable text id, so a rebuild that also renames a column is proven to
+    // preserve row identity, not only the row count.
+    const before = new Map(s1.tables.map((t) => [t.name, current.prepare(`select id, rowid as rid from ${t.name} order by id`).all() as { id: string; rid: number }[]]));
     current.exec("begin");
     try {
       for (const s of splitStatements(file)) current.exec(s);
       current.exec("commit");
     } catch (e) {
       current.exec("rollback");
-      throw new Error(`apply failed: ${(e as Error).message}\n${file}\n${JSON.stringify({ s1, s2 })}`);
+      throw new Error(`apply failed: ${(e as Error).message}\n${file}\n${JSON.stringify({ s1, s2, appliedRenames })}`);
     }
 
     assert.deepEqual(shape(introspect(current)), shape(introspect(target)), `shape mismatch after\n${file}`);
     const again = diff(introspect(current), introspect(target));
     assert.deepEqual(again, { kind: "ok", statements: [] }, `second diff not empty after\n${file}`);
 
-    // Rows survive: two per table that existed before and still exists.
+    // Rows and rowids survive in every table that existed before and still exists.
     for (const t of s2.tables) {
-      if (!s1.tables.some((x) => x.name === t.name)) continue;
-      const n = (current.prepare(`select count(*) as n from ${t.name}`).get() as { n: number }).n;
-      assert.equal(n, 2, `rows lost in ${t.name}`);
+      const previous = before.get(t.name);
+      if (!previous) continue;
+      const after = current.prepare(`select id, rowid as rid from ${t.name} order by id`).all() as { id: string; rid: number }[];
+      assert.deepEqual(after, previous, `rows or rowids changed in ${t.name}`);
     }
   }, { testCases: 200 });
   console.log("property events:", JSON.stringify(Object.fromEntries(events)));
   assert.ok((events.get("rebuild") ?? 0) > 0, "no case exercised the rebuild path");
   assert.ok((events.get("alter-only") ?? 0) > 0, "no case exercised the cheap ALTER path");
+  assert.ok((events.get("renamed") ?? 0) > 0, "no case exercised a rename");
+  // A "renamed-rebuild" assertion here (a rename co-occurring with a
+  // same-table rebuild) was tried and measured across 29 solo runs: it hit
+  // zero once, so it is left out as flaky. The pinned case below covers the
+  // combination deterministically instead.
+});
+
+// tableStatements orders a rename ALTER ahead of a rebuild's copy on the
+// same table, so a rename survives even when the rebuild also runs. The
+// combination is real but rare under the fuzzer above (absent in 1 of 29
+// solo runs at its testCases count), so this pins it directly.
+test("a rename on a table that also needs a rebuild preserves rows and row identity", () => {
+  const current = open([
+    "create table t (id integer primary key, old_value text not null)",
+    "insert into t (old_value) values ('a'), ('b')",
+  ]);
+  const target = open([
+    "create table t (id integer primary key, new_value text not null check (new_value <> ''))",
+  ]);
+  try {
+    const rename = { table: "t", from: "old_value", to: "new_value" };
+    const blocked = diff(introspect(current), introspect(target));
+    assert.equal(blocked.kind, "blocked");
+    const plan = diff(introspect(current), introspect(target), [rename]);
+    assert.equal(plan.kind, "ok", plan.kind === "blocked" ? plan.reason : "");
+    if (plan.kind !== "ok") return;
+    assert.ok(plan.statements.some((s) => s.includes("_solarsql_new_")), "expected a rebuild, not a cheap ALTER");
+    const before = current.prepare("select id, rowid as rid, old_value from t order by id").all();
+    for (const statement of plan.statements) current.exec(statement);
+    assert.deepEqual(shape(introspect(current)), shape(introspect(target)));
+    const after = current.prepare("select id, rowid as rid, new_value from t order by id").all();
+    // node:sqlite rows have a null prototype; spread each into a plain
+    // object so deepEqual compares values, not the prototype.
+    assert.deepEqual(after.map((r) => ({ ...r })), before.map((r: any) => ({ id: r.id, rid: r.rid, new_value: r.old_value })));
+  } finally {
+    current.close();
+    target.close();
+  }
 });
 
 // The blocked path is rare under the generator, so one case pins it: a

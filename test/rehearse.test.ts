@@ -8,6 +8,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { rehearse, rehearseSnapshot } from '../src/build/rehearse.ts';
+import { diff, introspect, open } from '../src/build/migration.ts';
 
 test('rehearsal checks data and old queries without changing the source', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'solarsql-rehearsal-test-'));
@@ -126,6 +127,34 @@ test('a case catches a migration that keeps the result shape but breaks stored J
     assert.equal(asCase.ok, false);
     assert.equal(asCase.diagnostics[0]!.code, 'CASE_COMPATIBILITY_FAILED', JSON.stringify(asCase));
   } finally { db2.close(); }
+});
+
+// checks.cases has only ever run against hand-written SQL above. A case must
+// also fail this way against a real generated migration, one built by
+// diff()/render() from an actual column rename.
+test('a case naming a pre-rename column fails after a generated column rename', () => {
+  const scratchCurrent = open(['create table items (id integer primary key, name text not null) strict']);
+  const scratchTarget = open(['create table items (id integer primary key, full_name text not null) strict']);
+  let plan;
+  try {
+    plan = diff(introspect(scratchCurrent), introspect(scratchTarget), [{ table: 'items', from: 'name', to: 'full_name' }]);
+  } finally {
+    scratchCurrent.close();
+    scratchTarget.close();
+  }
+  assert.equal(plan.kind, 'ok', JSON.stringify(plan));
+  if (plan.kind !== 'ok') return;
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table items (id integer primary key, name text not null) strict; insert into items values (1, 'alice')");
+    const result = rehearseSnapshot(db, plan.statements.join(';\n'), {
+      cases: { byName: { sql: 'select name from items where id = :id', params: { ':id': 1 } } },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics[0]!.code, 'CASE_COMPATIBILITY_FAILED', JSON.stringify(result));
+  } finally {
+    db.close();
+  }
 });
 
 test('a case rejects a bare parameter name used with more than one prefix in the same SQL', () => {
