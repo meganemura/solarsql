@@ -757,31 +757,43 @@ export function definitions(sql: string): { columns: Map<string, string>; constr
 // --- migration files ----------------------------------------------------------
 
 // Statements of a file, split at top-level semicolons. A trigger body keeps
-// its semicolons: BEGIN starts it unless the next word makes it a
-// transaction statement, END closes it.
+// its semicolons: BEGIN starts it, and only its own closing END — not a
+// CASE expression's END, and not a bare "end" identifier — ends it.
 export function splitStatements(sql: string): string[] {
   const all = tokenize(sql);
   const out: string[] = [];
   let inTrigger = false;
-  let caseDepth = 0;
   let start = 0;
   // Only a CREATE TRIGGER statement has a BEGIN ... END body. A table named
   // `begin` or a BEGIN TRANSACTION statement must not open one.
   let createTrigger = false;
   let first: Token | null = null;
+  // The trigger body's own closing END is the only bare "end" token
+  // immediately preceded (ignoring whitespace and comments) by ";" at depth
+  // 0, or by the exact BEGIN token that opened this body. Comparing the
+  // opening BEGIN by identity, not by spelling, matters: SQLite allows a
+  // column alias without AS, so `select begin end from t` is valid SQL and
+  // puts an unrelated "begin"/"end" pair inside a trigger body. A CASE
+  // expression's own END, and any reference or column literally named end,
+  // is preceded by its own operand instead, so this precondition tells the
+  // two apart without tracking CASE nesting.
+  let prev: Token | null = null;
+  let triggerBegin: Token | null = null;
   for (let i = 0; i < all.length; i++) {
     const t = all[i]!;
     if (t.type === "ws" || t.type === "comment") continue;
     if (first === null) first = t;
     if (isKeyword(first, "create") && t.depth === 0 && isKeyword(t, "trigger")) createTrigger = true;
-    if (createTrigger && t.depth === 0 && isKeyword(t, "begin")) inTrigger = true;
-    // CASE closes with its own bare END, at the same depth as the trigger's
-    // own closing END (CASE opens no parenthesis); count nested CASE/END
-    // pairs so only the trigger's own END ends its body.
-    if (inTrigger && t.depth === 0 && isKeyword(t, "case")) caseDepth++;
-    if (t.depth === 0 && inTrigger && isKeyword(t, "end")) {
-      if (caseDepth > 0) caseDepth--;
-      else inTrigger = false;
+    if (createTrigger && !inTrigger && t.depth === 0 && isKeyword(t, "begin")) {
+      inTrigger = true;
+      triggerBegin = t;
+    }
+    if (
+      t.depth === 0 && inTrigger && isKeyword(t, "end") &&
+      prev !== null && (prev === triggerBegin || (prev.type === "punct" && prev.text === ";"))
+    ) {
+      inTrigger = false;
+      triggerBegin = null;
     }
     if (t.type === "punct" && t.text === ";" && t.depth === 0 && !inTrigger) {
       const text = stripComments(sql.slice(start, t.start)).trim();
@@ -789,8 +801,8 @@ export function splitStatements(sql: string): string[] {
       start = t.end;
       first = null;
       createTrigger = false;
-      caseDepth = 0;
     }
+    prev = t;
   }
   const rest = stripComments(sql.slice(start)).trim();
   if (rest.length > 0) out.push(rest);

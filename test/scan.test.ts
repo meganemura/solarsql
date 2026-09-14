@@ -103,6 +103,22 @@ describe("splitStatements", () => {
     const nested = "create trigger t_touch after update on t begin update t set x = case when new.y is null then case when new.z is null then 1 else 2 end else 3 end where id = new.id; end";
     assert.deepEqual(splitStatements(`${nested};`), [nested]);
   });
+
+  test("an unquoted end identifier inside a trigger body does not end it early", () => {
+    const setEnd = "create trigger t_touch after update on t begin update t set x = 1 where end = new.id; end";
+    assert.deepEqual(splitStatements(`${setEnd};`), [setEnd]);
+    const newEnd = "create trigger t_touch after update on t begin update t set x = new.end where id = new.id; end";
+    assert.deepEqual(splitStatements(`${newEnd};`), [newEnd]);
+    const caseAndEnd = "create trigger t_touch after update on t begin update t set x = case when new.y is null then 1 else 2 end, end = new.z where id = new.id; end";
+    assert.deepEqual(splitStatements(`${caseAndEnd};`), [caseAndEnd]);
+    const twoCases = "create trigger t_touch after update on t begin update t set x = case when new.y is null then 1 else 2 end, z = case when new.w is null then 3 else 4 end where id = new.id; end";
+    assert.deepEqual(splitStatements(`${twoCases};`), [twoCases]);
+  });
+
+  test("a begin-spelled column alias inside a trigger body does not end it early", () => {
+    const aliasedBegin = "create trigger t_touch after update on t begin select begin end from t; end";
+    assert.deepEqual(splitStatements(`${aliasedBegin};`), [aliasedBegin]);
+  });
 });
 
 describe("shapes", () => {
