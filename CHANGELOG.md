@@ -2,6 +2,13 @@
 
 The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0, a minor version may change the API; the entry says what changed.
 
+## Unreleased
+
+- Fixed: `solarsql migration` runs every check `solarsql build` runs, including the module-boundary check, before it writes a migration file (ADR 0096).
+- Fixed: a CHECK column narrows to its literal union when the predicate is `column IN (literal, ...) OR column IS NULL`, the same as `IN (...)` alone (ADR 0097).
+- Fixed: a generated union type drops a string or number literal member once the bare `string` or `number` type is already a member of the same union (ADR 0098).
+- Fixed: a parameter-validation error names the query or command that rejected the call, and what it declares (ADR 0088).
+
 ## 0.4.0 (2026-09-14)
 
 - Fixed: an assert predicate that evaluates to NULL, or to text SQLite cannot read as a number, now fails as a normal assert (`kind: "assert"`), not a constraint failure naming the internal guard table. The build also refuses a `returns` clause that calls `changes()`, the same as a misplaced `changes()` inside an assert (ADR 0095).
