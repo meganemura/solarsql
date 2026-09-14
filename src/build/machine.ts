@@ -8,6 +8,8 @@ import { join } from "node:path";
 
 const marker = "SOLARSQL_REPORT_CHANNEL";
 const worker = process.env[marker] === "ipc" && typeof process.send === "function";
+const reportProtocolMarker = "SOLARSQL_REPORT_PROTOCOL_TOKEN";
+const reportProtocolToken = worker ? process.env[reportProtocolMarker] : undefined;
 const humanMarker = "SOLARSQL_CLI_WORKER";
 const protocolMarker = "SOLARSQL_CLI_PROTOCOL_TOKEN";
 const protocol = "solarsql.direct-worker.v1";
@@ -19,6 +21,7 @@ const directOff = humanWorker ? process.off.bind(process) : undefined;
 const send = worker ? process.send!.bind(process) : undefined;
 // Imported programs can start another CLI; it must create its own report channel.
 if (worker) delete process.env[marker];
+if (worker) delete process.env[reportProtocolMarker];
 if (humanWorker) delete process.env[humanMarker];
 if (humanWorker) delete process.env[protocolMarker];
 
@@ -48,7 +51,7 @@ export async function announceMigrationLock(path: string): Promise<void> {
 
 export async function printReport(report: unknown): Promise<void> {
   if (send) {
-    await new Promise<void>((resolve, reject) => send({ report }, error => error ? reject(error) : resolve()));
+    await new Promise<void>((resolve, reject) => send({ protocol, token: reportProtocolToken, type: "report", report }, error => error ? reject(error) : resolve()));
   } else {
     await new Promise<void>((resolve, reject) => process.stdout.write(JSON.stringify(report) + "\n", error => error ? reject(error) : resolve()));
   }
@@ -127,8 +130,9 @@ export async function runHuman(cli: string, args: string[], timeoutMs: number): 
 }
 
 async function collectReport(cli: string, args: string[], options: ProcessOptions): Promise<{ code: number; report: unknown }> {
+  const reportToken = randomUUID();
   const child = fork(cli, args, {
-    env: { ...process.env, [marker]: "ipc", ...(options.temporaryRoot ? {
+    env: { ...process.env, [marker]: "ipc", [reportProtocolMarker]: reportToken, ...(options.temporaryRoot ? {
       TMPDIR: options.temporaryRoot, TMP: options.temporaryRoot, TEMP: options.temporaryRoot,
     } : {}) },
     // Both application streams retain their output on the diagnostic stream.
@@ -142,7 +146,15 @@ async function collectReport(cli: string, args: string[], options: ProcessOption
     // A blocked native call cannot cooperate with a JavaScript cancellation.
     child.kill("SIGKILL");
   }, options.timeoutMs);
-  child.on("message", message => reports.push((message as { report?: unknown })?.report));
+  // Only a message carrying this run's own protocol and token is a report;
+  // an unrelated process.send() call from imported project code must not
+  // be able to inflate reports.length and turn a successful build into a
+  // reported failure.
+  child.on("message", message => {
+    const value = message as { protocol?: unknown; token?: unknown; type?: unknown; report?: unknown };
+    if (value?.protocol !== protocol || value.token !== reportToken || value.type !== "report") return;
+    reports.push(value.report);
+  });
   child.on("error", error => { failure = error; });
   const [code, signal] = await new Promise<[number | null, NodeJS.Signals | null]>(resolve => {
     child.once("close", (code, signal) => resolve([code, signal]));

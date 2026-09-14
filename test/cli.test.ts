@@ -315,6 +315,18 @@ test('machine imports report exceptions and premature successful exits as failur
   }
 });
 
+test('an unrelated IPC message from imported project code does not corrupt a machine report', t => {
+  const f = fixture(t);
+  const path = join(f.dir, config);
+  writeFileSync(path, `if (typeof process.send === 'function') process.send({unrelated: true});\n` + readFileSync(path, 'utf8'));
+  for (const args of [['inspect'], ['build', '--json']]) {
+    const result = f.run(...args);
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.ok, true, JSON.stringify(report));
+  }
+});
+
 test('machine builds bound configuration imports before they run', t => {
   const f = fixture(t);
   const commands = [['inspect'], ['build', '--json']];
