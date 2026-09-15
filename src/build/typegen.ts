@@ -758,6 +758,21 @@ export class Typer {
     // null). outerOnly excludes those nested aliases, matching what
     // returningColumns already does for the same reason.
     const outerAliases = aliasMap(sql, true);
+    // The DML statement's own top-level clauses have no enclosing SELECT
+    // scope, so `context` is undefined and `scopedReference` (which reads
+    // outer-join nullability from `context.nullable`) never runs for them.
+    // `sourceContext`, called here the same detached way `nestedJsonType`
+    // already calls it on a scope-less SQL string, walks the statement's
+    // own FROM/JOIN syntax (an UPDATE ... FROM's join, or nothing for a
+    // plain UPDATE/DELETE, which leaves this set empty) to recover that
+    // same nullability for this fallback (ADR 0112 addendum). A leading
+    // WITH belongs to this same statement (parameterScopes never sees it,
+    // since it only walks SELECT tokens), so this alias's own CTE, if any,
+    // needs the same environment queryScope(sql, true) already builds for
+    // parameterContext's SELECT scopes below, or a real-table alias sharing
+    // a FROM/JOIN with a CTE alias (the CTE unresolved, `this.tables` has
+    // no entry for it) fails sourceContext with "unknown source".
+    let topLevelNullable: Set<string> | undefined;
     const ofRef = (alias: string | null, column: string): Resolved | null => {
       const resolved = context ? this.scopedReference({ alias, column }, context) : null;
       if (resolved) {
@@ -770,7 +785,21 @@ export class Typer {
       const scope = context === undefined ? outerAliases : aliases;
       const a = alias ?? this.aliasOfBareColumn(scope, column);
       const table = a === null ? null : scope.get(a) ?? null;
-      return table && this.tables.has(table) ? this.column(table, column, sql) : null;
+      if (!table || !this.tables.has(table)) return null;
+      const r = this.column(table, column, sql);
+      if (context !== undefined || a === null) return r;
+      if (topLevelNullable === undefined) {
+        const tokens = significant(tokenize(sql));
+        let environment = new Map<string, Binding>();
+        const first = tokens[0];
+        if (first && isKeyword(first, "with")) {
+          const end = tokens.find(next => next.start > first.start && next.depth < first.depth)?.start ?? sql.length;
+          const bindings = queryScope(sql.slice(first.start, end), true);
+          for (const cte of bindings.ctes) environment.set(sqliteName(cte.name), { ...cte, environment });
+        }
+        topLevelNullable = this.sourceContext(sql, environment, new Set(), note).context.nullable;
+      }
+      return topLevelNullable.has(sqliteName(a)) ? { ...r, nullable: true } : r;
     };
     for (const site of sites) {
       context = this.parameterContext(sql, site.offset ?? 0, note);

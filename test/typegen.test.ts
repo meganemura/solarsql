@@ -92,6 +92,45 @@ describe("Typer.analyze", () => {
     assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["note", "string | null"], ["id", "OrdersId"], ["status", '"draft" | "confirmed"']]);
   });
 
+  test("a DML statement's own top-level WHERE parameter compared to an UPDATE ... FROM join's null-producing column allows null", () => {
+    const a = t.analyze(
+      "update orders set note = :note from order_lines l left join order_lines l2 on l2.order_id = l.order_id where orders.id = l.order_id and l2.qty = :q",
+      "orders",
+    );
+    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["note", "string | null"], ["q", "number | null"]]);
+  });
+
+  test("the same UPDATE ... FROM join parameter allows null with IS as well as with =", () => {
+    const a = t.analyze(
+      "update orders set note = :note from order_lines l left join order_lines l2 on l2.order_id = l.order_id where orders.id = l.order_id and l2.qty is :q",
+      "orders",
+    );
+    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["note", "string | null"], ["q", "number | null"]]);
+  });
+
+  test("an UPDATE ... FROM join parameter compared to the join's guaranteed side stays non-null", () => {
+    const a = t.analyze(
+      "update orders set note = :note from order_lines l left join order_lines l2 on l2.order_id = l.order_id where orders.id = l.order_id and l.qty = :q",
+      "orders",
+    );
+    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["note", "string | null"], ["q", "number"]]);
+  });
+
+  test("an UPDATE with its own WITH clause resolves a real-table alias sharing a join with a CTE alias", () => {
+    // The SET clause keeps a literal, not a parameter: `updateTarget` (used
+    // only by the `set` parameter-site kind, not by this test's `ofRef`
+    // path) does not yet skip a leading WITH, a separate, pre-existing gap
+    // this test does not exercise or fix.
+    const a = t.analyze(
+      `with x as (select id, order_id, qty from order_lines)
+       update orders set note = 'unchanged'
+       from x left join order_lines l2 on l2.order_id = x.order_id
+       where orders.id = x.order_id and l2.qty = :q`,
+      "orders",
+    );
+    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["q", "number | null"]]);
+  });
+
   test("a JSON aggregation over an outer join with a filter", () => {
     const a = t.analyze(
       `select o.id, c.name as customer_name,
