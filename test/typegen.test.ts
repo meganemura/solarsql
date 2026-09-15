@@ -159,6 +159,21 @@ describe("Typer.analyze", () => {
     assert.deepEqual(types("select json_object('n', cast(count(*) as integer), 's', cast(sum(qty) as integer)) as o from order_lines"), ['{ "n": number; "s": number | null }']);
   });
 
+  test("a cast around a bare NOT NULL column reference on the outer side of a join stays nullable", () => {
+    const a = t.analyze("select cast(l.sku as text) as t from orders o left join order_lines l on l.order_id = o.id", "orders");
+    assert.deepEqual(a.columns, [{ name: "t", type: "string | null", json: false }]);
+  });
+
+  test("a cast around coalesce whose last argument is on the outer side of a join stays nullable", () => {
+    const a = t.analyze("select cast(coalesce(o.note, l.sku) as text) as t from orders o left join order_lines l on l.order_id = o.id", "orders");
+    assert.deepEqual(a.columns, [{ name: "t", type: "string | null", json: false }]);
+  });
+
+  test("a cast around ifnull whose last argument is on the outer side of a join stays nullable", () => {
+    const a = t.analyze("select cast(ifnull(o.note, l.sku) as text) as t from orders o left join order_lines l on l.order_id = o.id", "orders");
+    assert.deepEqual(a.columns, [{ name: "t", type: "string | null", json: false }]);
+  });
+
   test("one parameter at two sites: null only when every site allows it, and CASE lists union", () => {
     const a = t.analyze("select id from orders where id = :id or parent_id = :id", "orders");
     assert.deepEqual(a.params, [{ name: "id", type: "OrdersId", encode: false }]);
