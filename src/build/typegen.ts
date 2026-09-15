@@ -8,7 +8,7 @@
 import { queryScope, querySources, sqliteName, unionType, unionMembers, type Cte } from "./scope.ts";
 import { GUARD_TABLE } from "../runtime/plan.ts";
 import type { ColumnFact, Engine, OutputColumn, TableFact } from "./facts.ts";
-import { aliasMap, columnRef, findCall, isKeyword, leadingComment, namedParams, nonNullFilterAlias, paramSites, quoteIdent, returningClause, selectItems, significant, splitAtCommas, tokenize, unconditionalMatchAliases, unquote } from "./scan.ts";
+import { aliasMap, columnRef, findCall, isKeyword, leadingComment, namedParams, nonNullFilterAlias, paramSites, quoteIdent, returningClause, selectItems, significant, splitAtCommas, tokenize, type Token, unconditionalMatchAliases, unquote } from "./scan.ts";
 
 export class BuildError extends Error {
   readonly sql: string | undefined;
@@ -914,26 +914,36 @@ export function castNeverNull(expr: string, columnNullable: (ref: { alias: strin
   return ref !== null && columnNullable(ref) === false;
 }
 
+// The index of a statement's own verb: `0`, or — when the statement opens
+// with its own WITH clause — the index of the first depth-zero token past
+// the CTE list. A CTE's body sits inside parens, at depth one or deeper, so
+// the first depth-zero token after WITH is the statement's real verb, never
+// a token from inside a CTE.
+function statementVerbIndex(t: readonly Token[]): number {
+  if (!isKeyword(t[0], "with")) return t.length ? 0 : -1;
+  return t.findIndex((token) => token.depth === 0 && ["select", "values", "insert", "update", "delete", "replace"].some((verb) => isKeyword(token, verb)));
+}
+
 // The table an UPDATE changes, or the table an INSERT ... ON CONFLICT DO
 // UPDATE changes.
 function updateTarget(sql: string): string | null {
   const t = significant(tokenize(sql));
-  let i = 0;
-  if (isKeyword(t[0], "insert")) {
-    i = isKeyword(t[1], "or") ? 4 : 2;
-  } else if (isKeyword(t[0], "replace")) {
-    i = 2;
-  } else if (isKeyword(t[0], "update")) {
-    i = isKeyword(t[1], "or") ? 3 : 1;
+  const v = statementVerbIndex(t);
+  if (v < 0) return null;
+  let i = v;
+  if (isKeyword(t[v], "insert")) {
+    i = v + (isKeyword(t[v + 1], "or") ? 4 : 2);
+  } else if (isKeyword(t[v], "replace")) {
+    i = v + 2;
+  } else if (isKeyword(t[v], "update")) {
+    i = v + (isKeyword(t[v + 1], "or") ? 3 : 1);
   } else return null;
   return t[i]?.type === "ident" ? unquote(t[i]!.text) : null;
 }
 
 export function isSelect(sql: string): boolean {
   const tokens = significant(tokenize(sql));
-  const first = isKeyword(tokens[0], "with")
-    ? tokens.find((token) => token.depth === 0 && ["select", "values", "insert", "update", "delete", "replace"].some((verb) => isKeyword(token, verb)))
-    : tokens[0];
+  const first = tokens[statementVerbIndex(tokens)];
   return isKeyword(first, "select") || isKeyword(first, "values");
 }
 

@@ -3,6 +3,8 @@
 // shapes it refuses.
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
+import * as hegel from "@hegeldev/hegel";
+import * as gs from "@hegeldev/hegel/generators";
 import { Engine } from "../src/build/facts.ts";
 import { BuildError, Typer, brandName, type Brand } from "../src/build/typegen.ts";
 import { GUARD_DDL, assertStatement } from "../src/runtime/plan.ts";
@@ -117,10 +119,10 @@ describe("Typer.analyze", () => {
   });
 
   test("an UPDATE with its own WITH clause resolves a real-table alias sharing a join with a CTE alias", () => {
-    // The SET clause keeps a literal, not a parameter: `updateTarget` (used
-    // only by the `set` parameter-site kind, not by this test's `ofRef`
-    // path) does not yet skip a leading WITH, a separate, pre-existing gap
-    // this test does not exercise or fix.
+    // The SET clause keeps a literal, not a parameter: this test targets the
+    // `ofRef`/`sourceContext` path a WHERE parameter takes, not the `set`
+    // parameter-site kind `updateTarget` resolves; that path has its own
+    // coverage below.
     const a = t.analyze(
       `with x as (select id, order_id, qty from order_lines)
        update orders set note = 'unchanged'
@@ -431,6 +433,127 @@ describe("Typer.analyze", () => {
     // asserting the whole array would make this control fail for either
     // regression, not only the one it names.
     assert.equal(a.params.find((p) => p.name === "sku")?.type, "string");
+  });
+});
+
+// `updateTarget` names the table an UPDATE, or an INSERT/REPLACE ... ON
+// CONFLICT DO UPDATE, changes, so the `set` parameter-site kind can look up
+// the target column's declared type. A statement that opens with its own
+// WITH clause must resolve to the same table and the same SET parameter
+// type as the same statement without the WITH clause.
+describe("updateTarget follows a target table across the statement's own leading WITH clause", () => {
+  test("a WITH-prefixed UPDATE types its SET parameter from the target column, and its WHERE parameter is unaffected", () => {
+    const engine = new Engine([
+      "create table orders (id text primary key not null, customer_id text not null, note text) strict",
+    ]);
+    try {
+      const t = new Typer(engine, new Map());
+      const a = t.analyze("with x as (select id from orders) update orders set note = :note where id = :id", "m");
+      assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["note", "string | null"], ["id", "string"]]);
+    } finally { engine.close(); }
+  });
+
+  test("a WITH-prefixed UPDATE on a NOT NULL integer column types its SET parameter as number", () => {
+    const other = new Engine([
+      "create table orders (id text primary key not null, customer_id text not null, note text) strict",
+      "create table order_lines (id text primary key not null, order_id text not null, qty integer not null) strict",
+    ]);
+    try {
+      const t = new Typer(other, new Map());
+      const a = t.analyze("with x as (select id from orders) update order_lines set qty = :qty where id = :id", "m");
+      assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["qty", "number"], ["id", "string"]]);
+    } finally { other.close(); }
+  });
+
+  // Each pair holds a statement and the same statement with a leading WITH
+  // clause spliced in front: the WITH clause must never change the SET
+  // parameter's type, or the type of an unrelated INSERT-site parameter
+  // sharing the same statement.
+  const pairs: readonly (readonly [string, string])[] = [
+    [
+      "update orders set note = :note where id = :id",
+      "with x as (select id from orders) update orders set note = :note where id = :id",
+    ],
+    [
+      "update order_lines set qty = :qty where id = :id",
+      "with x as (select id from orders) update order_lines set qty = :qty where id = :id",
+    ],
+    [
+      "insert into orders (id, customer_id) values (:id, :cid) on conflict (id) do update set note = :note",
+      "with x as (select id from orders) insert into orders (id, customer_id) values (:id, :cid) on conflict (id) do update set note = :note",
+    ],
+    [
+      "update or ignore orders set note = :note where id = :id",
+      "with x as (select id from orders) update or ignore orders set note = :note where id = :id",
+    ],
+    [
+      "replace into orders (id, customer_id) values (:id, :cid) on conflict (id) do update set note = :note",
+      "with x as (select id from orders) replace into orders (id, customer_id) values (:id, :cid) on conflict (id) do update set note = :note",
+    ],
+    [
+      "insert or replace into orders (id, customer_id) values (:id, :cid) on conflict (id) do update set note = :note",
+      "with x as (select id from orders) insert or replace into orders (id, customer_id) values (:id, :cid) on conflict (id) do update set note = :note",
+    ],
+  ];
+
+  test("a leading WITH clause never changes an UPDATE's or an upsert's SET or INSERT parameter types, across the OR-modifier forms", () => {
+    const other = new Engine([
+      "create table orders (id text primary key not null, customer_id text not null, note text) strict",
+      "create table order_lines (id text primary key not null, order_id text not null, qty integer not null) strict",
+    ]);
+    try {
+      const t = new Typer(other, new Map());
+      hegel.test((tc) => {
+        const [bareSql, withSql] = tc.draw(gs.sampledFrom(pairs));
+        const bare = t.analyze(bareSql, "m").params.map((p) => [p.name, p.type]);
+        const withParams = t.analyze(withSql, "m").params.map((p) => [p.name, p.type]);
+        assert.deepEqual(withParams, bare);
+      });
+    } finally { other.close(); }
+  });
+
+  test("a WITH-prefixed insert ... on conflict do update types its SET parameter, matching the same statement without WITH", () => {
+    const other = new Engine([
+      "create table orders (id text primary key not null, customer_id text not null, note text) strict",
+    ]);
+    try {
+      const t = new Typer(other, new Map());
+      const a = t.analyze(pairs[2]![1], "m");
+      assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["id", "string"], ["cid", "string"], ["note", "string | null"]]);
+    } finally { other.close(); }
+  });
+
+  test("a WITH-prefixed UPDATE OR IGNORE types its SET parameter, matching the same statement without WITH", () => {
+    const other = new Engine([
+      "create table orders (id text primary key not null, customer_id text not null, note text) strict",
+    ]);
+    try {
+      const t = new Typer(other, new Map());
+      const a = t.analyze(pairs[3]![1], "m");
+      assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["note", "string | null"], ["id", "string"]]);
+    } finally { other.close(); }
+  });
+
+  test("a WITH-prefixed REPLACE INTO ... ON CONFLICT DO UPDATE types its SET parameter, matching the same statement without WITH", () => {
+    const other = new Engine([
+      "create table orders (id text primary key not null, customer_id text not null, note text) strict",
+    ]);
+    try {
+      const t = new Typer(other, new Map());
+      const a = t.analyze(pairs[4]![1], "m");
+      assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["id", "string"], ["cid", "string"], ["note", "string | null"]]);
+    } finally { other.close(); }
+  });
+
+  test("a WITH-prefixed INSERT OR REPLACE ... ON CONFLICT DO UPDATE types its SET parameter, matching the same statement without WITH", () => {
+    const other = new Engine([
+      "create table orders (id text primary key not null, customer_id text not null, note text) strict",
+    ]);
+    try {
+      const t = new Typer(other, new Map());
+      const a = t.analyze(pairs[5]![1], "m");
+      assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["id", "string"], ["cid", "string"], ["note", "string | null"]]);
+    } finally { other.close(); }
   });
 });
 
