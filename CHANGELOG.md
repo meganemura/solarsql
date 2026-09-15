@@ -24,7 +24,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 - Fixed: `rehearse` rejects a named or anonymous parameter in a `checks.assertions` entry, instead of silently binding it to `NULL` and letting the assertion's predicate pass regardless of the real data (ADR 0106).
 - Fixed: selecting a full-text search table's own match-operand column (the hidden column named after the table) now refuses, instead of typing an unrelated number as a non-null string (ADR 0103).
 - Fixed: a full-text search table's `rank` column types as non-null `number` when the query's WHERE clause requires a `MATCH` on that table in every row, instead of `number | null` unconditionally; a WHERE clause with a top-level `OR` keeps the nullable type (ADR 0104).
-- Fixed: `fullScans` names every table a reused alias could scan, instead of only the one table its first matching plan line names.
+- Fixed: `fullScans` names every table a reused alias could scan, instead of only the table the alias's last declaration names.
 - Fixed: `fullScans` no longer reports a false scan of a WITHOUT ROWID or INTEGER PRIMARY KEY table when that table's alias is reused by a genuine scan elsewhere in the same query.
 - Fixed: `durable.ts` compares a rebuild's recorded table name to the live schema case-insensitively at every lookup, so a case mismatch no longer causes a false refusal on columns or a missed refusal on indexes and triggers.
 
