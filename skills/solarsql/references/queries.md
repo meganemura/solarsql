@@ -96,7 +96,7 @@ An ordinary BLOB query returns `Uint8Array`; an explicit TEXT conversion inside 
 These clauses change the result values and order; they retain the inferred element type.
 SQLite validates combinations with FILTER and OVER.
 
-A `json_group_array` over the outer side of a `left join` needs `filter (where l.id is not null)`, or a parent with no children gets one null element. `coalesce(..., '[]')` gives the empty array.
+A `json_group_array` over the null-producing side of a `left join`, a `right join`, or a `full join` needs `filter (where l.id is not null)`, or a parent with no children gets one null element (ADR 0011, ADR 0111). `coalesce(..., '[]')` gives the empty array.
 Only an exact `filter (where alias.column is not null)` removes that alias's outer nullability from the generated array element type (ADR 0047).
 Other predicates retain conservative nullability; filtering one alias does not narrow another alias.
 

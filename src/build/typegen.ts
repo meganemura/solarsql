@@ -676,7 +676,10 @@ export class Typer {
     } catch (e) {
       throw new BuildError(`inside json: ${(e as Error).message}`, sql);
     }
-    const innerNullable = this.engine.nullableAliases(detached);
+    // The syntactic join walk (the same one a scoped SELECT uses) finds the
+    // nullable aliases; a standalone context, since the detached subquery
+    // carries no CTE or recursion state of its own.
+    const innerNullable = this.sourceContext(detached, new Map(), new Set(), note).context.nullable;
     const innerItem = selectItems(detached)![0]!;
     if (isArray) return this.jsonArrayType(detached, innerItem, innerAliases, innerNullable, note);
     // A subquery with no row is NULL.

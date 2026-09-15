@@ -560,6 +560,61 @@ describe("row type soundness", () => {
   });
 });
 
+// RETURNING reaches nestedJsonType's "detached" branch (no ScopeContext),
+// the one path ADR 0111 covers: before its fix, this branch resolved outer
+// joins with facts.ts's EXPLAIN-QUERY-PLAN-text nullableAliases(), which
+// recognizes only "LEFT-JOIN" and silently missed RIGHT and FULL. A plain
+// SELECT with the same nested shape already reached the correct refusal and
+// the correct nullable type through Typer.sourceContext's syntactic join
+// walk; these cases confirm RETURNING now agrees with it for all three join
+// kinds, including a parent row with no matching child row.
+describe("RETURNING + a nested one-to-many JSON value, across LEFT, RIGHT, and FULL joins (ADR 0111)", () => {
+  const engine = new Engine([
+    "create table parents (id text primary key not null) strict",
+    "create table children (id text primary key not null, parent_id text not null references parents(id), value text not null) strict",
+  ]);
+  // p1 has one child row; p2 is the orphan parent, with no child row.
+  engine.db.exec(`insert into parents values ('p1'), ('p2'); insert into children values ('c1', 'p1', 'v1')`);
+  const t = new Typer(engine, new Map());
+
+  // children sits on the nullable side of each join: the right side of
+  // LEFT, the left side of RIGHT, and either side of FULL.
+  const clauses: [string, string][] = [
+    ["left", "from parents p2 left join children c on c.parent_id = p2.id where p2.id = parents.id"],
+    ["right", "from children c right join parents p2 on c.parent_id = p2.id where p2.id = parents.id"],
+    ["full", "from children c full join parents p2 on c.parent_id = p2.id where p2.id = parents.id"],
+  ];
+
+  for (const [join, clause] of clauses) {
+    test(`${join} join: a filter-less json_group_array over the child alias is refused, the same as a plain SELECT already refuses it`, () => {
+      const sql = `update parents set id = id where id = 'p1'
+        returning id, json_object('lines', json((select json_group_array(json_object('value', c.value)) ${clause}))) as data`;
+      assert.throws(() => t.analyze(sql, "m"), (e: unknown) => e instanceof BuildError && /needs a filter/.test(e.message));
+    });
+
+    test(`${join} join: filtered, the generated type agrees with the real RETURNING output, for a parent with a child and an orphan parent`, () => {
+      const sqlTemplate = `update parents set id = id where id = :pid
+        returning id, json_object('lines', json((select json_group_array(json_object('value', c.value)) filter (where c.id is not null) ${clause}))) as data`;
+      const analysis = t.analyze(sqlTemplate, "m");
+      const dataColumn = analysis.columns.find((c) => c.name === "data")!;
+      // The filter removes the join's null placeholder row, so the element
+      // type carries no "| null": the same type the scoped SELECT path
+      // already gives an equivalent query (test above, around line 111).
+      assert.equal(dataColumn.type, '{ "lines": Array<{ "value": string }> }', join);
+      // fits()/verify() (test/scope.test.ts) understand a scalar union, not
+      // an Array<{...}> shape, so this checks the JSON array directly: parse
+      // the real row's JSON text and confirm every element carries a string
+      // value, never null, matching the type above.
+      for (const [pid, expected] of [["p1", [{ value: "v1" }]], ["p2", []]] as const) {
+        const row = engine.db.prepare(sqlTemplate.replace(":pid", `'${pid}'`)).get() as { data: string };
+        const parsed = JSON.parse(row.data) as { lines: { value: unknown }[] };
+        assert.deepEqual(parsed.lines, expected, `${join} join, parent ${pid}`);
+        for (const element of parsed.lines) assert.equal(typeof element.value, "string", `${join} join, parent ${pid}: an element the filter admits must carry a string value, never null`);
+      }
+    });
+  }
+});
+
 test("origin columns retain NULL from views, query scopes, scalar subqueries, and wildcard joins", () => {
   const engine = new Engine([
     "create table a(id integer primary key not null) strict",
