@@ -87,6 +87,7 @@ Shared SQL reports all its catalog locations.
 | `duplicate output column` | give each result column a distinct AS name |
 | `query scope does not match SQLite's output columns` | use explicit result columns for this unsupported projection |
 | `is an expression with no type` | wrap the expression in `cast(... as integer)`, `cast(... as real)`, `cast(... as text)`, or `cast(... as blob)` |
+| `is the match operand of` | use it in a `<table> match :param` condition, or as the first argument of `highlight(...)`, `snippet(...)`, or `bm25(...)`, instead of selecting it directly |
 | `json_group_array over the outer join alias` | add `filter (where <alias>.<column> is not null)` |
 | `inside json yields JSON text` | wrap the subquery in `json(...)` |
 | `inside json has no type` | use a column reference, a cast, or `json((select json_group_array(...)))` |
