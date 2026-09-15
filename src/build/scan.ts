@@ -418,11 +418,12 @@ export function cteNames(sql: string): Set<string> {
   return names;
 }
 
-// Alias to table name for every `FROM t [AS] a`, `JOIN t [AS] a`, and the
-// comma-separated entries of a FROM list, at any depth. A subquery or a
-// table-valued function maps its alias to null.
-export function aliasMap(sql: string, outerOnly = false): Map<string, string | null> {
-  const map = new Map<string, string | null>();
+// Walks every `FROM t [AS] a`, `JOIN t [AS] a`, and comma-separated FROM-list
+// entry, at any depth, calling `record` with the alias and its table (null
+// for a subquery or a table-valued function). Shared by aliasMap and
+// aliasCandidates so the two return shapes -- last-wins vs. every candidate
+// -- don't duplicate this walk.
+function walkAliases(sql: string, outerOnly: boolean, record: (alias: string, table: string | null) => void): void {
   const t = significant(tokenize(sql));
   const stop = new Set(["on", "where", "group", "order", "left", "right", "inner", "outer", "cross", "natural", "join", "using", "limit", "full", "union", "except", "intersect", "having", "window", "as", "set", "returning", "indexed", "not", "values"]);
   const endsFrom = new Set(["where", "group", "order", "limit", "having", "union", "except", "intersect", "returning", "set"]);
@@ -456,7 +457,7 @@ export function aliasMap(sql: string, outerOnly = false): Map<string, string | n
     } else if (t[j] && t[j]!.type === "ident" && !stop.has(t[j]!.text.toLowerCase())) {
       alias = unquote(t[j]!.text);
     }
-    if (alias !== null) map.set(alias, table);
+    if (alias !== null) record(alias, table);
   };
   for (let i = 0; i < t.length; i++) {
     const tok = t[i]!;
@@ -481,6 +482,34 @@ export function aliasMap(sql: string, outerOnly = false): Map<string, string | n
       openFrom.delete(tok.depth + 1);
     }
   }
+}
+
+// Alias to table name for every `FROM t [AS] a`, `JOIN t [AS] a`, and the
+// comma-separated entries of a FROM list, at any depth. A subquery or a
+// table-valued function maps its alias to null. A Map holds one value per
+// key, so a later declaration of the same alias overwrites an earlier one;
+// a caller that needs the declaration in a particular scope passes
+// outerOnly or runs this on that scope's own extracted text (ADR 0051). A
+// caller that cannot scope the text first wants aliasCandidates below.
+export function aliasMap(sql: string, outerOnly = false): Map<string, string | null> {
+  const map = new Map<string, string | null>();
+  walkAliases(sql, outerOnly, (alias, table) => map.set(alias, table));
+  return map;
+}
+
+// Alias to every table it was declared for, not just the last one: the
+// same alias text can be declared for two different tables at two
+// different points in one statement (an outer join's own alias and an
+// unrelated subquery's own alias can collide by accident), and aliasMap
+// can report only one of them. A table declared once for a real table and
+// once for a derived table still reports the table.
+export function aliasCandidates(sql: string, outerOnly = false): Map<string, Set<string | null>> {
+  const map = new Map<string, Set<string | null>>();
+  walkAliases(sql, outerOnly, (alias, table) => {
+    let set = map.get(alias);
+    if (!set) { set = new Set(); map.set(alias, set); }
+    set.add(table);
+  });
   return map;
 }
 

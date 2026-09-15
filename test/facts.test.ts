@@ -196,6 +196,74 @@ describe("Engine", () => {
     assert.deepEqual(scans, []);
   });
 
+  test("fullScans reports both tables when an outer join and an unrelated subquery reuse the same alias", () => {
+    const e = new Engine([
+      `create table orders (id text primary key not null, customer_id text not null)`,
+      `create table order_lines (id text primary key not null, order_id text not null, sku text not null)`,
+      `create table shipments (id text primary key not null, order_id text not null, carrier text not null)`,
+    ]);
+    // The LEFT JOIN's own "l" (order_lines) and the EXISTS subquery's own
+    // "l" (shipments) are unrelated declarations that happen to reuse the
+    // same alias text. Both are genuine full scans (neither table has a
+    // non-pk index), and both must be reported even though a last-wins
+    // alias map can resolve only one of the two SCAN plan lines correctly.
+    const scans = e.fullScans("select o.id from orders o left join order_lines l on l.order_id = o.id where o.id = :id and exists (select 1 from shipments l where l.order_id = o.id)");
+    assert.deepEqual([...scans].sort(), ["order_lines", "shipments"]);
+    // Distinct aliases for the same statement shape must still resolve
+    // each SCAN line to its own table, unaffected by the reuse handling.
+    const distinct = e.fullScans("select o.id from orders o left join order_lines l on l.order_id = o.id where o.id = :id and exists (select 1 from shipments s where s.order_id = o.id)");
+    assert.deepEqual([...distinct].sort(), ["order_lines", "shipments"]);
+  });
+
+  test("fullScans does not report a reused alias's indexed table when a different plan line resolves it by name", () => {
+    const e = new Engine([
+      `create table orders (id text primary key not null, customer_id text not null)`,
+      `create table order_lines (id text primary key not null, order_id text not null, sku text not null)`,
+      `create table shipments (id text primary key not null, order_id text not null, carrier text not null)`,
+    ]);
+    // The EXISTS subquery's own "l" searches shipments by its primary key
+    // (a real index, not a full scan): that SEARCH line names the index, so
+    // it resolves "l" to shipments there. Only the LEFT JOIN's own "l"
+    // (order_lines) is left unresolved, and only its SCAN line is a genuine
+    // full scan. Reporting shipments too would flag an already-indexed
+    // table as needing an index.
+    const scans = e.fullScans("select o.id from orders o left join order_lines l on l.order_id = o.id where o.id = :id and exists (select 1 from shipments l where l.id = :sid)");
+    assert.deepEqual(scans, ["order_lines"]);
+  });
+
+  test("fullScans resolves a three-way alias reuse down to the one unindexed table", () => {
+    const e = new Engine([
+      `create table orders (id text primary key not null, customer_id text not null)`,
+      `create table order_lines (id text primary key not null, order_id text not null, sku text not null)`,
+      `create table shipments (id text primary key not null, order_id text not null, carrier text not null)`,
+      `create table payments (id text primary key not null, amount integer not null)`,
+    ]);
+    // All three EXISTS subqueries reuse the alias "x". Two search their
+    // table by primary key (shipments, order_lines), naming the index that
+    // resolves each. The third scans payments by its amount column, which
+    // has no index, so it is the only genuine full scan.
+    const scans = e.fullScans(
+      "select o.id from orders o where o.id = :id " +
+      "and exists (select 1 from shipments x where x.id = :sid) " +
+      "and exists (select 1 from order_lines x where x.id = :lid) " +
+      "and exists (select 1 from payments x where x.amount = 5)",
+    );
+    assert.deepEqual(scans, ["payments"]);
+  });
+
+  test("fullScans still reports a table whose own alias reuse resolves entirely to itself", () => {
+    const e = new Engine([`create table orders (id text primary key not null, customer_id text not null)`]);
+    // Both declarations of "o" name orders, the only candidate. The outer
+    // query searches it by primary key (an indexed line); the EXISTS
+    // subquery scans it by customer_id (no index, a genuine full scan).
+    // Subtracting the indexed line's table from the candidate set would
+    // leave nothing to report for the real SCAN line, so the fix must fall
+    // back to the full (single-table) candidate set instead of reporting
+    // no table at all.
+    const scans = e.fullScans("select o.id from orders o where o.id = :id and exists (select 1 from orders o where o.customer_id = :c)");
+    assert.deepEqual(scans, ["orders"]);
+  });
+
   test("prepare rejects an unknown column with the engine's message", () => {
     assert.throws(() => engine.prepare("select nope from orders"), /no such column: nope/);
   });

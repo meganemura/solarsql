@@ -6,7 +6,7 @@
 // Boundary: nothing here reads SQL text beyond what scan.ts provides. Nothing
 // here produces TypeScript; typegen.ts does that from these facts.
 import { DatabaseSync, constants } from "node:sqlite";
-import { aliasMap, cteNames, definitions, isKeyword, quoteIdent, significant, tokenize, type Token, unquote } from "./scan.ts";
+import { aliasCandidates, cteNames, definitions, isKeyword, quoteIdent, significant, tokenize, type Token, unquote } from "./scan.ts";
 
 export type ColumnFact = {
   name: string;
@@ -154,16 +154,42 @@ export class Engine {
   // filter written as `(:p is null or col = :p)` disables the index, and
   // this is how the build tells the agent.
   fullScans(sql: string): string[] {
-    // The plan names the alias; the text maps it back to the table. A CTE
-    // reference or a derived table's alias is not a real table, and must
-    // not be reported as one.
-    const aliases = aliasMap(sql);
+    // The plan names the alias; the text maps it back to every table that
+    // alias could mean (aliasCandidates), because a reused alias's SCAN
+    // line names only one of them. Reporting every candidate unconditionally
+    // would flag an already-indexed table as a false positive whenever a
+    // *different* plan line resolves the same alias through a named index
+    // (see the index-resolution pass below); a CTE reference or a derived
+    // table's alias is not a real table either way, and must not be
+    // reported as one.
+    const aliases = aliasCandidates(sql);
     const ctes = cteNames(sql);
+    const rows = this.db.prepare(`explain query plan ${sql}`).all() as { detail: string }[];
+    const indexToTable = this.db.prepare(`select tbl_name from sqlite_schema where type = 'index' and name = ?`);
+
+    // For every SCAN or SEARCH line, the alias it names and, when the line
+    // also names a real index, the one table that index belongs to. An
+    // index name is unambiguous (sqlite_schema has at most one index per
+    // name), so this resolves the alias for that line's table without
+    // needing aliasCandidates at all. A line with no "USING ... INDEX"
+    // clause, or whose index is SQLite's own ephemeral "AUTOMATIC COVERING
+    // INDEX" (built at query time, never registered in sqlite_schema),
+    // resolves to null and contributes nothing below -- the fallback is to
+    // leave the ambiguous alias's candidates untouched, never to drop a
+    // genuine scan because one line's index couldn't be named.
+    const resolved = rows.map((r) => {
+      const alias = /^(?:SCAN|SEARCH)\s+(\S+)/.exec(r.detail)?.[1];
+      if (!alias) return { alias: "", table: null as string | null };
+      const index = /USING\s+(?:COVERING\s+)?INDEX\s+(\S+)/.exec(r.detail)?.[1];
+      const row = index ? (indexToTable.get(unquote(index)) as { tbl_name: string } | undefined) : undefined;
+      return { alias: unquote(alias), table: row?.tbl_name ?? null };
+    });
+
     const out: string[] = [];
-    for (const r of this.db.prepare(`explain query plan ${sql}`).all()) {
-      const detail = (r as { detail: string }).detail;
+    rows.forEach((r, i) => {
+      const detail = r.detail;
       // json_each is a parameter, and a scan of it is its only plan.
-      if (detail.includes("VIRTUAL TABLE")) continue;
+      if (detail.includes("VIRTUAL TABLE")) return;
       // A scan through an index, covering or not, still visits every row.
       // SQLite appends a trailing qualifier word to some SCAN lines --
       // "EXISTS" for a correlated subquery's scan, "LEFT-JOIN" for an outer
@@ -172,19 +198,43 @@ export class Engine {
       // alias or to that clause. Anchoring there is what silently dropped a
       // genuine full scan inside a LEFT JOIN or an EXISTS subquery.
       const m = /^SCAN\s+(\S+)(?:\s+USING\s+(?:COVERING\s+)?INDEX\s+\S+)?(?:\s+.+)?$/.exec(detail);
-      if (!m) continue;
+      if (!m) return;
       const alias = unquote(m[1]!);
-      if (ctes.has(alias)) continue;
+      if (ctes.has(alias)) return;
       // A synthetic scan like "SCAN 2 CONSTANT ROWS" (from a VALUES/CTE
       // construct) captures a candidate that is not a real alias. Relying on
       // aliases.has() rather than a whitelist of known trailing qualifiers
       // keeps this correct even if SQLite adds a qualifier this code does
       // not know about; a candidate not in the alias map is skipped instead
       // of reported as a table named after itself.
-      if (!aliases.has(alias)) continue;
-      const table = aliases.get(alias)!;
-      if (table && !out.includes(table)) out.push(table);
-    }
+      if (!aliases.has(alias)) return;
+      // Start from every table this alias could mean, then subtract the
+      // ones a *different* plan line already placed with a named index --
+      // that line's own USING INDEX clause proves the alias meant that
+      // table there, not this SCAN's table. The set is cloned per line
+      // (aliasCandidates shares one Set per alias) so that resolving one
+      // SCAN line never removes a candidate a sibling SCAN line still needs.
+      // "j !== i" excludes this line's own resolution: this SCAN can carry
+      // a USING INDEX clause too (an index walked for ORDER BY still scans
+      // every row), and that must not cancel the very table it reports.
+      const candidates = new Set(aliases.get(alias)!);
+      for (let j = 0; j < resolved.length; j++) {
+        if (j === i) continue;
+        const other = resolved[j]!;
+        if (other.alias === alias && other.table) candidates.delete(other.table);
+      }
+      // Every candidate can be subtracted -- the same alias, and the same
+      // single table, declared twice (an outer SEARCH and an inner EXISTS
+      // SCAN, say). Then this SCAN's own table was necessarily one of the
+      // ones "placed elsewhere", so subtracting was wrong for this line;
+      // restore the full set rather than silently report nothing.
+      if (![...candidates].some((table) => table !== null)) {
+        for (const table of aliases.get(alias)!) candidates.add(table);
+      }
+      for (const table of candidates) {
+        if (table && !out.includes(table)) out.push(table);
+      }
+    });
     return out;
   }
 
