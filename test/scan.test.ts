@@ -5,7 +5,7 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
-import { aliasMap, columnRef, created, definitions, leadingComment, namedParams, normalize, paramSites, selectItems, splitStatements, tokenize } from "../src/build/scan.ts";
+import { aliasMap, columnRef, created, definitions, leadingComment, namedParams, normalize, paramSites, quoteIdent, renamedColumn, selectItems, splitStatements, tokenize } from "../src/build/scan.ts";
 
 const ident = gs.fromRegex("[a-z_][a-z0-9_]{0,6}");
 const fragment = gs.composite((tc): string => {
@@ -132,6 +132,21 @@ describe("shapes", () => {
     assert.deepEqual(created("create unique index ix on t (a)"), { kind: "index", name: "ix" });
     assert.deepEqual(created("create trigger tr before insert on t begin select 1; end"), { kind: "trigger", name: "tr" });
     assert.equal(created("select 1"), null);
+  });
+
+  test("renamedColumn reads the table, source, and target of a column rename", () => {
+    hegel.test((tc) => {
+      const table = tc.draw(ident);
+      const from = tc.draw(ident);
+      const to = tc.draw(ident);
+      const withColumn = `alter table ${quoteIdent(table)} rename column ${quoteIdent(from)} to ${quoteIdent(to)}`;
+      assert.deepEqual(renamedColumn(withColumn), { table, from, to });
+      const shortForm = `alter table ${quoteIdent(table)} rename ${quoteIdent(from)} to ${quoteIdent(to)}`;
+      assert.deepEqual(renamedColumn(shortForm), { table, from, to });
+    });
+    assert.equal(renamedColumn("alter table t rename to newname"), null);
+    assert.equal(renamedColumn("alter table t add column x text"), null);
+    assert.equal(renamedColumn("create table t (id text)"), null);
   });
 
   test("selectItems splits the outer select list and reads aliases", () => {

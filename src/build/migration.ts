@@ -9,7 +9,7 @@
 // (CREATE VIRTUAL TABLE) has no ALTER: a change drops it and creates it
 // again, and its shadow tables are the engine's own.
 import { DatabaseSync } from "node:sqlite";
-import { created, definitions, isKeyword, normalize, parseRebuildRecords, quoteIdent, REBUILD_HEADER, splitStatements, tokenize, type RebuildRecord, type Token, unknownDeclaration } from "./scan.ts";
+import { created, definitions, isKeyword, normalize, parseRebuildRecords, quoteIdent, REBUILD_HEADER, renamedColumn, splitStatements, tokenize, type RebuildRecord, type Token, unknownDeclaration } from "./scan.ts";
 import { BuildError } from "./typegen.ts";
 
 export type Column = { name: string; type: string; notnull: boolean; dflt: string | null; pk: number; def: string; generated: boolean };
@@ -45,7 +45,7 @@ export function applied(files: readonly string[], names?: readonly string[]): Da
   // Which migration most recently (re-)introduced a given table's column,
   // so a refusal below can name it accurately even when the column was
   // dropped and later re-added.
-  const introducedBy = new Map<string, string>();
+  const introducedBy = new Map<string, { label: string; renamedFrom?: string }>();
   let schema = introspect(db);
   for (const [i, file] of files.entries()) {
     const label = names ? names[i]! : `migration file ${i + 1} of ${files.length}`;
@@ -64,9 +64,14 @@ export function applied(files: readonly string[], names?: readonly string[]): Da
       const action = `Delete ${label} and run \`solarsql migration\` again against the merged schema.`;
       const unknown = actual.columns.map((c) => c.name).find((n) => !recorded.has(n));
       if (unknown !== undefined) {
-        const addedBy = introducedBy.get(`${table} ${unknown}`) ?? "an earlier migration";
+        const addedBy = introducedBy.get(`${table} ${unknown}`);
+        const attribution = addedBy === undefined
+          ? "added by an earlier migration"
+          : addedBy.renamedFrom !== undefined
+          ? `renamed from ${quoteIdent(addedBy.renamedFrom)} by ${addedBy.label}`
+          : `added by ${addedBy.label}`;
         throw new BuildError(
-          `migration ${label} rebuilds table ${quoteIdent(table)} without knowledge of column ${quoteIdent(unknown)}, added by ${addedBy}. ` +
+          `migration ${label} rebuilds table ${quoteIdent(table)} without knowledge of column ${quoteIdent(unknown)}, ${attribution}. ` +
           `A database that replays ${label} loses ${quoteIdent(unknown)} and its data. ` +
           action,
           undefined,
@@ -139,7 +144,9 @@ export function applied(files: readonly string[], names?: readonly string[]): Da
     for (const [tableName, table] of schema.tables) {
       for (const column of table.columns) {
         const key = `${tableName} ${column.name}`;
-        if (!before.has(key)) introducedBy.set(key, label);
+        if (before.has(key)) continue;
+        const rename = statements.map(renamedColumn).find((r) => r?.table === tableName && r?.to === column.name);
+        introducedBy.set(key, rename ? { label, renamedFrom: rename.from } : { label });
       }
     }
   }

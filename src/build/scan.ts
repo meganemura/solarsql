@@ -241,6 +241,26 @@ export function created(sql: string): { kind: "table" | "index" | "trigger" | "v
   return { kind: kind as "table" | "index" | "trigger" | "view" | "virtual", name: unquote(name.text) };
 }
 
+// A column rename, distinguished from `ALTER TABLE ... RENAME TO
+// <table>` (which renames the table itself, not a column) by whether
+// "RENAME" is immediately followed by "TO" or by a column name.
+export function renamedColumn(sql: string): { table: string; from: string; to: string } | null {
+  const t = significant(tokenize(sql));
+  if (!isKeyword(t[0], "alter") || !isKeyword(t[1], "table")) return null;
+  const tableToken = t[2];
+  if (!tableToken || tableToken.type !== "ident") return null;
+  if (!isKeyword(t[3], "rename")) return null;
+  let i = 4;
+  if (isKeyword(t[i], "to")) return null;
+  if (isKeyword(t[i], "column")) i++;
+  const from = t[i];
+  if (!from || from.type !== "ident") return null;
+  if (!isKeyword(t[i + 1], "to")) return null;
+  const to = t[i + 2];
+  if (!to || to.type !== "ident") return null;
+  return { table: unquote(tableToken.text), from: unquote(from.text), to: unquote(to.text) };
+}
+
 // The name and the table of a CREATE INDEX statement, else null.
 export function indexTarget(sql: string): { name: string; table: string } | null {
   const t = significant(tokenize(sql));

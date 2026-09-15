@@ -64,6 +64,42 @@ test("a rebuild-refusal error names the file that most recently (re-)introduced 
   );
 });
 
+test("a rebuild-refusal error names a column renamed by RENAME COLUMN as renamed, not added", () => {
+  const base = "create table t (id text primary key not null, a text not null, y text not null) strict";
+  const baseDb = open([base]);
+
+  // 0002: an independent migration renames "a" to "b" with a plain RENAME
+  // COLUMN, no rebuild involved.
+  const targetRenamed = "create table t (id text primary key not null, b text not null, y text not null) strict";
+  const planRename = diff(introspect(baseDb), introspect(open([targetRenamed])), [{ table: "t", from: "a", to: "b" }]);
+  assert.equal(planRename.kind, "ok");
+  if (planRename.kind !== "ok") return;
+  const fileRename = render(2, "rename_a_to_b", planRename.statements, planRename.rebuilds ?? []);
+
+  // 0003: a concurrently generated, unrelated rebuild (dropping NOT NULL on
+  // "y"), generated against the pre-rename schema. Its RebuildRecord still
+  // names "a", not "b".
+  const targetYNullable = "create table t (id text primary key not null, a text not null, y text) strict";
+  const planY = diff(introspect(baseDb), introspect(open([targetYNullable])));
+  assert.equal(planY.kind, "ok");
+  if (planY.kind !== "ok") return;
+  const fileY = render(3, "y_nullable", planY.statements, planY.rebuilds ?? []);
+
+  assert.throws(
+    () => applied(
+      [base + ";", fileRename.sql, fileY.sql],
+      ["0001_base.sql", "0002_rename_a_to_b.sql", "0003_y_nullable.sql"],
+    ),
+    (e: unknown) => {
+      assert.ok(e instanceof BuildError, String(e));
+      assert.match(e.message, /rebuilds table "t" without knowledge of column "b", renamed from "a" by 0002_rename_a_to_b\.sql/);
+      assert.match(e.message, /A database that replays 0003_y_nullable\.sql loses "b" and its data\./);
+      assert.doesNotMatch(e.message, /added by 0002_rename_a_to_b\.sql/);
+      return true;
+    },
+  );
+});
+
 test("a rebuild that redeclares a concurrently added column under the same name refuses to replay, instead of nulling its value", () => {
   const base = "create table customers (id text primary key not null, email text not null, name text not null) strict";
   const targetA = "create table customers (id text primary key not null, email text, name text not null, fax text) strict"; // branch A rebuilds AND independently adds fax
