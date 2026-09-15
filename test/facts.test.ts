@@ -154,6 +154,48 @@ describe("Engine", () => {
     assert.deepEqual(scans, ["orders"]);
   });
 
+  test("fullScans reports a LEFT JOIN's null-producing side, whose SCAN line SQLite marks with a trailing LEFT-JOIN word", () => {
+    const e = new Engine([
+      `create table orders (id text primary key not null, customer_id text not null)`,
+      `create table order_lines (id text primary key not null, order_id text not null, sku text not null)`,
+    ]);
+    const scans = e.fullScans("select o.id, l.sku from orders o left join order_lines l on l.order_id = o.id where o.id = :id");
+    assert.ok(scans.includes("order_lines"));
+  });
+
+  test("fullScans reports an EXISTS correlated subquery's scan, whose SCAN line SQLite marks with a trailing EXISTS word", () => {
+    const e = new Engine([
+      `create table orders (id text primary key not null, customer_id text not null)`,
+      `create table shipments (id text primary key not null, order_id text not null, carrier text not null)`,
+    ]);
+    const scans = e.fullScans("select o.id from orders o where o.id = :id and exists (select 1 from shipments s where s.order_id = o.id)");
+    assert.ok(scans.includes("shipments"));
+  });
+
+  test("fullScans reports a LEFT JOIN scan that walks an index in ORDER BY order, whose SCAN line carries the trailing LEFT-JOIN word after the USING INDEX clause", () => {
+    const e = new Engine([
+      `create table orders (id text primary key not null, customer_id text not null)`,
+      `create table order_lines (id text primary key not null, order_id text not null, sku text not null)`,
+      `create index idx_sku on order_lines (sku)`,
+    ]);
+    const scans = e.fullScans("select o.id, l.sku from orders o left join order_lines l on l.order_id = o.id where o.id = :id order by l.sku");
+    assert.ok(scans.includes("order_lines"));
+  });
+
+  test("fullScans still reports a RIGHT JOIN's scanned side (its SCAN line carries no trailing qualifier)", () => {
+    const e = new Engine([
+      `create table orders (id text primary key not null, customer_id text not null)`,
+      `create table order_lines (id text primary key not null, order_id text not null, sku text not null)`,
+    ]);
+    const scans = e.fullScans("select o.id, l.sku from order_lines l right join orders o on l.order_id = o.id where o.id = :id");
+    assert.deepEqual(scans, ["order_lines"]);
+  });
+
+  test("fullScans still excludes a constant-row scan (\"SCAN 2 CONSTANT ROWS\"), whose candidate is not a real alias", () => {
+    const scans = engine.fullScans("with c(x) as (values (1),(2)) select x from c where x > 0");
+    assert.deepEqual(scans, []);
+  });
+
   test("prepare rejects an unknown column with the engine's message", () => {
     assert.throws(() => engine.prepare("select nope from orders"), /no such column: nope/);
   });

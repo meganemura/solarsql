@@ -165,11 +165,24 @@ export class Engine {
       // json_each is a parameter, and a scan of it is its only plan.
       if (detail.includes("VIRTUAL TABLE")) continue;
       // A scan through an index, covering or not, still visits every row.
-      const m = /^SCAN\s+(\S+)(?:\s+USING\s+(?:COVERING\s+)?INDEX\s+\S+)?$/.exec(detail);
+      // SQLite appends a trailing qualifier word to some SCAN lines --
+      // "EXISTS" for a correlated subquery's scan, "LEFT-JOIN" for an outer
+      // join's null-producing side, either bare or after the USING INDEX
+      // clause -- so the match must not anchor the end of the line to the
+      // alias or to that clause. Anchoring there is what silently dropped a
+      // genuine full scan inside a LEFT JOIN or an EXISTS subquery.
+      const m = /^SCAN\s+(\S+)(?:\s+USING\s+(?:COVERING\s+)?INDEX\s+\S+)?(?:\s+.+)?$/.exec(detail);
       if (!m) continue;
       const alias = unquote(m[1]!);
       if (ctes.has(alias)) continue;
-      const table = aliases.has(alias) ? aliases.get(alias)! : alias;
+      // A synthetic scan like "SCAN 2 CONSTANT ROWS" (from a VALUES/CTE
+      // construct) captures a candidate that is not a real alias. Relying on
+      // aliases.has() rather than a whitelist of known trailing qualifiers
+      // keeps this correct even if SQLite adds a qualifier this code does
+      // not know about; a candidate not in the alias map is skipped instead
+      // of reported as a table named after itself.
+      if (!aliases.has(alias)) continue;
+      const table = aliases.get(alias)!;
       if (table && !out.includes(table)) out.push(table);
     }
     return out;
