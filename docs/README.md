@@ -115,6 +115,8 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0100](adr/0100-returning-items-type-like-a-selects.md) | A DML statement's RETURNING items type by the same rules as a SELECT's |
 | [0101](adr/0101-a-rebuild-records-the-shape-it-saw.md) | A rebuild records the shape it saw, and replay refuses a stale one |
 | [0102](adr/0102-a-rebuild-records-the-constraints-indexes-and-triggers-it-saw.md) | A rebuild records the constraints, indexes, and triggers it saw |
+| [0103](adr/0103-a-full-text-search-tables-match-operand-column-refuses-to-be-selected.md) | A full-text search table's match-operand column refuses to be selected |
+| [0104](adr/0104-a-full-text-search-tables-rank-column-types-as-non-null-under-a-provable-match.md) | A full-text search table's rank column types as non-null under a provable MATCH |
 
 ## Measurements
 
