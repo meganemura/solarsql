@@ -264,6 +264,84 @@ describe("Engine", () => {
     assert.deepEqual(scans, ["orders"]);
   });
 
+  test("fullScans resolves a reused alias's INTEGER PRIMARY KEY point lookup to its one rowid-alias table", () => {
+    const e = new Engine([
+      `create table ipk (id integer primary key not null, tag text not null)`,
+      `create table shipments (id text primary key not null, order_id text not null, carrier text not null)`,
+    ]);
+    // "x" names ipk's own point lookup (SEARCH ... USING INTEGER PRIMARY
+    // KEY (rowid=?), no named index) and shipments' own unindexed scan on
+    // carrier. ipk is a true rowid alias, the only candidate with that
+    // access-path shape, so the point-lookup line resolves it and only the
+    // genuine scan on shipments is reported.
+    const scans = e.fullScans(
+      "select s.id from shipments s where s.order_id = :oid " +
+      "and exists (select 1 from ipk x where x.id = :xid) " +
+      "and exists (select 1 from shipments x where x.carrier = :c)",
+    );
+    assert.deepEqual(scans, ["shipments"]);
+  });
+
+  test("fullScans resolves a reused alias's WITHOUT ROWID primary-key search to its one table", () => {
+    const e = new Engine([
+      `create table wr (id text primary key not null, tag text not null) without rowid`,
+      `create table shipments (id text primary key not null, order_id text not null, carrier text not null)`,
+    ]);
+    // Same shape as above, but wr's point lookup is SEARCH ... USING
+    // PRIMARY KEY (id=?): WITHOUT ROWID has no rowid, so SQLite names no
+    // index for its own primary key either.
+    const scans = e.fullScans(
+      "select s.id from shipments s where s.order_id = :oid " +
+      "and exists (select 1 from wr x where x.id = :xid) " +
+      "and exists (select 1 from shipments x where x.carrier = :c)",
+    );
+    assert.deepEqual(scans, ["shipments"]);
+  });
+
+  test("fullScans does not treat an INTEGER PRIMARY KEY DESC table as a rowid alias", () => {
+    // DESC gives the column its own named sqlite_autoindex (origin 'pk'),
+    // so it is not a rowid alias: pk=1 and type=INTEGER alone would say
+    // otherwise, which is why the resolution reuses migration.ts's fuller
+    // rowidAlias condition instead of that shortcut. d's own search here is
+    // a genuine scan (on tag, not its primary key), while ipk's is a point
+    // lookup with no scan at all. A pk+type-only check would count d as a
+    // second rowid-alias candidate for ipk's line, leave it unresolved, and
+    // report both; the fuller condition excludes d, resolves ipk's line on
+    // its own, and reports only d's genuine scan.
+    const e = new Engine([
+      `create table ipk (id integer primary key not null, tag text not null)`,
+      `create table d (id integer primary key desc, tag text not null)`,
+      `create table orders (id text primary key not null, customer_id text not null)`,
+    ]);
+    const scans = e.fullScans(
+      "select o.id from orders o where o.id = :id " +
+      "and exists (select 1 from ipk x where x.id = :i) " +
+      "and exists (select 1 from d x where x.tag = :t)",
+    );
+    assert.deepEqual(scans, ["d"]);
+  });
+
+  test("fullScans still over-reports two rowid-alias candidates that share one alias and one shape (known limitation, left unresolved)", () => {
+    const e = new Engine([
+      `create table ipk1 (id integer primary key not null, tag text not null)`,
+      `create table ipk2 (id integer primary key not null, tag text not null)`,
+      `create table shipments (id text primary key not null, order_id text not null, carrier text not null)`,
+    ]);
+    // ipk1 and ipk2 are both true rowid aliases, so both match the shape
+    // filter for either point-lookup line: two matches, not one, leaves
+    // the resolution ambiguous by design. The genuine scan on shipments
+    // (also reusing "x") is still correctly reported -- the point of this
+    // test -- alongside the two false positives that ambiguity leaves in.
+    const scans = e.fullScans(
+      "select s.id from shipments s where s.order_id = :oid " +
+      "and exists (select 1 from ipk1 x where x.id = :i1) " +
+      "and exists (select 1 from ipk2 x where x.id = :i2) " +
+      "and exists (select 1 from shipments x where x.carrier = :c)",
+    );
+    assert.ok(scans.includes("shipments"), "the genuine scan must not be dropped");
+    assert.deepEqual([...scans].sort(), ["ipk1", "ipk2", "shipments"]);
+  });
+
   test("prepare rejects an unknown column with the engine's message", () => {
     assert.throws(() => engine.prepare("select nope from orders"), /no such column: nope/);
   });

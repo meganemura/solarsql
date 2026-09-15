@@ -167,22 +167,64 @@ export class Engine {
     const rows = this.db.prepare(`explain query plan ${sql}`).all() as { detail: string }[];
     const indexToTable = this.db.prepare(`select tbl_name from sqlite_schema where type = 'index' and name = ?`);
 
+    // A WITHOUT ROWID table's primary-key search, and a true rowid-alias
+    // table's INTEGER PRIMARY KEY search, name no index at all: SQLite has
+    // no sqlite_schema index object for either access path, so
+    // indexToTable above can never resolve them. Each access path is still
+    // shape-specific to the tables that have it, so it resolves an alias on
+    // its own when exactly one of the alias's candidates has that shape.
+    const tableListWr = this.db.prepare(`select wr from pragma_table_list where schema = 'main' and name = ?`);
+    const pkColumns = this.db.prepare(`select type from pragma_table_info(?) where pk > 0`);
+    const pkNamedIndex = this.db.prepare(`select 1 from pragma_index_list(?) where origin = 'pk'`);
+    const withoutRowid = (table: string): boolean => (tableListWr.get(table) as { wr: number } | undefined)?.wr === 1;
+    // The same condition migration.ts uses for its own rowidAlias field: a
+    // lone INTEGER primary-key column is not enough on its own, because
+    // `integer primary key desc` matches it too while still getting its own
+    // named sqlite_autoindex (and so already resolves through indexToTable).
+    // Only the absence of a pragma_index_list 'pk' entry rules that out.
+    const rowidAlias = (table: string): boolean => {
+      if (withoutRowid(table)) return false;
+      const pk = pkColumns.all(table) as { type: string }[];
+      if (pk.length !== 1 || pk[0]!.type.toUpperCase() !== "INTEGER") return false;
+      return !pkNamedIndex.get(table);
+    };
+
     // For every SCAN or SEARCH line, the alias it names and, when the line
-    // also names a real index, the one table that index belongs to. An
-    // index name is unambiguous (sqlite_schema has at most one index per
-    // name), so this resolves the alias for that line's table without
-    // needing aliasCandidates at all. A line with no "USING ... INDEX"
-    // clause, or whose index is SQLite's own ephemeral "AUTOMATIC COVERING
-    // INDEX" (built at query time, never registered in sqlite_schema),
-    // resolves to null and contributes nothing below -- the fallback is to
-    // leave the ambiguous alias's candidates untouched, never to drop a
-    // genuine scan because one line's index couldn't be named.
+    // resolves to one table, that table. An index name is unambiguous
+    // (sqlite_schema has at most one index per name), so a named "USING ...
+    // INDEX" clause resolves the alias for that line's table without
+    // needing aliasCandidates at all. Failing that, an unnamed
+    // "USING PRIMARY KEY" or "USING INTEGER PRIMARY KEY" line still
+    // resolves the alias when its own shape (withoutRowid or rowidAlias,
+    // respectively) matches exactly one candidate. Two or more matching
+    // candidates leaves this ambiguous on purpose: nothing here
+    // disambiguates between two WITHOUT ROWID (or two rowid-alias) tables
+    // sharing one alias, and the fallback below already covers that case by
+    // not subtracting. A line resolving to null contributes nothing below
+    // -- the fallback is to leave the ambiguous alias's candidates
+    // untouched, never to drop a genuine scan because one line's table
+    // couldn't be named.
     const resolved = rows.map((r) => {
       const alias = /^(?:SCAN|SEARCH)\s+(\S+)/.exec(r.detail)?.[1];
       if (!alias) return { alias: "", table: null as string | null };
+      const aliasName = unquote(alias);
       const index = /USING\s+(?:COVERING\s+)?INDEX\s+(\S+)/.exec(r.detail)?.[1];
-      const row = index ? (indexToTable.get(unquote(index)) as { tbl_name: string } | undefined) : undefined;
-      return { alias: unquote(alias), table: row?.tbl_name ?? null };
+      if (index) {
+        const row = indexToTable.get(unquote(index)) as { tbl_name: string } | undefined;
+        return { alias: aliasName, table: row?.tbl_name ?? null };
+      }
+      // A trailing qualifier word ("EXISTS", "LEFT-JOIN") can sit between
+      // the alias and "USING" on a SEARCH line too, so the match must not
+      // anchor "USING" right after the alias.
+      const candidates = [...(aliases.get(aliasName) ?? [])].filter((t): t is string => t !== null);
+      if (r.detail.startsWith("SEARCH ") && /\bUSING\s+PRIMARY\s+KEY\b/.test(r.detail)) {
+        const matches = candidates.filter(withoutRowid);
+        if (matches.length === 1) return { alias: aliasName, table: matches[0]! };
+      } else if (r.detail.startsWith("SEARCH ") && /\bUSING\s+INTEGER\s+PRIMARY\s+KEY\b/.test(r.detail)) {
+        const matches = candidates.filter(rowidAlias);
+        if (matches.length === 1) return { alias: aliasName, table: matches[0]! };
+      }
+      return { alias: aliasName, table: null };
     });
 
     const out: string[] = [];
