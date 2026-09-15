@@ -749,6 +749,15 @@ export class Typer {
     let encode = false;
     let nullable = false;
     const withNull = (r: Resolved) => (r.nullable ? `${note(r).type} | null` : note(r).type);
+    // A parameter site with no enclosing SELECT scope (context undefined)
+    // sits in the DML statement's own top-level clause: WHERE, SET, or an
+    // UPDATE ... FROM alias. `aliases` spans the whole statement text and
+    // also carries a nested subquery's own aliases (SET, EXISTS,
+    // RETURNING); a same-named column there makes an otherwise-unambiguous
+    // top-level bare reference look ambiguous (aliasOfBareColumn returns
+    // null). outerOnly excludes those nested aliases, matching what
+    // returningColumns already does for the same reason.
+    const outerAliases = aliasMap(sql, true);
     const ofRef = (alias: string | null, column: string): Resolved | null => {
       const resolved = context ? this.scopedReference({ alias, column }, context) : null;
       if (resolved) {
@@ -758,8 +767,9 @@ export class Typer {
         return { type, nullable, brand: null };
       }
       if (context && isSelect(sql)) return null;
-      const a = alias ?? this.aliasOfBareColumn(aliases, column);
-      const table = a === null ? null : aliases.get(a) ?? null;
+      const scope = context === undefined ? outerAliases : aliases;
+      const a = alias ?? this.aliasOfBareColumn(scope, column);
+      const table = a === null ? null : scope.get(a) ?? null;
       return table && this.tables.has(table) ? this.column(table, column, sql) : null;
     };
     for (const site of sites) {

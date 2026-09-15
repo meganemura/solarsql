@@ -347,6 +347,52 @@ describe("Typer.analyze", () => {
     assert.equal(dataColumn?.json, true);
     assert.equal(dataColumn?.type, '{ "id": OrdersId }');
   });
+
+  // The DML statement's own WHERE clause has no enclosing SELECT scope, so
+  // its bare column references used to fall back to a statement-wide alias
+  // map that also carried a nested subquery's own aliases. A same-named
+  // column there (order_lines also has "id") made an otherwise-unambiguous
+  // "id" look ambiguous, collapsing the parameter's type to SqlValue.
+  test("a top-level WHERE parameter is not confused by a nested SET-clause scalar subquery's own alias of the same column name", () => {
+    const a = t.analyze(
+      `update orders set note = (select l.sku from order_lines l where l.order_id = orders.id limit 1) where id = :id`,
+      "orders",
+    );
+    assert.deepEqual(a.params, [{ name: "id", type: "OrdersId", encode: false }]);
+  });
+
+  test("a top-level WHERE parameter is not confused by a nested EXISTS subquery's own alias of the same column name", () => {
+    const a = t.analyze(
+      `delete from orders where id = :id and exists (select 1 from order_lines l where l.order_id = orders.id)`,
+      "orders",
+    );
+    assert.deepEqual(a.params, [{ name: "id", type: "OrdersId", encode: false }]);
+  });
+
+  test("a top-level IN-list json_each parameter keeps its array type despite a nested RETURNING subquery's own alias of the same column name", () => {
+    const a = t.analyze(
+      `update orders set note = note where id in (select value from json_each(:ids))
+       returning id, json_object('lines', json((select json_group_array(json_object('sku', l.sku))
+         from order_lines l where l.order_id = orders.id))) as data`,
+      "orders",
+    );
+    assert.deepEqual(a.params, [{ name: "ids", type: "readonly OrdersId[]", encode: true }]);
+  });
+
+  // Control: a parameter inside a nested subquery's own WHERE clause has an
+  // enclosing SELECT scope (context is set) and must keep resolving through
+  // scopedReference, unaffected by the top-level fallback change above.
+  test("a parameter inside a nested subquery's own WHERE clause still resolves through that subquery's own scope", () => {
+    const a = t.analyze(
+      `delete from orders where id = :id and exists (select 1 from order_lines l where l.order_id = orders.id and l.sku = :sku)`,
+      "orders",
+    );
+    // Assert :sku alone: :id here also exercises this fix's own path (the
+    // statement collides on "id" the same way the tests above do), so
+    // asserting the whole array would make this control fail for either
+    // regression, not only the one it names.
+    assert.equal(a.params.find((p) => p.name === "sku")?.type, "string");
+  });
 });
 
 describe("a full-text search table's own match-operand column refuses to be selected", () => {
