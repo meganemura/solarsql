@@ -32,6 +32,7 @@ The build finds the type from where the parameter sits. One parameter may sit in
 | Where `:p` sits | Type |
 |---|---|
 | `where c = :p`, `c < :p`, `:p = c`, `c like :p`, `t match :p` | the type of the column `c` |
+| `where (c1, c2) = (:p1, :p2)`, or the same with the two sides swapped | the type of `c1`, `c2`, by position, not by side; `\| null` when the comparison reaches a LEFT, RIGHT, or FULL JOIN's null-producing side, the same as `c1 = :p1 and c2 = :p2` |
 | `insert into t (c) values (:p)`, or any later row of a multi-row `values (:p), (:p2), ...` | the type of `t.c` |
 | `update t set c = :p` | the type of `t.c` |
 | `update t set (c1, c2) = (:p1, :p2)` | the type of `t.c1`, `t.c2`, by position, not by declaration order |

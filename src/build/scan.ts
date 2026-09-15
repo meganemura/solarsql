@@ -524,7 +524,10 @@ export function returningClause(sql: string): string | null {
 }
 
 // Where a named parameter sits, for type inference:
-//   compare: `<column> <op> :p` or `:p <op> <column>`
+//   compare: `<column> <op> :p` or `:p <op> <column>`, or the row-value form
+//            `(<column>, ...) <op> (:p, ...)` (either side may hold the
+//            columns), each :p paired by position with the column at the
+//            same position
 //   set:     `set <column> = :p`, or the row-value form
 //            `set (<column>, ...) = (:p, ...)`, each :p paired by position
 //            with the column at the same position
@@ -552,6 +555,14 @@ export type ParamSite =
   | { kind: "other" };
 
 const compareOps = new Set(["=", "==", "<>", "!=", "<", ">", "<=", ">=", "like", "glob", "is", "match"]);
+
+// A keyword that can open a boolean expression: the token before a "("
+// candidate must be one of these (or "(", ",", or an operator -- anything
+// that is not a bare identifier) for that "(" to be considered the start of
+// a row-value tuple. Without this, `length(customer_id) = (:n)` would read
+// as a one-column tuple compared against `(:n)`, narrowing a parameter a
+// function call's argument list owns, not a comparison.
+const tupleOpeners = new Set(["where", "and", "or", "not", "on", "having", "when"]);
 
 export function paramSites(sql: string, locate = false): Map<string, (ParamSite & { offset?: number })[]> {
   const t = significant(tokenize(sql));
@@ -604,6 +615,33 @@ export function paramSites(sql: string, locate = false): Map<string, (ParamSite 
       }
       idx++;
     }
+  }
+  // (c1, c2) <op> (:p1, :p2), anywhere a boolean expression can appear
+  // (WHERE, ON, HAVING, a CASE WHEN), with the compared columns on either
+  // side: a row-value comparison. Unlike the SET form above, its two sides
+  // are not anchored to "columns on the left" -- SQLite accepts a column
+  // list or a value list in either position -- so each position is judged
+  // on its own, not by which side it came from. A site built here always
+  // takes the `compare` kind, carrying the resolved alias, so it goes
+  // through the same join-nullability-aware path (ofRef, in typegen.ts) a
+  // plain `<column> <op> :p` already does, instead of `set`'s plainer
+  // column lookup.
+  for (let i = 0; i < t.length; i++) {
+    if (t[i]!.text !== "(") continue;
+    const comparison = rowValueComparison(t, i);
+    if (!comparison) continue;
+    for (const pair of comparison.pairs) {
+      const leftRef = boundRef(t, pair.left);
+      const rightRef = boundRef(t, pair.right);
+      const leftParam = boundParam(t, pair.left);
+      const rightParam = boundParam(t, pair.right);
+      const ref = leftRef && rightParam ? leftRef : rightRef && leftParam ? rightRef : null;
+      const paramTok = leftRef && rightParam ? rightParam : rightRef && leftParam ? leftParam : null;
+      if (!ref || !paramTok) continue;
+      add(key(paramTok), { kind: "compare", alias: ref.alias, column: ref.column }, paramTok.start);
+      (paramTok as { handled?: boolean }).handled = true;
+    }
+    i = comparison.rhsClose;
   }
   // insert into T (c1, c2) values (v1, v2): map value position to column.
   let insertTable: string | null = null;
@@ -811,6 +849,65 @@ function rowValueAssignment(
     pairs.push({ column: t[col.start]!, value: values[pos]! });
   }
   return { rhsClose, pairs };
+}
+
+// The shape `(<left>, ...) <op> (<right>, ...)` starting at the "(" of
+// <left>, for any of the 12 `compareOps` (generalizing `rowValueAssignment`,
+// which only ever matches "="), else null. Three things must hold, checked
+// in order: the "(" is not a function call's own argument list (the token
+// before it is a boolean-expression-opening keyword, another "(", a comma,
+// or an operator -- never a bare identifier); what follows the matching ")"
+// is a comparison operator and then another "("; and neither side opens
+// with "with", "select", or "values" (a subquery's own top-level commas
+// belong to its select list or a row constructor, not a value list lined up
+// position-for-position against the other side, on whichever side it
+// appears -- a scalar subquery is legal on either side of a row-value
+// comparison). The two ranges at each position are returned raw: which one
+// is a column reference and which one is a parameter is a per-position
+// question the caller answers, since either side may hold the columns.
+function rowValueComparison(
+  t: readonly Token[],
+  lhsOpen: number,
+): { rhsClose: number; pairs: { left: { start: number; end: number }; right: { start: number; end: number } }[] } | null {
+  const prev = t[lhsOpen - 1];
+  if (prev && prev.type === "ident" && !tupleOpeners.has(prev.text.toLowerCase())) return null;
+  if (isKeyword(t[lhsOpen + 1], "with") || isKeyword(t[lhsOpen + 1], "select") || isKeyword(t[lhsOpen + 1], "values")) return null;
+  const depth = t[lhsOpen]!.depth;
+  let lhsClose = lhsOpen + 1;
+  while (lhsClose < t.length && !(t[lhsClose]!.depth === depth && t[lhsClose]!.text === ")")) lhsClose++;
+  if (lhsClose >= t.length) return null;
+  const op = t[lhsClose + 1];
+  if (!op || op.depth !== depth || !compareOps.has(op.text.toLowerCase())) return null;
+  const rhsOpen = lhsClose + 2;
+  if (t[rhsOpen]?.depth !== depth || t[rhsOpen]?.text !== "(") return null;
+  if (isKeyword(t[rhsOpen + 1], "with") || isKeyword(t[rhsOpen + 1], "select") || isKeyword(t[rhsOpen + 1], "values")) return null;
+  let rhsClose = rhsOpen + 1;
+  while (rhsClose < t.length && !(t[rhsClose]!.depth === depth && t[rhsClose]!.text === ")")) rhsClose++;
+  if (rhsClose >= t.length) return null;
+  const lefts = tokenRanges(t, lhsOpen + 1, lhsClose);
+  const rights = tokenRanges(t, rhsOpen + 1, rhsClose);
+  if (lefts.length === 0 || lefts.length !== rights.length) return null;
+  return { rhsClose, pairs: lefts.map((left, pos) => ({ left, right: rights[pos]! })) };
+}
+
+// A range that is a single bare column, or a single alias-qualified
+// `alias.column` reference -- the same two shapes refAt resolves for a
+// plain `<column> <op> :p` comparison, so a row-value position pairs with
+// the identical `ofRef` lookup in typegen.ts.
+function boundRef(t: readonly Token[], range: { start: number; end: number }): { alias: string | null; column: string } | null {
+  const width = range.end - range.start;
+  if (width === 1 && t[range.start]!.type === "ident") return { alias: null, column: unquote(t[range.start]!.text) };
+  if (width === 3 && t[range.start]!.type === "ident" && t[range.start + 1]!.text === "." && t[range.start + 2]!.type === "ident") {
+    return { alias: unquote(t[range.start]!.text), column: unquote(t[range.start + 2]!.text) };
+  }
+  return null;
+}
+
+// A range that is a single named parameter, not an anonymous "?" one (which
+// carries no key to type).
+function boundParam(t: readonly Token[], range: { start: number; end: number }): Token | null {
+  const tok = t[range.start]!;
+  return range.end - range.start === 1 && tok.type === "param" && !tok.text.startsWith("?") ? tok : null;
 }
 
 // Token-index ranges split at a token range's own top-level commas: the
