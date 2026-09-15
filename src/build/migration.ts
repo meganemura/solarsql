@@ -70,9 +70,49 @@ export function applied(files: readonly string[], names?: readonly string[]): Da
           : addedBy.renamedFrom !== undefined
           ? `renamed from ${quoteIdent(addedBy.renamedFrom)} by ${addedBy.label}`
           : `added by ${addedBy.label}`;
+        // Whether replaying this file actually drops `unknown`'s data
+        // depends on this file's own copy statement --
+        // `create table "_solarsql_copy_<table>" as select ... from
+        // <table>`, already present in `file`'s text -- and whether that
+        // statement resolves against the live schema `db` holds right
+        // now (the schema this file is about to replay onto). If it does
+        // not resolve, replay fails loudly at that statement, with a SQL
+        // error, and nothing is lost; if it does resolve, replay drops
+        // the column silently. db.prepare() is the oracle for this,
+        // instead of a manual comparison of the copy statement's
+        // captured names against the table's declared columns: the copy
+        // statement always captures a row identifier too (`"rowid" as
+        // "_solarsql_rowid"` on this project's default TEXT-primary-key
+        // tables, which have no rowid alias), and that capture is never
+        // one of the table's declared columns, so a name-list comparison
+        // would always misreport it as missing. db.prepare() resolves a
+        // rowid reference the way SQLite does, with no such blind spot.
+        //
+        // Boundary: applied() always runs on node:sqlite at build time,
+        // so this prepare()'s throw/no-throw result is trustworthy here.
+        // Whether the same file replays the same way on D1 or a Durable
+        // Object -- whose SQLite build may set the double-quoted-string
+        // fallback differently -- is a separate, unverified question;
+        // the message below promises only what this environment's
+        // prepare() confirmed.
+        const copyStatement = splitStatements(file).find((s) => {
+          const c = created(s);
+          return c !== null && c.kind === "table" && c.name === `_solarsql_copy_${table}`;
+        });
+        let copyFails = false;
+        if (copyStatement !== undefined) {
+          try {
+            db.prepare(copyStatement);
+          } catch {
+            copyFails = true;
+          }
+        }
+        const outcome = copyFails
+          ? `A database that replays ${label} fails to run its own copy statement for table ${quoteIdent(table)} with a SQL error, not a silent loss of ${quoteIdent(unknown)}. `
+          : `A database that replays ${label} loses ${quoteIdent(unknown)} and its data. `;
         throw new BuildError(
           `migration ${label} rebuilds table ${quoteIdent(table)} without knowledge of column ${quoteIdent(unknown)}, ${attribution}. ` +
-          `A database that replays ${label} loses ${quoteIdent(unknown)} and its data. ` +
+          outcome +
           action,
           undefined,
           action,

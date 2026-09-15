@@ -93,7 +93,11 @@ test("a rebuild-refusal error names a column renamed by RENAME COLUMN as renamed
     (e: unknown) => {
       assert.ok(e instanceof BuildError, String(e));
       assert.match(e.message, /rebuilds table "t" without knowledge of column "b", renamed from "a" by 0002_rename_a_to_b\.sql/);
-      assert.match(e.message, /A database that replays 0003_y_nullable\.sql loses "b" and its data\./);
+      // 0003's own copy statement still selects the pre-rename name "a",
+      // which the live table (already renamed to "b" by 0002) no longer
+      // has, so replay fails loudly instead of silently losing "b".
+      assert.match(e.message, /A database that replays 0003_y_nullable\.sql fails to run its own copy statement for table "t" with a SQL error, not a silent loss of "b"\./);
+      assert.doesNotMatch(e.message, /loses "b" and its data/);
       assert.doesNotMatch(e.message, /added by 0002_rename_a_to_b\.sql/);
       return true;
     },
@@ -612,4 +616,195 @@ test("regenerating a rebuild against the merged schema replays cleanly and keeps
   const replayedRow = replayed.prepare(`select sql from sqlite_schema where type = 'table' and name = 't'`).get() as { sql: string };
   assert.match(replayedRow.sql, /unique\s*\(\s*a\s*,\s*b\s*\)/i);
   assert.match(replayedRow.sql, /check\s*\(\s*a\s*\+\s*b\s*>\s*0\s*\)/i);
+});
+
+// The refusal message claimed, unconditionally, that replaying a stale
+// rebuild loses the unknown column and its data. That is only sometimes
+// true: it depends on whether the rebuild's own copy statement (already
+// present in the file's text) resolves against the live schema it would
+// replay onto. The four tests below pin that message against real rows,
+// for the four shapes that decide it.
+
+test("a rebuild-refusal message says replay fails at its own copy statement, not that it silently loses data, when that statement still selects a since-renamed column", () => {
+  const base = "create table t (id text primary key not null, a text not null, y text not null) strict";
+  const baseDb = open([base]);
+
+  // 0002: an independent migration renames "a" to "b".
+  const targetRenamed = "create table t (id text primary key not null, b text not null, y text not null) strict";
+  const planRename = diff(introspect(baseDb), introspect(open([targetRenamed])), [{ table: "t", from: "a", to: "b" }]);
+  assert.equal(planRename.kind, "ok");
+  if (planRename.kind !== "ok") return;
+  const fileRename = render(2, "rename_a_to_b", planRename.statements, planRename.rebuilds ?? []);
+
+  // 0003: a concurrently generated, unrelated rebuild (dropping NOT NULL
+  // on "y"), generated against the pre-rename schema. Its own copy
+  // statement still selects "a", the pre-rename name.
+  const targetYNullable = "create table t (id text primary key not null, a text not null, y text) strict";
+  const planY = diff(introspect(baseDb), introspect(open([targetYNullable])));
+  assert.equal(planY.kind, "ok");
+  if (planY.kind !== "ok") return;
+  const fileY = render(3, "y_nullable", planY.statements, planY.rebuilds ?? []);
+
+  const live = new DatabaseSync(":memory:");
+  live.exec(base);
+  live.exec(`insert into t (id, a, y) values ('r1', 'hello', 'world')`);
+  for (const s of splitStatements(fileRename.sql)) live.exec(s);
+  assert.deepEqual({ ...live.prepare("select * from t where id = 'r1'").get() }, { id: "r1", b: "hello", y: "world" });
+
+  assert.throws(
+    () => applied([base + ";", fileRename.sql, fileY.sql], ["0001_base.sql", "0002_rename_a_to_b.sql", "0003_y_nullable.sql"]),
+    (e: unknown) => {
+      assert.ok(e instanceof BuildError, String(e));
+      // 0003's own copy statement selects "a", the pre-rename name; the
+      // live table no longer has it (0002 renamed it to "b"), so replay
+      // fails loudly at that statement instead of silently losing "b".
+      assert.match(e.message, /A database that replays 0003_y_nullable\.sql fails to run its own copy statement for table "t" with a SQL error, not a silent loss of "b"\./);
+      assert.doesNotMatch(e.message, /loses "b" and its data/);
+      return true;
+    },
+  );
+
+  // The refusal is a build-time replay check on a fresh in-memory database,
+  // not an action on `live`; the row is untouched.
+  assert.deepEqual({ ...live.prepare("select * from t where id = 'r1'").get() }, { id: "r1", b: "hello", y: "world" });
+});
+
+test("a rebuild-refusal message keeps the \"loses ... and its data\" wording when the rebuild's own copy statement resolves cleanly, despite the live rename", () => {
+  const base = "create table t (id text primary key not null, a text not null, y text not null) strict";
+  const baseDb = open([base]);
+
+  // 0002: an independent migration renames "a" to "b".
+  const targetRenamed = "create table t (id text primary key not null, b text not null, y text not null) strict";
+  const planRename = diff(introspect(baseDb), introspect(open([targetRenamed])), [{ table: "t", from: "a", to: "b" }]);
+  assert.equal(planRename.kind, "ok");
+  if (planRename.kind !== "ok") return;
+  const fileRename = render(2, "rename_a_to_b", planRename.statements, planRename.rebuilds ?? []);
+
+  // 0003: an independently generated rebuild that drops "a" for its own,
+  // unrelated reason, and separately drops NOT NULL on "y" (forcing a
+  // rebuild, since SQLite has no ALTER for that). Its own copy statement
+  // never selects "a" or "b" at all.
+  const targetDropA = "create table t (id text primary key not null, y text) strict";
+  const planDropA = diff(introspect(baseDb), introspect(open([targetDropA])), [], [{ kind: "column", table: "t", column: "a" }]);
+  assert.equal(planDropA.kind, "ok");
+  if (planDropA.kind !== "ok") return;
+  const fileDropA = render(3, "drop_a_y_nullable", planDropA.statements, planDropA.rebuilds ?? []);
+
+  const live = new DatabaseSync(":memory:");
+  live.exec(base);
+  live.exec(`insert into t (id, a, y) values ('r1', 'hello', 'world')`);
+  for (const s of splitStatements(fileRename.sql)) live.exec(s);
+  assert.deepEqual({ ...live.prepare("select * from t where id = 'r1'").get() }, { id: "r1", b: "hello", y: "world" });
+
+  assert.throws(
+    () => applied([base + ";", fileRename.sql, fileDropA.sql], ["0001_base.sql", "0002_rename_a_to_b.sql", "0003_drop_a_y_nullable.sql"]),
+    (e: unknown) => {
+      assert.ok(e instanceof BuildError, String(e));
+      assert.match(e.message, /rebuilds table "t" without knowledge of column "b", renamed from "a" by 0002_rename_a_to_b\.sql/);
+      // 0003's own copy statement never selects "a" or "b"; it resolves
+      // cleanly against the live (renamed) table, so replaying it would
+      // actually drop "b" and its data -- the conservative wording stays.
+      assert.match(e.message, /A database that replays 0003_drop_a_y_nullable\.sql loses "b" and its data\./);
+      assert.doesNotMatch(e.message, /fails to run its own copy statement/);
+      return true;
+    },
+  );
+
+  assert.deepEqual({ ...live.prepare("select * from t where id = 'r1'").get() }, { id: "r1", b: "hello", y: "world" });
+});
+
+test("a rebuild-refusal message keeps the \"loses ... and its data\" wording for a plain new column added by an unrelated sibling, no rename involved", () => {
+  const base = "create table customers (id text primary key not null, email text not null, name text not null) strict";
+  const targetA = "create table customers (id text primary key not null, email text, name text not null) strict"; // branch A: drops NOT NULL on email, never heard of fax
+  const targetB = "create table customers (id text primary key not null, email text not null, name text not null, fax text) strict"; // branch B: adds fax
+
+  const currentDb = open([base]);
+  const planA = diff(introspect(currentDb), introspect(open([targetA])));
+  assert.equal(planA.kind, "ok");
+  if (planA.kind !== "ok") return;
+  const fileA = render(3, "email_nullable", planA.statements, planA.rebuilds ?? []);
+
+  const planB = diff(introspect(currentDb), introspect(open([targetB])));
+  assert.equal(planB.kind, "ok");
+  if (planB.kind !== "ok") return;
+  const fileB = render(2, "add_fax", planB.statements, planB.rebuilds ?? []);
+
+  const live = new DatabaseSync(":memory:");
+  live.exec(base);
+  live.exec(`insert into customers (id, email, name) values ('c1', 'a@b.com', 'Alice')`);
+  for (const s of splitStatements(fileB.sql)) live.exec(s);
+  live.exec(`update customers set fax = '555-1234' where id = 'c1'`);
+  assert.deepEqual({ ...live.prepare("select fax from customers where id='c1'").get() }, { fax: "555-1234" });
+
+  assert.throws(
+    () => applied([base + ";", fileB.sql, fileA.sql], ["0001_base.sql", "0002_add_fax.sql", "0003_email_nullable.sql"]),
+    (e: unknown) => {
+      assert.ok(e instanceof BuildError, String(e));
+      // 0003's own copy statement never mentions "fax" at all -- it
+      // never knew the column existed -- so it resolves cleanly against
+      // the live table; replaying 0003 would silently drop "fax" and
+      // its data.
+      assert.match(e.message, /A database that replays 0003_email_nullable\.sql loses "fax" and its data\./);
+      assert.doesNotMatch(e.message, /fails to run its own copy statement/);
+      return true;
+    },
+  );
+
+  assert.deepEqual({ ...live.prepare("select fax from customers where id='c1'").get() }, { fax: "555-1234" });
+});
+
+test("a rebuild-refusal message keeps the conservative wording when a same-named column, re-added with a different meaning after the rename, makes the stale rebuild's copy statement coincidentally resolve", () => {
+  const base = "create table t (id text primary key not null, a text not null, y text not null) strict";
+  const baseDb = open([base]);
+
+  // 0002: renames "a" to "b".
+  const targetRenamed = "create table t (id text primary key not null, b text not null, y text not null) strict";
+  const planRename = diff(introspect(baseDb), introspect(open([targetRenamed])), [{ table: "t", from: "a", to: "b" }]);
+  assert.equal(planRename.kind, "ok");
+  if (planRename.kind !== "ok") return;
+  const fileRename = render(2, "rename_a_to_b", planRename.statements, planRename.rebuilds ?? []);
+
+  // 0003: an unrelated migration re-introduces the name "a", for a new,
+  // unrelated purpose (an integer counter) -- unaware the name once
+  // belonged to the text column that 0002 renamed away.
+  const addA = "alter table t add column a integer not null default 0";
+
+  // 0004: a rebuild generated concurrently with 0002 and 0003, against the
+  // pre-rename schema, dropping NOT NULL on "y". Its recorded columns and
+  // its own copy statement still name the original, pre-rename "a".
+  const targetYNullable = "create table t (id text primary key not null, a text not null, y text) strict";
+  const planY = diff(introspect(baseDb), introspect(open([targetYNullable])));
+  assert.equal(planY.kind, "ok");
+  if (planY.kind !== "ok") return;
+  const fileY = render(4, "y_nullable", planY.statements, planY.rebuilds ?? []);
+
+  const live = new DatabaseSync(":memory:");
+  live.exec(base);
+  live.exec(`insert into t (id, a, y) values ('r1', 'hello', 'world')`);
+  for (const s of splitStatements(fileRename.sql)) live.exec(s);
+  live.exec(addA);
+  assert.deepEqual({ ...live.prepare("select * from t where id = 'r1'").get() }, { id: "r1", b: "hello", y: "world", a: 0 });
+
+  assert.throws(
+    () => applied(
+      [base + ";", fileRename.sql, addA + ";", fileY.sql],
+      ["0001_base.sql", "0002_rename_a_to_b.sql", "0003_readd_a.sql", "0004_y_nullable.sql"],
+    ),
+    (e: unknown) => {
+      assert.ok(e instanceof BuildError, String(e));
+      assert.match(e.message, /rebuilds table "t" without knowledge of column "b", renamed from "a" by 0002_rename_a_to_b\.sql/);
+      // 0004's own copy statement selects "a" by name. By the time it
+      // would replay, 0003 has already re-added a column under that same
+      // name (a different, unrelated integer column), so the statement
+      // resolves without a SQL error: prepare() cannot see that this is
+      // a different column than the one the stale rebuild meant. The
+      // conservative wording stays; whether the downstream insert
+      // actually loses data is left to the data, not decided here.
+      assert.match(e.message, /A database that replays 0004_y_nullable\.sql loses "b" and its data\./);
+      assert.doesNotMatch(e.message, /fails to run its own copy statement/);
+      return true;
+    },
+  );
+
+  assert.deepEqual({ ...live.prepare("select * from t where id = 'r1'").get() }, { id: "r1", b: "hello", y: "world", a: 0 });
 });
