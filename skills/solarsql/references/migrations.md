@@ -231,6 +231,20 @@ This is stronger than a query check: a case proves the statement still executes 
 A successful case is reported by name only; its SQL, parameters, and rows never appear in the result.
 A successful case does not prove that the returned values are equal before and after the migration, and it does not prove compatibility with a remote D1 database or Durable Object.
 
+| The message contains | Fix |
+|---|---|
+| `takes no parameters, but uses` | bind real values with a case instead |
+| `must be a finite number` | use a finite number |
+| `is a BigInt` | bind it as a string instead |
+| `is a BLOB` | bind it as a string instead |
+| `has unknown field` | use only `sql` and `params` |
+| `uses an anonymous parameter` | name every slot |
+| `more than one prefix` | use one prefix per bare parameter name |
+| `is missing parameter` | supply a value for every named slot the SQL uses |
+| `has unexpected parameter` | remove a param key the SQL does not use |
+| `is a boolean` | bind 0 or 1 instead |
+| `Result columns changed for case` | the case's result shape changed across the migration; treat this the same as a query check's shape mismatch |
+
 For a slow local snapshot, run `node spike/11-backup-lifecycle.ts` from a source checkout.
 It measures each backup phase, checks WAL rows and implicit row identities, and stops after 20 seconds (ADR 0063).
 

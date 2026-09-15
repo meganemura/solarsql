@@ -64,6 +64,12 @@ Use runtime narrowing for existing flexible values.
 An explicit SQL CAST changes SQLite conversion behavior and can give a narrower result type.
 The supported query shapes and named parameter rules in [queries](queries.md) also apply here.
 
+| The message contains | Fix |
+|---|---|
+| `must contain CREATE statements` | supply schema DDL without data or PRAGMAs |
+| `must be a JSON object of names and SQL strings` | supply the catalog as a plain object mapping each query name to a SQL string |
+| `is reserved. Choose another catalog name` | rename the query away from `kind`, `entries`, or `__proto__` |
+
 In DDL mode, the supplied DDL must describe your database.
 Database mode observes the source schema at analysis time; later changes require another invocation.
 This check proves a local contract, not production schema freshness or Cloudflare behavior.
