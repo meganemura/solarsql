@@ -117,7 +117,7 @@ explicit migration that preserves the required rows and foreign keys.
 | a rebuild referenced through ON DELETE CASCADE, SET NULL, SET DEFAULT, or RESTRICT | blocked; write an explicit migration that preserves related rows and foreign keys |
 | a changed view or trigger | `drop` then `create` |
 | any rebuild | every view is dropped first and created last, because a rename under a view fails |
-| a changed search table | `drop table` then `create virtual table`; the search rows start empty and come back through the triggers or a re-insert |
+| a changed search table | `drop table` then `create virtual table`; the search rows start empty, and only a later write brings a row back through the triggers (ADR 0034). A row already in the indexed table stays out of search until the migration also inserts it, for example `insert into order_search (order_id, note) select id, note from orders` |
 | a removed ordinary table or column | blocked until an exact destructive intent names it |
 | a removed ordinary table with a surviving child that has a non-`NO ACTION` delete action | blocked; write an explicit migration that preserves the child rows and foreign keys |
 | a removed or changed search table | `drop table` then `create virtual table` when needed |

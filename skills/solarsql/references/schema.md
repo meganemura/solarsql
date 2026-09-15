@@ -40,7 +40,7 @@ export const orderSearch = search(`create virtual table order_search using fts5(
 - An index is on a table of its module.
 - A trigger sits on a table or a view of its module, and its body touches the tables of that module only (an INSTEAD OF trigger sits on a view of the module).
 - A view is read by the queries of its module like a table. A view over another module's table needs `readsAll` on the module.
-- A search table is `create virtual table ... using fts5(...)`. The module owns it like a table. It has no ALTER: a change drops it and creates it again, and the rows come back through the triggers that fill it.
+- A search table is `create virtual table ... using fts5(...)`. The module owns it like a table. It has no ALTER: a change drops it and creates it again. Rows already in the indexed table at that point do not come back through the triggers, which fire only on a later write; the migration needs an explicit statement to repopulate them (ADR 0034).
 - The leading `--` lines of a statement are its documentation, and the build keeps them in the generated file.
 
 ## Types from the DDL
