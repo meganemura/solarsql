@@ -70,7 +70,7 @@ A BLOB cast returns `Uint8Array | null` unless the complete inner expression pro
 | a BLOB literal, such as `x'00ff'` or `X''` | `Uint8Array` |
 | an expression: `count(*)`, `sum(x)`, `a + b`, `bm25(t)`, a window function, a `case` | needs `cast(... as integer \| real \| text \| blob)`; the build refuses it without one |
 | `cast(expr as T)` | `T \| null` |
-| `cast(<shape> as T)` where the whole `<shape>` is `count(...)`, `total(...)`, `row_number()`, `rank()`, `dense_rank()`, `ntile(...)`, `exists (...)`, `not exists (...)`, `coalesce(x, <literal>)`, `coalesce(x, <not null column>)`, `ifnull(x, <literal>)`, or `ifnull(x, <not null column>)`, such as `cast(coalesce(b.n, 0) as integer)` | `T`, never null |
+| `cast(<shape> as T)` where the whole `<shape>` is `count(...)`, `total(...)`, `row_number()`, `rank()`, `dense_rank()`, `ntile(...)`, `exists (...)`, `not exists (...)`, `coalesce(x, <literal>)`, `coalesce(x, <not null column>)`, `ifnull(x, <literal>)`, `ifnull(x, <not null column>)`, or a NOT NULL column reference not on the outer side of a join (ADR 0105), such as `cast(coalesce(b.n, 0) as integer)` | `T`, never null |
 | `json_group_array(json_object('k', c, ...))` | `{ k: T; ... }[]`, parsed by the adapter |
 | `json_group_array(c)` | `T[]` |
 | `json_object('k', c, ...)` | `{ k: T; ... }` |
