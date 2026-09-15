@@ -206,6 +206,22 @@ describe("shapes", () => {
     assert.deepEqual(scalars.get("ids"), [{ kind: "json_each", keys: [], scalar: { table: "tags", column: "id" } }]);
   });
 
+  test("paramSites attributes every row of a multi-row VALUES insert to its column, not only the first row's", () => {
+    hegel.test((tc) => {
+      const columns = tc.draw(gs.arrays(ident, { minSize: 2, maxSize: 4, unique: true }));
+      const columnCount = columns.length;
+      const rowCount = tc.draw(gs.integers({ minValue: 1, maxValue: 5 }));
+      const rows = Array.from({ length: rowCount }, (_, row) => `(${columns.map((_, col) => `:p${row}_${col}`).join(", ")})`);
+      const sql = `insert into t (${columns.join(", ")}) values ${rows.join(", ")}`;
+      const sites = paramSites(sql);
+      for (let row = 0; row < rowCount; row++) {
+        for (let col = 0; col < columnCount; col++) {
+          assert.deepEqual(sites.get(`p${row}_${col}`), [{ kind: "insert", table: "t", column: columns[col] }]);
+        }
+      }
+    });
+  });
+
   test("definitions splits columns and constraints", () => {
     const d = definitions(`create table t ("id" text primary key not null, n integer check (n > 0), constraint u unique (n), foreign key (n) references o(id))`)!;
     assert.deepEqual([...d.columns], [["id", "id text primary key not null"], ["n", "n integer check(n > 0)"]]);

@@ -57,6 +57,36 @@ describe("Typer.analyze", () => {
     assert.deepEqual([...a.brands].sort(), ["CustomersId", "OrdersId"]);
   });
 
+  test("a multi-row VALUES insert types every row's parameters from the target columns", () => {
+    const a = t.analyze(
+      "insert into orders (id, customer_id, status) values (:id1, :cid1, :s1), (:id2, :cid2, :s2), (:id3, :cid3, :s3)",
+      "orders",
+    );
+    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [
+      ["id1", "OrdersId"], ["cid1", "CustomersId"], ["s1", '"draft" | "confirmed"'],
+      ["id2", "OrdersId"], ["cid2", "CustomersId"], ["s2", '"draft" | "confirmed"'],
+      ["id3", "OrdersId"], ["cid3", "CustomersId"], ["s3", '"draft" | "confirmed"'],
+    ]);
+  });
+
+  test("a multi-row VALUES insert with ON CONFLICT types every row's parameters, and leaves excluded.<column> untouched", () => {
+    const a = t.analyze(
+      "insert into orders (id, customer_id, status) values (:id1, :cid1, :s1), (:id2, :cid2, :s2) on conflict (id) do update set status = excluded.status",
+      "orders",
+    );
+    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [
+      ["id1", "OrdersId"], ["cid1", "CustomersId"], ["s1", '"draft" | "confirmed"'],
+      ["id2", "OrdersId"], ["cid2", "CustomersId"], ["s2", '"draft" | "confirmed"'],
+    ]);
+  });
+
+  test("a multi-row VALUES insert with a mismatched row width is refused with SQLite's own message", () => {
+    assert.throws(
+      () => t.analyze("insert into orders (id, customer_id, status) values (:id1, :cid1, :s1), (:id2, :cid2)", "orders"),
+      (e: unknown) => e instanceof BuildError && /all VALUES must have the same number of terms/.test(e.message),
+    );
+  });
+
   test("an update infers from SET and WHERE, nullable column allows null", () => {
     const a = t.analyze("update orders set note = :note where id = :id and status = :status", "orders");
     assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["note", "string | null"], ["id", "OrdersId"], ["status", '"draft" | "confirmed"']]);

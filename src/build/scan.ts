@@ -605,7 +605,10 @@ export function paramSites(sql: string, locate = false): Map<string, (ParamSite 
       continue;
     }
     if (valuesDepth !== -1 && tok.text === "," && tok.depth === valuesDepth) valueIndex++;
-    if (valuesDepth !== -1 && tok.text === ")" && tok.depth === valuesDepth - 1) valuesDepth = -1;
+    if (valuesDepth !== -1 && tok.text === ")" && tok.depth === valuesDepth - 1) {
+      if (t[i + 1]?.text === "," && t[i + 2]?.text === "(") valueIndex = 0;
+      else valuesDepth = -1;
+    }
     if (tok.type !== "param" || tok.text.startsWith("?") || (tok as { handled?: boolean }).handled) continue;
     const name = key(tok);
     const prev = t[i - 1];
