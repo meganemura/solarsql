@@ -120,6 +120,7 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0105](adr/0105-a-cast-around-a-bare-not-null-column-reference-is-not-null.md) | A CAST around a bare NOT NULL column reference is not null |
 | [0106](adr/0106-rehearse-refuses-a-parameter-inside-an-assertion.md) | rehearse refuses a parameter inside an assertion |
 | [0107](adr/0107-the-build-resolves-a-foreign-keys-target-against-its-own-schema.md) | The build resolves a foreign key's target against its own schema |
+| [0108](adr/0108-rehearsal-cases-execute-with-real-parameters.md) | Rehearsal cases execute with real parameters |
 
 ## Measurements
 

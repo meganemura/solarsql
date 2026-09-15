@@ -49,7 +49,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 - Fixed: a generated migration file is written to a temporary file and linked into place, so a killed write leaves no partial file at the final name.
 
-- Added: `checks.cases` in rehearsal executes named-parameter queries before and after a migration, catching failures that a column check alone misses. A top-level boolean parameter is rejected; SQLite bind values have none.
+- Added: `checks.cases` in rehearsal executes named-parameter queries before and after a migration, catching failures that a column check alone misses. A top-level boolean parameter is rejected; SQLite bind values have none (ADR 0108).
 
 - Added: `build`, `build --check`, and `migration` run the project configuration import in a worker with a time budget, superseding ADR 0089 for these commands (ADR 0092).
 
