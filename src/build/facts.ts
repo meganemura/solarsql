@@ -150,21 +150,6 @@ export class Engine {
     return { sql: row.sql.slice(as.end), columns: this.columns(`select * from ${quoteIdent(name)}`).map((column) => column.name) };
   }
 
-  // Aliases on the nullable side of a LEFT JOIN, from EXPLAIN QUERY PLAN's
-  // "LEFT-JOIN" text. The engine drops the mark when a WHERE clause excludes
-  // NULL, which is more precise than the text. RIGHT and FULL joins produce
-  // their own plan node ("RIGHT-JOIN"), which this regex does not match; the
-  // type generator's syntactic join walk (Typer.sourceContext, which reads
-  // all three join kinds from the SQL text itself) covers those instead.
-  nullableAliases(sql: string): Set<string> {
-    const out = new Set<string>();
-    for (const r of this.db.prepare(`explain query plan ${sql}`).all()) {
-      const m = /^(?:SCAN|SEARCH)\s+(\S+)\b.*\bLEFT-JOIN\b/.exec((r as { detail: string }).detail);
-      if (m) out.add(unquote(m[1]!));
-    }
-    return out;
-  }
-
   // Tables the plan reads in full (`SCAN t`), by table name. An optional
   // filter written as `(:p is null or col = :p)` disables the index, and
   // this is how the build tells the agent.

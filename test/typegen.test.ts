@@ -683,12 +683,12 @@ describe("row type soundness", () => {
 
 // RETURNING reaches nestedJsonType's "detached" branch (no ScopeContext),
 // the one path ADR 0111 covers: before its fix, this branch resolved outer
-// joins with facts.ts's EXPLAIN-QUERY-PLAN-text nullableAliases(), which
-// recognizes only "LEFT-JOIN" and silently missed RIGHT and FULL. A plain
-// SELECT with the same nested shape already reached the correct refusal and
-// the correct nullable type through Typer.sourceContext's syntactic join
-// walk; these cases confirm RETURNING now agrees with it for all three join
-// kinds, including a parent row with no matching child row.
+// joins by matching EXPLAIN QUERY PLAN's text for "LEFT-JOIN" alone, so it
+// silently missed RIGHT and FULL. A plain SELECT with the same nested shape
+// already reached the correct refusal and the correct nullable type through
+// Typer.sourceContext's syntactic join walk; these cases confirm RETURNING
+// now agrees with it for all three join kinds, including a parent row with
+// no matching child row.
 describe("RETURNING + a nested one-to-many JSON value, across LEFT, RIGHT, and FULL joins (ADR 0111)", () => {
   const engine = new Engine([
     "create table parents (id text primary key not null) strict",

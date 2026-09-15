@@ -116,13 +116,6 @@ describe("Engine", () => {
     ]);
   });
 
-  test("nullableAliases: the LEFT-JOIN mark, dropped when WHERE excludes null", () => {
-    assert.deepEqual([...engine.nullableAliases("select o.id, p.status from orders o left join order_lines l on l.order_id = o.id left join orders p on p.id = o.parent_id")], ["l", "p"]);
-    // The engine drops a LEFT JOIN that no column uses, so the alias is absent.
-    assert.deepEqual([...engine.nullableAliases("select o.id from orders o left join order_lines l on l.order_id = o.id left join orders p on p.id = o.parent_id")], ["l"]);
-    assert.deepEqual([...engine.nullableAliases("select o.id from orders o left join order_lines l on l.order_id = o.id where l.qty > 0")], []);
-  });
-
   test("affinities: only a column reference or a CAST has a type", () => {
     const a = engine.affinities("select o.id, count(*) as n, cast(count(*) as integer) as m, cast(sum(l.price) as real) as total, o.status || '!' as s from orders o left join order_lines l on l.order_id = o.id group by o.id");
     assert.deepEqual([...a], [["id", "TEXT"], ["n", ""], ["m", "INT"], ["total", "REAL"], ["s", ""]]);
