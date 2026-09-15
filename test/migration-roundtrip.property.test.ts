@@ -308,11 +308,16 @@ test("migration diff round-trips the declared schema", () => {
   console.log("property events:", JSON.stringify(Object.fromEntries(events)));
   assert.ok((events.get("rebuild") ?? 0) > 0, "no case exercised the rebuild path");
   assert.ok((events.get("alter-only") ?? 0) > 0, "no case exercised the cheap ALTER path");
-  assert.ok((events.get("renamed") ?? 0) > 0, "no case exercised a rename");
   // A "renamed-rebuild" assertion here (a rename co-occurring with a
   // same-table rebuild) was tried and measured across 29 solo runs: it hit
   // zero once, so it is left out as flaky. The pinned case below covers the
   // combination deterministically instead.
+  //
+  // The "renamed" assertion above was removed for the same reason: 20 solo
+  // runs at this testCases count put its count anywhere from 2 to 33, an
+  // overdispersed distribution whose tail can reach zero. The pinned case
+  // below exercises a rename directly (and also covers it co-occurring with
+  // a rebuild), so it stands in as the deterministic coverage.
 });
 
 // tableStatements orders a rename ALTER ahead of a rebuild's copy on the
