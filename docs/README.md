@@ -122,6 +122,7 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0107](adr/0107-the-build-resolves-a-foreign-keys-target-against-its-own-schema.md) | The build resolves a foreign key's target against its own schema |
 | [0108](adr/0108-rehearsal-cases-execute-with-real-parameters.md) | Rehearsal cases execute with real parameters |
 | [0109](adr/0109-the-worker-report-channel-requires-a-protocol-and-a-token.md) | The worker report channel requires a protocol and a token |
+| [0110](adr/0110-a-write-plan-items-returning-clause-is-refused.md) | A write plan item's RETURNING clause is refused |
 
 ## Measurements
 

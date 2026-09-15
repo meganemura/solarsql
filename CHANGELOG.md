@@ -35,7 +35,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 - Added: the build refuses a foreign key whose target table or column the schema does not declare (ADR 0107).
 
-- Added: the build refuses a write plan item (`insert`, `update`, `delete`, or `replace`) with a `RETURNING` clause, which the adapter discards at run time; move the read into the command's `returns` field instead.
+- Added: the build refuses a write plan item (`insert`, `update`, `delete`, or `replace`) with a `RETURNING` clause, which the adapter discards at run time; move the read into the command's `returns` field instead (ADR 0110).
 
 - Fixed: a command with an assert deletes the guard table's rows once its plan and `returns` clause finish, so the table returns to zero rows between commands. A command's `rows_written` on D1 now includes this cleanup delete (ADR 0093).
 
