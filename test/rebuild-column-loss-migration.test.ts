@@ -808,3 +808,68 @@ test("a rebuild-refusal message keeps the conservative wording when a same-named
 
   assert.deepEqual({ ...live.prepare("select * from t where id = 'r1'").get() }, { id: "r1", b: "hello", y: "world", a: 0 });
 });
+
+// A RebuildRecord's own recorded table name and the live table's actual
+// name are the same SQLite identifier even when their case differs; the
+// generator always keeps them in sync, so the two tests below hand-edit a
+// generated file's header to construct the mismatch (a hand-edited or
+// corrupted file is the only way it arises).
+
+test("a Durable Object's runtime migrate() does not falsely refuse a rebuild whose RebuildRecord names its table in a different case than the live table, when nothing about the table actually changed", () => {
+  const base = "create table t (id text primary key not null, a text not null) strict";
+  const target = "create table t (id text primary key not null, a text) strict"; // drops NOT NULL on a
+  const current = open([base]);
+  const plan = diff(introspect(current), introspect(open([target])));
+  if (plan.kind !== "ok") throw new Error("plan blocked");
+  const file = render(2, "a_nullable", plan.statements, plan.rebuilds ?? []);
+  const mismatched = file.sql.replace('"table":"t"', '"table":"T"');
+  assert.notEqual(mismatched, file.sql, "the RebuildRecord's table name should have been rewritten to a different case");
+
+  const db = new DatabaseSync(":memory:");
+  migrate(db, [{ name: "0001_base.sql", sql: base + ";" }]);
+  migrate(db, [
+    { name: "0001_base.sql", sql: base + ";" },
+    { name: "0002_a_nullable.sql", sql: mismatched },
+  ]);
+  const row = db.prepare(`select "notnull" from pragma_table_xinfo(?) where name = ?`).get("t", "a") as { notnull: number };
+  assert.equal(row.notnull, 0);
+});
+
+test("a Durable Object's runtime migrate() still refuses a case-mismatched rebuild that does not know about an index an unrelated migration added", () => {
+  const base = "create table t (id text primary key not null, a integer not null, b integer not null) strict";
+  const targetA = "create table t (id text primary key not null, a integer, b integer not null) strict"; // branch A: drops NOT NULL on a, unrelated to the index
+
+  const currentDb = open([base]);
+  const planB = diff(introspect(currentDb), introspect(open([base, "create index idx_b on t(b)"])));
+  if (planB.kind !== "ok") throw new Error("planB blocked");
+  const fileB = render(2, "add_idx_b", planB.statements, planB.rebuilds ?? []);
+  const planA = diff(introspect(currentDb), introspect(open([targetA])));
+  if (planA.kind !== "ok") throw new Error("planA blocked");
+  const fileA = render(3, "a_nullable", planA.statements, planA.rebuilds ?? []);
+  const mismatchedA = fileA.sql.replace('"table":"t"', '"table":"T"');
+  assert.notEqual(mismatchedA, fileA.sql, "the RebuildRecord's table name should have been rewritten to a different case");
+
+  const db = new DatabaseSync(":memory:");
+  migrate(db, [{ name: "0001_base.sql", sql: base + ";" }, { name: "0002_add_idx_b.sql", sql: fileB.sql }]);
+
+  assert.throws(
+    () => migrate(db, [
+      { name: "0001_base.sql", sql: base + ";" },
+      { name: "0002_add_idx_b.sql", sql: fileB.sql },
+      { name: "0003_a_nullable.sql", sql: mismatchedA },
+    ]),
+    (e: unknown) => {
+      assert.ok(e instanceof MigrationHistoryError, String(e));
+      assert.equal(e.code, "REBUILD_LOSES_COLUMN");
+      // The columns check (fixed above) finds the live table despite the
+      // case mismatch and passes, since no column actually changed; the
+      // refusal below can only come from the index check that follows it.
+      assert.doesNotMatch(e.message, /stale declaration/);
+      assert.match(e.message, /without knowledge of index "idx_b"/);
+      return true;
+    },
+  );
+
+  const row = db.prepare(`select name from sqlite_schema where type = 'index' and tbl_name = 't' and name = 'idx_b'`).get();
+  assert.ok(row, "idx_b should still exist");
+});

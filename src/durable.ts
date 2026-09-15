@@ -164,7 +164,13 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
       // table's own CREATE TABLE text so a column whose declared shape
       // changed since this file was generated is caught the same way an
       // unknown column is.
-      const schemaRow = storage.sql.exec(`select sql from sqlite_schema where type = 'table' and name = ?`, table).toArray()[0];
+      // Case-insensitive, like pragma_table_xinfo above: a RebuildRecord's
+      // recorded table name and the live table's actual name are the same
+      // identifier even if their case differs (SQLite table names are
+      // case-insensitive). A case-sensitive lookup here would find no row,
+      // read every declaration as the empty string, and refuse every such
+      // table as having a "stale declaration" even when nothing changed.
+      const schemaRow = storage.sql.exec(`select sql from sqlite_schema where type = 'table' and lower(name) = lower(?)`, table).toArray()[0];
       const defs = schemaRow ? definitions(String(schemaRow.sql)) : null;
       const changed = actualColumns.find((n) => (defs?.columns.get(n) ?? "") !== (recorded.get(n) ?? ""));
       if (changed !== undefined) {
@@ -182,7 +188,11 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
           file.name,
         );
       }
-      const actualIndexSql = storage.sql.exec(`select sql from sqlite_schema where tbl_name = ? and type = 'index' and sql is not null`, table).toArray().map((r) => normalize(String(r.sql)));
+      // Same case-insensitive match as the table lookup above: tbl_name
+      // must be compared the same way pragma_table_xinfo already compares
+      // name, or a case-mismatched record would find no index here and
+      // silently miss one a sibling migration really added.
+      const actualIndexSql = storage.sql.exec(`select sql from sqlite_schema where lower(tbl_name) = lower(?) and type = 'index' and sql is not null`, table).toArray().map((r) => normalize(String(r.sql)));
       const badIndex = unknownDeclaration(indexes, actualIndexSql);
       if (badIndex !== undefined) {
         throw new MigrationHistoryError(
@@ -191,7 +201,9 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
           file.name,
         );
       }
-      const actualTriggerSql = storage.sql.exec(`select sql from sqlite_schema where tbl_name = ? and type = 'trigger' and sql is not null`, table).toArray().map((r) => normalize(String(r.sql)));
+      // Same case-insensitive match as the index lookup above, for the
+      // same reason.
+      const actualTriggerSql = storage.sql.exec(`select sql from sqlite_schema where lower(tbl_name) = lower(?) and type = 'trigger' and sql is not null`, table).toArray().map((r) => normalize(String(r.sql)));
       const badTrigger = unknownDeclaration(triggers, actualTriggerSql);
       if (badTrigger !== undefined) {
         throw new MigrationHistoryError(
