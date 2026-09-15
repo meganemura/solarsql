@@ -33,7 +33,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 - Added: the build refuses two migration files that share a sequence number before they merge, not only when a new file is generated (ADR 0094).
 
-- Added: the build refuses a foreign key whose target table or column the schema does not declare.
+- Added: the build refuses a foreign key whose target table or column the schema does not declare (ADR 0107).
 
 - Added: the build refuses a write plan item (`insert`, `update`, `delete`, or `replace`) with a `RETURNING` clause, which the adapter discards at run time; move the read into the command's `returns` field instead.
 
