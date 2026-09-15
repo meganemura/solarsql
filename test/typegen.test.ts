@@ -373,6 +373,50 @@ describe("row type soundness", () => {
     } finally { engine.close(); }
   });
 
+  // INTERSECT and EXCEPT return only the left branch's rows, so their result
+  // type is the left branch's type, unchanged. UNION returns rows from either
+  // branch, so both branches' types merge, and a nullable branch makes the
+  // result nullable.
+  test("an INTERSECT keeps the left branch's NOT NULL type, unmerged with the right branch's nullable type", () => {
+    const engine = new Engine([
+      `create table a (x text not null) strict`,
+      `create table b (x text) strict`,
+    ]);
+    try {
+      const t = new Typer(engine, new Map());
+      assert.deepEqual(
+        t.analyze(`select x from a intersect select x from b`, "m").columns,
+        [{ name: "x", type: "string", json: false }],
+      );
+      // Confirms b.x is really nullable: the same branches under UNION merge
+      // to nullable, so INTERSECT's non-null result above is not a fluke.
+      assert.deepEqual(
+        t.analyze(`select x from a union select x from b`, "m").columns,
+        [{ name: "x", type: "string | null", json: false }],
+      );
+    } finally { engine.close(); }
+  });
+
+  test("an EXCEPT keeps the left branch's NOT NULL type, unmerged with the right branch's nullable type", () => {
+    const engine = new Engine([
+      `create table a (x text not null) strict`,
+      `create table b (x text) strict`,
+    ]);
+    try {
+      const t = new Typer(engine, new Map());
+      assert.deepEqual(
+        t.analyze(`select x from a except select x from b`, "m").columns,
+        [{ name: "x", type: "string", json: false }],
+      );
+      // Confirms b.x is really nullable: the same branches under UNION merge
+      // to nullable, so EXCEPT's non-null result above is not a fluke.
+      assert.deepEqual(
+        t.analyze(`select x from a union select x from b`, "m").columns,
+        [{ name: "x", type: "string | null", json: false }],
+      );
+    } finally { engine.close(); }
+  });
+
   test("JSON filters narrow only the outer alias whose NULL rows they exclude", () => {
     const engine = new Engine([
       "create table a(id text primary key, n integer not null) strict",
