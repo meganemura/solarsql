@@ -21,7 +21,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 - Fixed: a multi-row VALUES insert types every row's parameters from the target columns, not only the first row's.
 - Fixed: a write plan item with a computed RETURNING expression (a CAST, a JSON constructor) now fails with "RETURNING clause is discarded at run time", the same refusal a bare RETURNING column already got, instead of a "wrap it in cast(...)" error the expression already satisfies (ADR 0100).
 - Fixed: a CAST wrapping a bare NOT NULL column reference (`cast(qty as text)`) now types non-null, the same as a CAST wrapping `coalesce`'s or `ifnull`'s NOT NULL last argument already did (ADR 0105).
-- Fixed: `rehearse` rejects a named or anonymous parameter in a `checks.assertions` entry, instead of silently binding it to `NULL` and letting the assertion's predicate pass regardless of the real data.
+- Fixed: `rehearse` rejects a named or anonymous parameter in a `checks.assertions` entry, instead of silently binding it to `NULL` and letting the assertion's predicate pass regardless of the real data (ADR 0106).
 - Fixed: selecting a full-text search table's own match-operand column (the hidden column named after the table) now refuses, instead of typing an unrelated number as a non-null string (ADR 0103).
 - Fixed: a full-text search table's `rank` column types as non-null `number` when the query's WHERE clause requires a `MATCH` on that table in every row, instead of `number | null` unconditionally; a WHERE clause with a top-level `OR` keeps the nullable type (ADR 0104).
 

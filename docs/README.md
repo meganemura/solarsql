@@ -118,6 +118,7 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0103](adr/0103-a-full-text-search-tables-match-operand-column-refuses-to-be-selected.md) | A full-text search table's match-operand column refuses to be selected |
 | [0104](adr/0104-a-full-text-search-tables-rank-column-types-as-non-null-under-a-provable-match.md) | A full-text search table's rank column types as non-null under a provable MATCH |
 | [0105](adr/0105-a-cast-around-a-bare-not-null-column-reference-is-not-null.md) | A CAST around a bare NOT NULL column reference is not null |
+| [0106](adr/0106-rehearse-refuses-a-parameter-inside-an-assertion.md) | rehearse refuses a parameter inside an assertion |
 
 ## Measurements
 

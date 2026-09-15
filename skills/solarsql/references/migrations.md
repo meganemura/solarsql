@@ -198,7 +198,7 @@ The optional `checks.json` has two maps of names to SQL:
 
 Queries compile before and after the change; result column names and declared types must match.
 This detects structural incompatibility, not every semantic or nullability change.
-Assertions execute after migration and must each return one row with one value equal to 1. They take no parameters.
+Assertions execute after migration and must each return one row with one value equal to 1. They take no parameters: a named or anonymous parameter in an assertion is refused, instead of running with the unbound value SQLite would otherwise silently use (ADR 0106).
 Use assertions for application-specific data requirements. Row counts alone do not prove value preservation.
 The command rehearses proposed SQL, not migration history adoption or a remote deployment.
 
