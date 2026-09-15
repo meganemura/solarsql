@@ -557,6 +557,106 @@ describe("updateTarget follows a target table across the statement's own leading
   });
 });
 
+// SQLite's row-value SET assignment, `set (c1, c2) = (:p1, :p2)`, puts each
+// parameter right after "(" or ",", never after "=" the way `set c = :p`
+// does, so it needs its own scan in scan.ts rather than an extension of
+// that match. Each test below uses its own Engine and Typer, matching the
+// column set the fix's own repro cases used, so every expected type here
+// transcribes directly from those measurements.
+describe("a row-value SET assignment pairs each parameter with the column at the same position", () => {
+  const rowValueDdl = [
+    "create table orders (id text primary key not null, customer_id text not null, status text not null check (status in ('draft', 'confirmed')), note text) strict",
+  ];
+
+  test("a plain multi-column SET, the control case this fix must leave unchanged", () => {
+    const engine = new Engine(rowValueDdl);
+    try {
+      const t = new Typer(engine, new Map());
+      const a = t.analyze("update orders set note = :n, status = :s where id = :id", "m");
+      assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["n", "string | null"], ["s", '"draft" | "confirmed"'], ["id", "string"]]);
+    } finally { engine.close(); }
+  });
+
+  test("a row-value SET types each parameter from its column, instead of SqlValue", () => {
+    const engine = new Engine(rowValueDdl);
+    try {
+      const t = new Typer(engine, new Map());
+      const a = t.analyze("update orders set (note, status) = (:n, :s) where id = :id", "m");
+      assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["n", "string | null"], ["s", '"draft" | "confirmed"'], ["id", "string"]]);
+    } finally { engine.close(); }
+  });
+
+  test("a literal in one row-value slot leaves that slot with no parameter site", () => {
+    const engine = new Engine(rowValueDdl);
+    try {
+      const t = new Typer(engine, new Map());
+      const a = t.analyze("update orders set (note, status) = (:n, 'draft') where id = :id", "m");
+      assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["n", "string | null"], ["id", "string"]]);
+    } finally { engine.close(); }
+  });
+
+  test("a row-value group and a plain assignment in the same SET clause both type correctly", () => {
+    const engine = new Engine(rowValueDdl);
+    try {
+      const t = new Typer(engine, new Map());
+      const a = t.analyze("update orders set (note, status) = (:n, :s), customer_id = :c where id = :id", "m");
+      assert.deepEqual(
+        a.params.map((p) => [p.name, p.type]),
+        [["n", "string | null"], ["s", '"draft" | "confirmed"'], ["c", "string"], ["id", "string"]],
+      );
+    } finally { engine.close(); }
+  });
+
+  test("an upsert's DO UPDATE SET row-value assignment types from the target column", () => {
+    const engine = new Engine(rowValueDdl);
+    try {
+      const t = new Typer(engine, new Map());
+      const a = t.analyze(
+        "insert into orders (id, customer_id, status) values (:id, :cid, :s0) on conflict (id) do update set (note, status) = (:n, :s)",
+        "m",
+      );
+      assert.deepEqual(
+        a.params.map((p) => [p.name, p.type]),
+        [["id", "string"], ["cid", "string"], ["s0", '"draft" | "confirmed"'], ["n", "string | null"], ["s", '"draft" | "confirmed"']],
+      );
+    } finally { engine.close(); }
+  });
+
+  test("column order reversed from declaration order still pairs by position, not by name", () => {
+    const engine = new Engine(rowValueDdl);
+    try {
+      const t = new Typer(engine, new Map());
+      const a = t.analyze("update orders set (status, note) = (:s, :n) where id = :id", "m");
+      assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["s", '"draft" | "confirmed"'], ["n", "string | null"], ["id", "string"]]);
+    } finally { engine.close(); }
+  });
+
+  test("a single-column row-value assignment, the shape most likely to hide an off-by-one pairing bug", () => {
+    const engine = new Engine(rowValueDdl);
+    try {
+      const t = new Typer(engine, new Map());
+      const a = t.analyze("update orders set (note) = (:n) where id = :id", "m");
+      assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["n", "string | null"], ["id", "string"]]);
+    } finally { engine.close(); }
+  });
+
+  test("a row-value SET types the same as the same columns written as plain assignments, for any non-empty subset", () => {
+    const engine = new Engine(rowValueDdl);
+    try {
+      const t = new Typer(engine, new Map());
+      const columns = ["customer_id", "status", "note"];
+      hegel.test((tc) => {
+        const subset = tc.draw(gs.arrays(gs.sampledFrom(columns), { minSize: 1, maxSize: columns.length, unique: true }));
+        const plain = `update orders set ${subset.map((c) => `${c} = :${c}`).join(", ")} where id = :id`;
+        const rowValue = `update orders set (${subset.join(", ")}) = (${subset.map((c) => `:${c}`).join(", ")}) where id = :id`;
+        const plainParams = t.analyze(plain, "m").params.map((p) => [p.name, p.type]);
+        const rowValueParams = t.analyze(rowValue, "m").params.map((p) => [p.name, p.type]);
+        assert.deepEqual(rowValueParams, plainParams);
+      });
+    } finally { engine.close(); }
+  });
+});
+
 // D1 and a Durable Object's own storage refuse a function call outside
 // workerd's own allowlist at prepare (ADR 0113). Engine.prepare() mirrors
 // that refusal, so the build catches it instead of only the real deploy

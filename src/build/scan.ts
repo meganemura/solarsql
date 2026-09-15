@@ -525,7 +525,9 @@ export function returningClause(sql: string): string | null {
 
 // Where a named parameter sits, for type inference:
 //   compare: `<column> <op> :p` or `:p <op> <column>`
-//   set:     `set <column> = :p`
+//   set:     `set <column> = :p`, or the row-value form
+//            `set (<column>, ...) = (:p, ...)`, each :p paired by position
+//            with the column at the same position
 //   insert:  `insert into <table> (<columns>) values (..., :p, ...)`
 //   other:   anything else
 //   in_json: `<column> in (select value from json_each(:p))`, an array
@@ -565,6 +567,44 @@ export function paramSites(sql: string, locate = false): Map<string, (ParamSite 
     if (dir === 1 && t[i + 1]?.text === "." && t[i + 2]?.type === "ident") return { alias: unquote(a.text), column: unquote(t[i + 2]!.text), span: 3 };
     return { alias: null, column: unquote(a.text), span: 1 };
   };
+  // set (c1, c2) = (:p1, :p2): a row-value assignment. Its right-hand
+  // paren's own predecessor is always ")", never a bare column, so it can
+  // never satisfy the `set c = :p` match below (which needs a bare column
+  // immediately before "="); this shape needs its own scan, run once per
+  // `set` keyword before the token loop below visits each parameter on its
+  // own. A position is skipped, leaving its parameter for the generic
+  // fallback, when its value slot is not a single bare parameter token (an
+  // expression or a literal) or its right-hand side is a subquery (no
+  // value-list commas to pair against).
+  const setStops = new Set(["where", "from", "returning", "on"]);
+  for (let i = 0; i < t.length; i++) {
+    if (!isKeyword(t[i], "set")) continue;
+    const setDepth = t[i]!.depth;
+    let idx = i + 1;
+    while (idx < t.length) {
+      const cur = t[idx]!;
+      if (cur.depth < setDepth) break;
+      if (cur.depth === setDepth) {
+        if (cur.text === ";") break;
+        if (cur.type === "ident" && setStops.has(cur.text.toLowerCase())) break;
+        if (cur.text === "(") {
+          const assignment = rowValueAssignment(t, idx, setDepth);
+          if (assignment) {
+            for (const pair of assignment.pairs) {
+              if (pair.value.end - pair.value.start !== 1) continue;
+              const valueTok = t[pair.value.start]!;
+              if (valueTok.type !== "param" || valueTok.text.startsWith("?")) continue;
+              add(key(valueTok), { kind: "set", column: unquote(pair.column.text) }, valueTok.start);
+              (t[pair.value.start] as { handled?: boolean }).handled = true;
+            }
+            idx = assignment.rhsClose + 1;
+            continue;
+          }
+        }
+      }
+      idx++;
+    }
+  }
   // insert into T (c1, c2) values (v1, v2): map value position to column.
   let insertTable: string | null = null;
   let insertColumns: string[] = [];
@@ -736,6 +776,61 @@ export function paramSites(sql: string, locate = false): Map<string, (ParamSite 
     add(name, { kind: "other" });
   }
   return sites;
+}
+
+// The shape `(<cols>) = (<values>)` starting at the "(" of <cols>, at the
+// depth of the enclosing SET clause, else null when what follows the
+// column list is not "=" followed by another "(". A "with", "select", or
+// "values" keyword right after the opening paren marks a subquery: its own
+// top-level commas belong to a select list or a row constructor, not a
+// value list lined up against <cols>, so pairing against them would be a
+// coincidence of token shape, not a fact about the assignment.
+function rowValueAssignment(
+  t: readonly Token[],
+  lhsOpen: number,
+  setDepth: number,
+): { rhsClose: number; pairs: { column: Token; value: { start: number; end: number } }[] } | null {
+  let lhsClose = lhsOpen + 1;
+  while (lhsClose < t.length && !(t[lhsClose]!.depth === setDepth && t[lhsClose]!.text === ")")) lhsClose++;
+  if (
+    lhsClose >= t.length ||
+    t[lhsClose + 1]?.depth !== setDepth || t[lhsClose + 1]?.text !== "=" ||
+    t[lhsClose + 2]?.depth !== setDepth || t[lhsClose + 2]?.text !== "("
+  ) return null;
+  const rhsOpen = lhsClose + 2;
+  if (isKeyword(t[rhsOpen + 1], "with") || isKeyword(t[rhsOpen + 1], "select") || isKeyword(t[rhsOpen + 1], "values")) return null;
+  let rhsClose = rhsOpen + 1;
+  while (rhsClose < t.length && !(t[rhsClose]!.depth === setDepth && t[rhsClose]!.text === ")")) rhsClose++;
+  if (rhsClose >= t.length) return null;
+  const cols = tokenRanges(t, lhsOpen + 1, lhsClose);
+  const values = tokenRanges(t, rhsOpen + 1, rhsClose);
+  const pairs: { column: Token; value: { start: number; end: number } }[] = [];
+  for (let pos = 0; pos < values.length; pos++) {
+    const col = cols[pos];
+    if (!col || col.end - col.start !== 1 || t[col.start]!.type !== "ident") continue;
+    pairs.push({ column: t[col.start]!, value: values[pos]! });
+  }
+  return { rhsClose, pairs };
+}
+
+// Token-index ranges split at a token range's own top-level commas: the
+// same split splitAtCommas does on text, but returning indices lets a
+// caller test a range's token count and type directly, instead of
+// re-tokenizing a text slice whose own offsets no longer point back at the
+// original tokens.
+function tokenRanges(t: readonly Token[], from: number, to: number): { start: number; end: number }[] {
+  if (from >= to) return [];
+  const base = t[from]!.depth;
+  const out: { start: number; end: number }[] = [];
+  let start = from;
+  for (let i = from; i < to; i++) {
+    if (t[i]!.text === "," && t[i]!.depth === base) {
+      out.push({ start, end: i });
+      start = i + 1;
+    }
+  }
+  out.push({ start, end: to });
+  return out;
 }
 
 // The index of the table name in `insert [or <action>] into t` or

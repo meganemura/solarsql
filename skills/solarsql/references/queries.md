@@ -34,6 +34,7 @@ The build finds the type from where the parameter sits. One parameter may sit in
 | `where c = :p`, `c < :p`, `:p = c`, `c like :p`, `t match :p` | the type of the column `c` |
 | `insert into t (c) values (:p)`, or any later row of a multi-row `values (:p), (:p2), ...` | the type of `t.c` |
 | `update t set c = :p` | the type of `t.c` |
+| `update t set (c1, c2) = (:p1, :p2)` | the type of `t.c1`, `t.c2`, by position, not by declaration order |
 | `limit :p`, `offset :p` | `number` |
 | `:p is null`, `:p is not null` (with another site) | adds `\| null` |
 | `case :p when 'a' then ... when 'b' then ... end` | `"a" \| "b"` |

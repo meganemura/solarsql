@@ -4,6 +4,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: a row-value `SET` assignment (`update t set (c1, c2) = (:p1, :p2)`) types each parameter from the column at its position, instead of `SqlValue`; this also applies inside an upsert's `DO UPDATE SET`.
 - Fixed: `diff()` no longer proposes a rebuild, or refuses outright behind an `ON DELETE` foreign key, for a table whose columns or inline foreign keys are declared in a different order than the deployed schema replays them in; only an actual change to the column or foreign-key set is treated as one (ADR 0115).
 - Fixed: a DML statement's own top-level WHERE parameter compared to a column on an `UPDATE ... FROM` join's null-producing side now types `| null`, the same as the identical comparison inside a SELECT scope already did (ADR 0112).
 - Fixed: a WITH-prefixed UPDATE, `INSERT ... ON CONFLICT DO UPDATE`, or `REPLACE ... ON CONFLICT DO UPDATE` types its SET-clause parameter from the target column, instead of `SqlValue`; the WITH clause no longer hides the statement's own verb from the target-table lookup.
