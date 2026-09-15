@@ -272,6 +272,38 @@ describe("Typer.analyze", () => {
     assert.equal(a.returnsRows, true);
     assert.deepEqual(a.columns, [{ name: "id", type: "CustomersId", json: false }, { name: "name", type: "string", json: false }]);
   });
+
+  test("a bare RETURNING column stays non-null when a nested json() subquery has its own alias of the same column name", () => {
+    // order_lines and orders (via its own alias o2) both have an "id" column,
+    // but those aliases live inside the nested subquery's own scope. The
+    // outer statement's own "id" still resolves to orders.id alone. The
+    // FILTER clause satisfies the library's own outer-join rule (ADR 0111,
+    // pinned elsewhere in this file): "l" sits on the nullable side of the
+    // RIGHT JOIN, so json_group_array needs it regardless of this test's
+    // subject, which is the alias leakage into the outer "id" reference.
+    const a = t.analyze(
+      `update orders set note = note where id = :id
+       returning id, json_object('lines', json((select json_group_array(json_object('sku', l.sku)) filter (where l.id is not null)
+         from order_lines l right join orders o2 on l.order_id = o2.id where o2.id = orders.id))) as data`,
+      "orders",
+    );
+    assert.equal(a.columns.find((c) => c.name === "id")?.type, "OrdersId");
+  });
+
+  test("a bare RETURNING column stays non-null with a nested subquery of the same name and no join at all", () => {
+    const a = t.analyze(
+      `update orders set note = note where id = :id
+       returning id, json_object('lines', json((select json_group_array(json_object('sku', l.sku))
+         from order_lines l where l.order_id = orders.id))) as data`,
+      "orders",
+    );
+    assert.equal(a.columns.find((c) => c.name === "id")?.type, "OrdersId");
+  });
+
+  test("returning id alone still types the bare column non-null (regression guard)", () => {
+    const a = t.analyze("update orders set note = note where id = :id returning id", "orders");
+    assert.deepEqual(a.columns, [{ name: "id", type: "OrdersId", json: false }]);
+  });
 });
 
 describe("a full-text search table's own match-operand column refuses to be selected", () => {
