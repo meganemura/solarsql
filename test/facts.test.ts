@@ -83,6 +83,22 @@ test("virtual table facts use the parsed table kind through comments", () => {
   } finally { engine.close(); }
 });
 
+// SQLite resolves a CHECK expression once, at this CREATE, and never
+// reconsiders it on a later INSERT or UPDATE -- so a denied function inside
+// one is caught here or nowhere (ADR 0114). The constructor itself, not
+// Engine.prepare(), is what must refuse it.
+test("a CHECK constraint calling a function D1 and Durable Object storage would refuse is refused at CREATE", () => {
+  assert.throws(
+    () => new Engine([`create table t (id text primary key not null, a text, check (a != sqlite_version())) strict`]),
+    (e: unknown) => {
+      assert.ok(e instanceof Error);
+      assert.match(e.message, /not authorized to use function: sqlite_version/);
+      assert.match(e.message, /in: create table t/);
+      return true;
+    },
+  );
+});
+
 describe("Engine", () => {
   const engine = new Engine(ddl);
 

@@ -446,6 +446,38 @@ describe("solarsql build", () => {
     }
   });
 
+  // The structural per-view boundary check (build.ts) already ran on every
+  // declared view before this round, whether or not any query selects from
+  // it -- but only for table accesses, through a permissive authorizer that
+  // never denies a function. This view is never selected anywhere, so
+  // nothing else in the build would ever prepare its body.
+  test("an orphan view, never selected by any query, is still refused for a function call in its body", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/orders/module.ts");
+      writeFileSync(schema, readFileSync(schema, "utf8").replace(/^import \{ /m, "import { view, ") + `\nexport const version = view("create view orders_version as select cast(sqlite_version() as text) as v");\n`);
+      await expectBuildError(dir, /module orders: view orders_version: not authorized to use function: sqlite_version/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // The structural per-trigger boundary check builds its own synthetic
+  // firing statement regardless of whether any plan item fires the trigger
+  // for real -- but, before this round, also only for table accesses. This
+  // trigger's table and event are exercised by no command plan item.
+  test("an orphan trigger, never fired by any plan item, is still refused for a function call in its body", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/orders/module.ts");
+      const own = `\nexport const scratch = table("create table orders_scratch (id text primary key not null, note text) strict");\nexport const scratchStamp = trigger("create trigger orders_scratch_stamp after insert on orders_scratch begin update orders_scratch set note = cast(sqlite_version() as text) where id = new.id; end");\n`;
+      writeFileSync(schema, readFileSync(schema, "utf8") + own);
+      await expectBuildError(dir, /module orders: trigger orders_scratch_stamp: not authorized to use function: sqlite_version/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("`solarsql inspect`'s own sqlite_version() diagnostic still runs, unaffected by the function allowlist", async () => {
     const dir = copy();
     try {

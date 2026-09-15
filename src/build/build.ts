@@ -357,7 +357,21 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
       if (pk.length === 1 && pk[0]!.type.toUpperCase() === "TEXT") brands.set(t.name, { table: t.name, column: pk[0]!.name, typeName: brandName(t.name), module: m.name });
     }
     for (const m of modules) {
-      for (const sql of m.views) checkBoundary(engine, m, owner, `select * from ${quoteIdent(created(sql)!.name)}`, `view ${created(sql)!.name}`);
+      // A view's own CREATE VIEW is not compiled at CREATE, so a function
+      // call in its body is only ever checked here, by preparing a select
+      // against it -- the same statement checkBoundary below inspects for
+      // table accesses. An orphan view (no query in this module selects it)
+      // would otherwise never be prepared at all (ADR 0114).
+      for (const sql of m.views) {
+        const name = created(sql)!.name;
+        const select = `select * from ${quoteIdent(name)}`;
+        try {
+          engine.prepare(select);
+        } catch (e) {
+          throw new BuildError(`module ${m.name}: view ${name}: ${(e as Error).message}`, sql);
+        }
+        checkBoundary(engine, m, owner, select, `view ${name}`);
+      }
       for (const sql of m.triggers) checkTriggerBoundary(engine, m, owner, sql);
     }
     const typer = new Typer(engine, brands);
@@ -500,7 +514,14 @@ function checkTriggerBoundary(engine: Engine, m: Module, owner: Map<string, Modu
   const firing = t.event === "insert" ? `insert into ${table} default values` : t.event === "delete" ? `delete from ${table}` : `update ${table} set ${set} = ${set}`;
   // The engine checks a trigger body when it compiles the body into a
   // statement, not at CREATE TRIGGER, so its message arrives here.
+  // checkBoundary below reads this same compile's table accesses through
+  // engine.accesses(), a permissive authorizer that never denies a
+  // function; engine.prepare() first, with the deny authorizer, is what
+  // catches a trigger body's own disallowed function call. Without it, an
+  // orphan trigger (no plan item fires it) would never be prepared with a
+  // deny authorizer at all (ADR 0114).
   try {
+    engine.prepare(firing);
     checkBoundary(engine, m, owner, firing, `trigger ${t.name}`, t.name);
   } catch (e) {
     if (e instanceof BuildError) throw e;

@@ -4,6 +4,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Added: the build also refuses a CHECK constraint, a view, or a trigger whose own body calls a SQL function outside D1 and a Durable Object's own SQLite allowlist, including one no query or plan item ever selects or fires, and a migration file already on disk that has the same problem (ADR 0114).
 - Added: the build refuses a query or a command plan item that calls a SQL function outside D1 and a Durable Object's own SQLite allowlist, instead of accepting it locally and failing on every call once deployed (ADR 0113).
 - Fixed: `solarsql migration` runs every check `solarsql build` runs, including the module-boundary check, before it writes a migration file (ADR 0096).
 - Fixed: a CHECK column narrows to its literal union when the predicate is `column IN (literal, ...) OR column IS NULL`, the same as `IN (...)` alone (ADR 0097).

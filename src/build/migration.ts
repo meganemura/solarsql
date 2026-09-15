@@ -9,6 +9,7 @@
 // (CREATE VIRTUAL TABLE) has no ALTER: a change drops it and creates it
 // again, and its shadow tables are the engine's own.
 import { DatabaseSync } from "node:sqlite";
+import { withDeniedFunctions } from "./facts.ts";
 import { created, definitions, isKeyword, normalize, parseRebuildRecords, quoteIdent, REBUILD_HEADER, renamedColumn, splitStatements, tokenize, type RebuildRecord, type Token, unknownDeclaration } from "./scan.ts";
 import { BuildError } from "./typegen.ts";
 
@@ -76,18 +77,21 @@ export function applied(files: readonly string[], names?: readonly string[]): Da
         // has (for example a name a later migration renamed away). Whether
         // that reference throws or silently resolves as a string literal
         // depends on the double-quoted-string fallback, and the engines
-        // disagree: node:sqlite ships it off, so the stale reference
-        // throws there. D1 and Durable Object SQLite -- the engines that
-        // actually replay this file, since wrangler applies a migration
-        // file with no solarsql check in between -- ship it on, so the
-        // same statement runs to completion with a wrong literal value
-        // where `unknown`'s data belonged. A build-time prepare() on
+        // disagree: node:sqlite ships it off, so the stale reference throws
+        // there. D1 and Durable Object SQLite -- the engines that actually
+        // replay this file -- ship it on: D1 runs the file's statements as
+        // the file holds them, and a Durable Object runs them the same way
+        // through migrate() (src/durable.ts), once past that function's own
+        // rebuild-record checks for a lost column, constraint, index, or
+        // trigger. So the same statement runs to completion there with a
+        // wrong literal value where `unknown`'s data belonged. A build-time
+        // prepare() on
         // node:sqlite can only report what node:sqlite would do, which is
         // not a sound prediction of the replay target's behavior. The
-        // message below does not condition on it: replaying `label`
-        // always loses `unknown` and its data. test/dqs-fallback.test.ts
-        // pins the fallback fact this reasoning depends on, against
-        // Miniflare's D1 and Durable Object SQLite.
+        // message below does not condition on it: replaying `label` always
+        // loses `unknown` and its data. test/dqs-fallback.test.ts pins the
+        // fallback fact this reasoning depends on, against Miniflare's D1
+        // and Durable Object SQLite.
         throw new BuildError(
           `migration ${label} rebuilds table ${quoteIdent(table)} without knowledge of column ${quoteIdent(unknown)}, ${attribution}. ` +
           `A database that replays ${label} loses ${quoteIdent(unknown)} and its data. ` +
@@ -150,7 +154,12 @@ export function applied(files: readonly string[], names?: readonly string[]): Da
       db.exec("begin");
       for (const [j, s] of statements.entries()) {
         ordinal = j + 1;
-        db.exec(s);
+        // The Engine constructor (facts.ts) checks the same allowlist
+        // against the current declared schema, but never sees a migration
+        // file already written to disk: a file generated before this check
+        // existed, or edited by hand, reaches a function-call denial only
+        // here (ADR 0114).
+        withDeniedFunctions(db, () => db.exec(s));
       }
       ordinal = null;
       db.exec("commit");

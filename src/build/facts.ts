@@ -61,7 +61,13 @@ export type Access = {
 // operator like `like` or `->>` is reported as a function too). node:sqlite
 // has no such restriction, so a query built and typechecked locally can
 // still fail on every call at either deploy target unless this list also
-// gates Engine.prepare() (see the deny-authorizer setup below; ADR 0113).
+// gates the three sites that run text a user wrote: Engine.prepare(), the
+// Engine constructor's own DDL loop (a CHECK, VIEW, or TRIGGER body is SQL
+// too), and migration.ts's applied(), a second DDL entry point outside this
+// class (see withDeniedFunctions below; ADR 0113, ADR 0114). The build's own
+// internal SQL -- accesses(), columns(), fullScans(), affinities(), and a
+// diagnostic `select sqlite_version()` -- is unaffected by design (see
+// Engine.prepare()'s own comment for why).
 // Copied verbatim from cloudflare/workerd's ALLOWED_SQLITE_FUNCTIONS,
 // src/workerd/util/sqlite.c++, commit c240f0e, lines 380-543. workerd
 // compares case-insensitively (its own comment: SQLite's own convention for
@@ -103,17 +109,42 @@ const ALLOWED_SQLITE_FUNCTIONS = new Set([
   "sqlite_rename_quotefix",
 ]);
 
+// Sets the allowlist's deny authorizer on `db` for the duration of `fn`
+// only, then clears it in a `finally`, whatever `fn` does -- the call-scoped
+// shape ADR 0113 established for Engine.prepare(), factored out so the
+// Engine constructor's DDL loop and migration.ts's applied() replay (a
+// second, build-external DDL entry point) can gate the same allowlist
+// without a connection-level authorizer (see Engine.prepare()'s own comment
+// for why connection-level was rejected).
+export function withDeniedFunctions<T>(db: DatabaseSync, fn: () => T): T {
+  db.setAuthorizer((code: number, _a1: string | null, a2: string | null) =>
+    code === constants.SQLITE_FUNCTION && !ALLOWED_SQLITE_FUNCTIONS.has((a2 ?? "").toLowerCase())
+      ? constants.SQLITE_DENY
+      : constants.SQLITE_OK,
+  );
+  try {
+    return fn();
+  } finally {
+    db.setAuthorizer(null);
+  }
+}
+
 export class Engine {
   readonly db: DatabaseSync;
 
   // A statement the engine refuses is reported with its text, so a bad
   // trigger body or view names itself.
   // The engine owns the supplied connection, including a read-only source.
+  // Each statement runs through withDeniedFunctions, inside this loop's own
+  // per-statement try/catch: a CREATE TABLE's CHECK expression is compiled
+  // and resolved once, at this CREATE, and never reconsidered by a later
+  // INSERT or UPDATE, so this is the only point in the build where a CHECK
+  // constraint's own function call is ever checked (ADR 0114).
   constructor(statements: readonly string[], database?: DatabaseSync) {
     this.db = database ?? new DatabaseSync(":memory:");
     for (const s of statements) {
       try {
-        this.db.exec(s);
+        withDeniedFunctions(this.db, () => this.db.exec(s));
       } catch (e) {
         this.db.close();
         throw new Error(`${(e as Error).message}\n  in: ${s.replace(/\s+/g, " ").trim()}`);
@@ -189,20 +220,12 @@ export class Engine {
   // query or plan item under analysis: a permanent connection-level
   // authorizer would also reach the build's own internal diagnostic
   // `select sqlite_version()` calls (analyze.ts, build.ts), which go through
-  // this.db.prepare() directly and must keep working, and it would also
-  // reach every CREATE TABLE/TRIGGER/VIEW statement the constructor runs,
-  // which this check does not cover (see the ADR for that boundary).
+  // this.db.prepare() directly and must keep working. The constructor scopes
+  // its own deny authorizer the same way, once per DDL statement it runs, so
+  // a CHECK constraint's function call is denied at CREATE the same way this
+  // method denies one in a query (ADR 0114).
   prepare(sql: string): void {
-    this.db.setAuthorizer((code: number, _a1: string | null, a2: string | null) =>
-      code === constants.SQLITE_FUNCTION && !ALLOWED_SQLITE_FUNCTIONS.has((a2 ?? "").toLowerCase())
-        ? constants.SQLITE_DENY
-        : constants.SQLITE_OK,
-    );
-    try {
-      this.db.prepare(sql);
-    } finally {
-      this.db.setAuthorizer(null);
-    }
+    withDeniedFunctions(this.db, () => this.db.prepare(sql));
   }
 
   view(name: string): { sql: string; columns: string[] } | null {
