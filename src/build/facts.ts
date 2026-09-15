@@ -56,6 +56,53 @@ export type Access = {
   via: string | null;
 };
 
+// D1 and a Durable Object's own storage both run on workerd's SQLite, which
+// refuses SQLITE_FUNCTION at prepare for any name outside this set (an
+// operator like `like` or `->>` is reported as a function too). node:sqlite
+// has no such restriction, so a query built and typechecked locally can
+// still fail on every call at either deploy target unless this list also
+// gates Engine.prepare() (see the deny-authorizer setup below; ADR 0113).
+// Copied verbatim from cloudflare/workerd's ALLOWED_SQLITE_FUNCTIONS,
+// src/workerd/util/sqlite.c++, commit c240f0e, lines 380-543. workerd
+// compares case-insensitively (its own comment: SQLite's own convention for
+// identifiers is sqlite3_stricmp, and workerd instead lowercases both sides
+// once per prepare); the comparison here does the same. Five names workerd
+// itself comments out of that array on purpose ("These functions query
+// SQLite internals and build details in a way we'd prefer not to reveal.")
+// are left out here too: sqlite_compileoption_get, sqlite_compileoption_used,
+// sqlite_offset, sqlite_source_id, sqlite_version.
+const ALLOWED_SQLITE_FUNCTIONS = new Set([
+  // https://www.sqlite.org/lang_corefunc.html
+  "abs", "changes", "char", "coalesce", "concat", "concat_ws", "format", "glob", "hex", "ifnull", "iif", "instr",
+  "last_insert_rowid", "length", "like", "likelihood", "likely", "load_extension", "lower", "ltrim", "max_scalar",
+  "min_scalar", "nullif", "octet_length", "printf", "quote", "random", "randomblob", "replace", "round", "rtrim",
+  "sign", "soundex", "substr", "substring", "total_changes", "trim", "typeof", "unhex", "unicode", "unlikely",
+  "upper", "zeroblob",
+  // https://www.sqlite.org/lang_datefunc.html
+  "date", "time", "datetime", "julianday", "unixepoch", "strftime", "timediff", "current_date", "current_time",
+  "current_timestamp",
+  // https://www.sqlite.org/lang_aggfunc.html
+  "avg", "count", "group_concat", "max", "min", "string_agg", "sum", "total",
+  // https://www.sqlite.org/windowfunctions.html#biwinfunc
+  "row_number", "rank", "dense_rank", "percent_rank", "cume_dist", "ntile", "lag", "lead", "first_value",
+  "last_value", "nth_value",
+  // https://www.sqlite.org/lang_mathfunc.html
+  "acos", "acosh", "asin", "asinh", "atan", "atan2", "atanh", "ceil", "cos", "cosh", "degrees", "exp", "floor",
+  "ln", "log", "log2", "mod", "pi", "pow", "radians", "sin", "sinh", "sqrt", "tan", "tanh", "trunc",
+  // https://www.sqlite.org/json1.html
+  "json", "jsonb", "json_array", "jsonb_array", "json_array_length", "json_extract", "jsonb_extract", "->", "->>",
+  "json_insert", "jsonb_insert", "json_object", "jsonb_object", "json_patch", "jsonb_patch", "json_remove",
+  "jsonb_remove", "json_replace", "jsonb_replace", "json_set", "jsonb_set", "json_type", "json_valid", "json_quote",
+  "json_group_array", "jsonb_group_array", "json_group_object", "jsonb_group_object", "json_each", "json_tree",
+  // https://www.sqlite.org/fts5.html
+  "match", "highlight", "bm25", "snippet",
+  // https://www.sqlite.org/rtree.html
+  "rtreecheck",
+  // https://www.sqlite.org/lang_altertable.html
+  "sqlite_rename_column", "sqlite_rename_table", "sqlite_rename_test", "sqlite_drop_column",
+  "sqlite_rename_quotefix",
+]);
+
 export class Engine {
   readonly db: DatabaseSync;
 
@@ -137,9 +184,25 @@ export class Engine {
     return this.db.prepare(sql).columns().map((c) => ({ name: c.name, table: c.table, column: c.column, type: c.type }));
   }
 
-  // Preparing alone finds syntax errors and unknown names.
+  // Preparing alone finds syntax errors and unknown names. The authorizer is
+  // scoped to this one prepare, not the connection, so it denies only the
+  // query or plan item under analysis: a permanent connection-level
+  // authorizer would also reach the build's own internal diagnostic
+  // `select sqlite_version()` calls (analyze.ts, build.ts), which go through
+  // this.db.prepare() directly and must keep working, and it would also
+  // reach every CREATE TABLE/TRIGGER/VIEW statement the constructor runs,
+  // which this check does not cover (see the ADR for that boundary).
   prepare(sql: string): void {
-    this.db.prepare(sql);
+    this.db.setAuthorizer((code: number, _a1: string | null, a2: string | null) =>
+      code === constants.SQLITE_FUNCTION && !ALLOWED_SQLITE_FUNCTIONS.has((a2 ?? "").toLowerCase())
+        ? constants.SQLITE_DENY
+        : constants.SQLITE_OK,
+    );
+    try {
+      this.db.prepare(sql);
+    } finally {
+      this.db.setAuthorizer(null);
+    }
   }
 
   view(name: string): { sql: string; columns: string[] } | null {

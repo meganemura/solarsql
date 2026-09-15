@@ -429,6 +429,33 @@ describe("solarsql build", () => {
     }
   });
 
+  // D1 and a Durable Object's own storage refuse this function at prepare
+  // (ADR 0113); the same check must catch it in a command's own plan item,
+  // not only in a query.
+  test("a command plan item that calls a function D1 and Durable Object storage would refuse is refused", async () => {
+    const dir = copy();
+    try {
+      const commands = join(dir, "example/modules/orders/module.ts");
+      writeFileSync(commands, readFileSync(commands, "utf8").replace(
+        `plan: ["update orders set note = :note where id = :id"],`,
+        `plan: ["update orders set note = cast(sqlite_version() as text) where id = :id"],`,
+      ));
+      await expectBuildError(dir, /not authorized to use function: sqlite_version/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("`solarsql inspect`'s own sqlite_version() diagnostic still runs, unaffected by the function allowlist", async () => {
+    const dir = copy();
+    try {
+      const result = await build(join(dir, "example/solarsql.config.ts"), { inspect: true });
+      assert.match(result.inspection!.sqlite, /^\d+\.\d+\.\d+$/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a table that is not STRICT is refused with the fix in the message", async () => {
     const dir = copy();
     try {

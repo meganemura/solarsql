@@ -395,6 +395,67 @@ describe("Typer.analyze", () => {
   });
 });
 
+// D1 and a Durable Object's own storage refuse a function call outside
+// workerd's own allowlist at prepare (ADR 0113). Engine.prepare() mirrors
+// that refusal, so the build catches it instead of only the real deploy
+// targets.
+describe("a function call D1 and Durable Object storage would refuse at prepare", () => {
+  const t = typer();
+
+  test("sqlite_version(), cast to a type, is refused by name", () => {
+    assert.throws(
+      () => t.analyze("select cast(sqlite_version() as text) as v from orders", "orders"),
+      (e: unknown) => e instanceof BuildError && /not authorized to use function: sqlite_version/.test(e.message),
+    );
+  });
+
+  test("sqlite_source_id(), cast to a type, is refused by name", () => {
+    assert.throws(
+      () => t.analyze("select cast(sqlite_source_id() as text) as v from orders", "orders"),
+      (e: unknown) => e instanceof BuildError && /not authorized to use function: sqlite_source_id/.test(e.message),
+    );
+  });
+
+  test("a bare sqlite_version(), with no cast, is refused by the authorizer's own message, not the cast rule's", () => {
+    // Engine.prepare() runs before Typer.analyze() reaches the "expression
+    // with no type" check, so the authorizer's message wins here.
+    assert.throws(
+      () => t.analyze("select sqlite_version() as v from orders", "orders"),
+      (e: unknown) => e instanceof BuildError && /not authorized to use function: sqlite_version/.test(e.message) && !/Wrap it in cast/.test(e.message),
+    );
+  });
+
+  test("a scalar function on the allowlist still builds", () => {
+    const a = t.analyze("select cast(random() as integer) as v from orders", "orders");
+    assert.equal(a.columns[0]!.name, "v");
+  });
+
+  test("a JSON function on the allowlist still builds", () => {
+    const a = t.analyze(`select cast(json_extract('{"a":1}', '$.a') as integer) as v from orders`, "orders");
+    assert.equal(a.columns[0]!.name, "v");
+  });
+
+  test("an aggregate function on the allowlist still builds", () => {
+    const a = t.analyze("select cast(count(*) as integer) as v from orders", "orders");
+    assert.equal(a.columns[0]!.name, "v");
+  });
+
+  test("a window function on the allowlist still builds", () => {
+    const a = t.analyze("select cast(row_number() over (order by id) as integer) as v from orders", "orders");
+    assert.equal(a.columns[0]!.name, "v");
+  });
+
+  test("a math function on the allowlist still builds", () => {
+    const a = t.analyze("select cast(abs(-1) as integer) as v from orders", "orders");
+    assert.equal(a.columns[0]!.name, "v");
+  });
+
+  test("a date function on the allowlist still builds", () => {
+    const a = t.analyze("select cast(strftime('%Y', 'now') as text) as v from orders", "orders");
+    assert.equal(a.columns[0]!.name, "v");
+  });
+});
+
 describe("a full-text search table's own match-operand column refuses to be selected", () => {
   const engine = new Engine([`create table other (id text primary key not null)`, `create virtual table f using fts5(body)`]);
   const t = new Typer(engine, new Map());
