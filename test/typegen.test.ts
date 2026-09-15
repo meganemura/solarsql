@@ -688,6 +688,24 @@ describe("RETURNING + a nested one-to-many JSON value, across LEFT, RIGHT, and F
       }
     });
   }
+
+  test("right join: a filter on the join's OTHER alias does not narrow the referenced alias's nullability (ADR 0047)", () => {
+    const clause = clauses.find(([join]) => join === "right")![1];
+    const sqlTemplate = `update parents set id = id where id = :pid
+      returning id, json_object('lines', json((select json_group_array(json_object('value', c.value)) filter (where p2.id is not null) ${clause}))) as data`;
+    const analysis = t.analyze(sqlTemplate, "m");
+    const dataColumn = analysis.columns.find((c) => c.name === "data")!;
+    // The FILTER predicate narrows p2 (always non-null, the preserved side
+    // of this RIGHT JOIN), not c (the nullable side c.value comes from). ADR
+    // 0047: filtering one alias does not remove another alias's nullability,
+    // so "| null" must survive here, unlike the c.id filter tested above.
+    assert.equal(dataColumn.type, '{ "lines": Array<{ "value": string | null }> }');
+    for (const [pid, expected] of [["p1", [{ value: "v1" }]], ["p2", [{ value: null }]]] as const) {
+      const row = engine.db.prepare(sqlTemplate.replace(":pid", `'${pid}'`)).get() as { data: string };
+      const parsed = JSON.parse(row.data) as { lines: { value: unknown }[] };
+      assert.deepEqual(parsed.lines, expected, `parent ${pid}`);
+    }
+  });
 });
 
 test("origin columns retain NULL from views, query scopes, scalar subqueries, and wildcard joins", () => {
