@@ -740,6 +740,12 @@ describe("RETURNING + a nested one-to-many JSON value, across LEFT, RIGHT, and F
     const sqlTemplate = `update parents set id = id where id = :pid
       returning id, json_object('lines', json((select json_group_array(json_object('value', c.value)) filter (where p2.id is not null) ${clause}))) as data`;
     const analysis = t.analyze(sqlTemplate, "m");
+    // This block's Typer carries no brand map (see above), so :pid types as
+    // plain string, not a branded id. Before the alias-scoping fix, the bare
+    // id in "where id = :pid" was ambiguous across three same-named-column
+    // aliases (the outer parents target, plus the subquery's own c and p2),
+    // so aliasOfBareColumn returned null and :pid collapsed to SqlValue.
+    assert.deepEqual(analysis.params, [{ name: "pid", type: "string", encode: false }]);
     const dataColumn = analysis.columns.find((c) => c.name === "data")!;
     // The FILTER predicate narrows p2 (always non-null, the preserved side
     // of this RIGHT JOIN), not c (the nullable side c.value comes from). ADR
