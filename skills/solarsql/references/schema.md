@@ -57,7 +57,7 @@ export const orderSearch = search(`create virtual table order_search using fts5(
 | the single TEXT primary key `id` of table `orders` | `OrdersId` | a branded string; `Id<"orders">` |
 | a TEXT column that references the single TEXT primary key `customers(id)` | `CustomersId` | the brand of the referenced key |
 | a generated column | as declared | read like any other; a migration never sets it |
-| a column of a search table | `string \| null` | `rank` is `number \| null`; a WHERE clause that proves a MATCH on that table narrows it to `number` (ADR 0104) |
+| a column of a search table | `string \| null` | `rank` is `number \| null`; a WHERE clause that proves a MATCH on that table narrows it to `number` (ADR 0104); the table's own column (its match operand) refuses instead of typing at all (ADR 0103) |
 
 The brand of a table name is its PascalCase plus `Id`: `order_lines` gives `OrderLinesId`. `newId<OrdersId>()` makes one (UUID v7).
 
