@@ -77,7 +77,7 @@ function affinityType(affinity: string): string | null {
   return scalarType(a);
 }
 
-type ScopeColumn = Analysis["columns"][number] & { hidden?: boolean };
+type ScopeColumn = Analysis["columns"][number] & { hidden?: boolean; matchOperandOf?: string };
 type Binding = Cte & { environment: Map<string, Binding> };
 type ScopeContext = { rows: Map<string, ScopeColumn[]>; visible: ScopeColumn[]; nullable: Set<string>; environment: Map<string, Binding>; active: Set<Binding | string>; parent?: ScopeContext };
 
@@ -217,6 +217,16 @@ export class Typer {
     return { ...column, type: unionType(column.type, "null") };
   }
 
+  // A full-text search table's hidden match-operand column (named after the
+  // table) carries a value with no meaning on a row (ADR 0103). Both the
+  // SELECT scope-resolution path and the RETURNING path reach this refusal.
+  private matchOperandRefusal(name: string, table: string, sql: string): BuildError {
+    return new BuildError(
+      `column "${name}" is the match operand of full-text search table ${quoteIdent(table)}, and its value on a row has no meaning to type. Use it as a "${table} match :param" condition, or as the first argument of highlight(...), snippet(...), or bm25(...), instead of selecting it.`,
+      sql,
+    );
+  }
+
   private mergeColumn(left: ScopeColumn, right: ScopeColumn, sql: string): ScopeColumn {
     if (left.json !== right.json && left.type !== "null" && right.type !== "null") {
       throw new BuildError(`column "${left.name}" mixes decoded JSON and SQL scalar values. CAST the JSON branch AS TEXT to return text in every branch.`, sql);
@@ -286,7 +296,13 @@ export class Typer {
     if (!table) throw new BuildError(`unknown source ${name}`, name);
     const rows: ScopeColumn[] = table.columns.map((column) => {
       const r = note(this.column(table.name, column.name, name));
-      return { name: column.name, type: r.nullable ? unionType(r.type, "null") : r.type, json: false, ...(column.hidden ? { hidden: true } : {}) };
+      return {
+        name: column.name,
+        type: r.nullable ? unionType(r.type, "null") : r.type,
+        json: false,
+        ...(column.hidden ? { hidden: true } : {}),
+        ...(table.virtual && column.name === table.name ? { matchOperandOf: table.name } : {}),
+      };
     });
     for (const name of rowIdentifiers) {
       if (implicitRowIdentifier(table, name)) rows.push({ name, type: "number", json: false, hidden: true });
@@ -401,7 +417,10 @@ export class Typer {
       const expr = stripParens(item.expr);
       const ref = columnRef(expr);
       const resolved = ref ? this.scopedReference(ref, context) : null;
-      if (resolved) return { name: out.name, type: resolved.type, json: resolved.json };
+      if (resolved) {
+        if (resolved.matchOperandOf !== undefined) throw this.matchOperandRefusal(out.name, resolved.matchOperandOf, sql);
+        return { name: out.name, type: resolved.type, json: resolved.json };
+      }
       if (/^(?:select|with|values)\b/i.test(expr)) {
         const inner = this.scopeRows(expr, environment, active, note, context);
         if (inner.length !== 1) throw new BuildError("a scalar subquery must return one column", sql);
@@ -454,6 +473,8 @@ export class Typer {
     scope?: ScopeContext,
   ): Analysis["columns"][number] {
     if (out.table && out.column) {
+      const table = this.tables.get(out.table);
+      if (table?.virtual && out.column === out.table) throw this.matchOperandRefusal(out.name, out.table, sql);
       const r = note(this.column(out.table, out.column, sql));
       const ref = item ? columnRef(item.expr) : null;
       const alias = ref?.alias ?? (ref ? this.aliasOfBareColumn(aliases, ref.column) : null);

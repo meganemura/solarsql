@@ -227,6 +227,53 @@ describe("Typer.analyze", () => {
   });
 });
 
+describe("a full-text search table's own match-operand column refuses to be selected", () => {
+  const engine = new Engine([`create table other (id text primary key not null)`, `create virtual table f using fts5(body)`]);
+  const t = new Typer(engine, new Map());
+
+  test("selecting the hidden column bare, or aliased, refuses with a message naming the column, the table, and the alternatives", () => {
+    for (const sql of ["select f from f", "select f as x from f"]) {
+      assert.throws(() => t.analyze(sql, "m"), (e: unknown) =>
+        e instanceof BuildError
+        && /match operand/.test(e.message)
+        && e.message.includes('"f"')
+        && /highlight|snippet|bm25/.test(e.message));
+    }
+  });
+
+  test("a table-qualified reference to the hidden column also refuses", () => {
+    assert.throws(() => t.analyze("select f.f from f", "m"), (e: unknown) =>
+      e instanceof BuildError && /match operand/.test(e.message));
+  });
+
+  test("the hidden column on the outer side of a LEFT JOIN still refuses, without | null in the message", () => {
+    assert.throws(() => t.analyze("select f.f from other left join f on f match :q", "m"), (e: unknown) =>
+      e instanceof BuildError && /match operand/.test(e.message) && !e.message.includes("| null"));
+  });
+
+  test("RETURNING the hidden column also refuses (the outputColumn() path)", () => {
+    assert.throws(() => t.analyze("insert into f (body) values (:b) returning f", "m"), (e: unknown) =>
+      e instanceof BuildError && /match operand/.test(e.message));
+  });
+
+  test("a MATCH condition's parameter is untouched: still a non-null string", () => {
+    const a = t.analyze("select body from f where f match :q", "m");
+    assert.deepEqual(a.params, [{ name: "q", type: "string", encode: false }]);
+  });
+
+  test("highlight(...) selected as an expression still refuses with its own, unrelated error", () => {
+    assert.throws(
+      () => t.analyze("select highlight(f, 0, '<', '>') as h from f where f match :q", "m"),
+      (e: unknown) => e instanceof BuildError && /expression with no type. Wrap it in cast/.test(e.message),
+    );
+  });
+
+  test("select * does not expand the hidden column, so it is not refused", () => {
+    const a = t.analyze("select * from f", "m");
+    assert.ok(!a.columns.some((c) => c.name === "f"));
+  });
+});
+
 describe("row type soundness", () => {
   test("compound JSON decoding requires compatible branch values", () => {
     const engine = new Engine(["create table a(id text primary key, n integer not null) strict"]);
