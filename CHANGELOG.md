@@ -43,7 +43,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 - Fixed: a worker CLI command's real result is no longer discarded to a deadline timer that was still armed when the result arrived.
 
-- Fixed: a worker's report message is refused unless it carries the expected protocol and token, closing a gap where another process on the same channel could inject a report.
+- Fixed: a worker's report message is refused unless it carries the expected protocol and token, closing a gap where another process on the same channel could inject a report (ADR 0109).
 
 - Fixed: a migration-intent rename's missing-column error names the case-sensitivity requirement: match the declared DDL spelling exactly, including its case.
 
