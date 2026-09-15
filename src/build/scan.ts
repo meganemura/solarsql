@@ -860,6 +860,47 @@ export function nonNullFilterAlias(expr: string): string | null {
   return ref?.alias ?? null;
 }
 
+// Aliases with a WHERE-clause conjunct that unconditionally requires
+// "<alias> MATCH <expr>" to hold for every row a statement can return.
+// The WHERE clause is split on its depth-0 "and" tokens; a conjunct
+// qualifies only when its first two tokens are exactly an identifier
+// followed by MATCH. A depth-0 "or" anywhere in the clause disqualifies
+// the whole clause: confirmed empirically that SQLite both prepares and
+// executes "where <cond> or <fts> match <expr>", returning a real row
+// where the match did not hold (rank genuinely null there) -- depth 0
+// alone, without this check, would be an unsound rule. A "not" directly
+// before the identifier is excluded by the same exact-shape requirement
+// (its conjunct then starts with "not", not an identifier), though this
+// is for simplicity, not soundness: "where not (f match ...)" already
+// fails at execution, not merely at typing, so it cannot itself return a
+// row with a wrong type. A conjunct wrapped in its own parentheses, or a
+// qualified "<alias>.<column> match" form, is conservatively not
+// recognized (a safe loss of precision, not unsound).
+export function unconditionalMatchAliases(sql: string): Set<string> {
+  const t = significant(tokenize(sql));
+  const start = t.findIndex((tok) => tok.depth === 0 && isKeyword(tok, "where"));
+  if (start === -1) return new Set();
+  const stop = new Set(["group", "order", "limit", "having", "union", "except", "intersect", "returning", "window"]);
+  let end = t.length;
+  for (let i = start + 1; i < t.length; i++) {
+    if (t[i]!.depth === 0 && stop.has(unquote(t[i]!.text).toLowerCase()) && t[i]!.type === "ident") { end = i; break; }
+  }
+  const clause = t.slice(start + 1, end);
+  if (clause.some((tok) => tok.depth === 0 && isKeyword(tok, "or"))) return new Set();
+  const out = new Set<string>();
+  let conjunctStart = 0;
+  for (let i = 0; i <= clause.length; i++) {
+    if (i === clause.length || (clause[i]!.depth === 0 && isKeyword(clause[i], "and"))) {
+      const conjunct = clause.slice(conjunctStart, i);
+      if (conjunct.length >= 2 && conjunct[0]!.type === "ident" && isKeyword(conjunct[1], "match")) {
+        out.add(unquote(conjunct[0]!.text));
+      }
+      conjunctStart = i + 1;
+    }
+  }
+  return out;
+}
+
 // A migration file that rebuilds a table records, in one comment line
 // render() writes, the shape tableStatements saw for that table at
 // generation time: each column's normalized declaration text (the same

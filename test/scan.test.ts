@@ -5,7 +5,7 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
-import { aliasMap, columnRef, created, definitions, leadingComment, namedParams, normalize, paramSites, quoteIdent, renamedColumn, selectItems, splitStatements, tokenize } from "../src/build/scan.ts";
+import { aliasMap, columnRef, created, definitions, leadingComment, namedParams, normalize, paramSites, quoteIdent, renamedColumn, selectItems, splitStatements, tokenize, unconditionalMatchAliases } from "../src/build/scan.ts";
 
 const ident = gs.fromRegex("[a-z_][a-z0-9_]{0,6}");
 const fragment = gs.composite((tc): string => {
@@ -211,6 +211,16 @@ describe("shapes", () => {
     assert.deepEqual([...d.columns], [["id", "id text primary key not null"], ["n", "n integer check(n > 0)"]]);
     assert.deepEqual(d.constraints, ["constraint u unique(n)", "foreign key(n) references o(id)"]);
   });
+});
+
+test("unconditionalMatchAliases finds only a top-level, unqualified <ident> match <expr> conjunct, and gives up on a depth-0 or", () => {
+  assert.deepEqual(unconditionalMatchAliases("select rank from f where f match :q"), new Set(["f"]));
+  assert.deepEqual(unconditionalMatchAliases("select rank from f where f match :q and body <> ''"), new Set(["f"]));
+  assert.deepEqual(unconditionalMatchAliases("select rank from f where rowid = 2 or f match :q"), new Set());
+  assert.deepEqual(unconditionalMatchAliases("select rank from f"), new Set());
+  assert.deepEqual(unconditionalMatchAliases("select rank from f where (x=1 or x=2) and f match :q"), new Set(["f"]));
+  assert.deepEqual(unconditionalMatchAliases("select rank from f where f match :q or (x=1 and y=2)"), new Set());
+  assert.deepEqual(unconditionalMatchAliases("select rank from f where not f match :q and body <> ''"), new Set());
 });
 
 test('named slots preserve prefixes, repeated slots, and qualified-key collisions', () => {

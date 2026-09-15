@@ -212,8 +212,10 @@ describe("Typer.analyze", () => {
   });
 
   test("a full-text search table: text columns, a numeric rank, and a string match parameter", () => {
+    // The WHERE clause's unconditional "note_search match :q" conjunct makes
+    // rank non-null (a MATCH is required for every row this query returns).
     const a = t.analyze("select order_id, note, rank, cast(bm25(note_search) as real) as score from note_search where note_search match :q order by rank", "orders");
-    assert.deepEqual(a.columns.map((c) => [c.name, c.type]), [["order_id", "string | null"], ["note", "string | null"], ["rank", "number | null"], ["score", "number | null"]]);
+    assert.deepEqual(a.columns.map((c) => [c.name, c.type]), [["order_id", "string | null"], ["note", "string | null"], ["rank", "number"], ["score", "number | null"]]);
     assert.deepEqual(a.params, [{ name: "q", type: "string", encode: false }]);
     assert.deepEqual(a.scans, []);
     const b = t.analyze("insert into note_search (order_id, note) values (:id, :note)", "orders");
@@ -271,6 +273,46 @@ describe("a full-text search table's own match-operand column refuses to be sele
   test("select * does not expand the hidden column, so it is not refused", () => {
     const a = t.analyze("select * from f", "m");
     assert.ok(!a.columns.some((c) => c.name === "f"));
+  });
+});
+
+describe("a full-text search table's rank column types as non-null when a WHERE conjunct guarantees a MATCH", () => {
+  const engine = new Engine([`create virtual table f using fts5(body)`]);
+  const t = new Typer(engine, new Map());
+
+  test("a single MATCH conjunct makes rank non-null", () => {
+    const a = t.analyze("select rank from f where f match :q", "m");
+    assert.deepEqual(a.columns, [{ name: "rank", type: "number", json: false }]);
+  });
+
+  test("a MATCH conjunct alongside another AND-ed conjunct still makes rank non-null", () => {
+    const a = t.analyze("select rank from f where f match :q and body <> ''", "m");
+    assert.deepEqual(a.columns, [{ name: "rank", type: "number", json: false }]);
+  });
+
+  test("no WHERE clause at all leaves rank nullable (regression guard)", () => {
+    const a = t.analyze("select rank from f", "m");
+    assert.deepEqual(a.columns, [{ name: "rank", type: "number | null", json: false }]);
+  });
+
+  test("a MATCH ORed with another condition leaves rank nullable: depth 0 alone does not prove every row matched", () => {
+    // SQLite prepares and executes this query, returning a row where the
+    // match did not hold (rowid = 2, f match 'alpha' false) with rank null.
+    // A rule that only checked "does MATCH appear at depth 0" would wrongly
+    // call this non-null.
+    const a = t.analyze("select rank from f where rowid = 2 or f match :q", "m");
+    assert.deepEqual(a.columns, [{ name: "rank", type: "number | null", json: false }]);
+  });
+
+  test("MATCH in a LEFT JOIN's ON clause leaves the outer rank nullable: only the WHERE clause is examined", () => {
+    const other = new Engine([`create table t (id text primary key not null)`, `create virtual table f using fts5(body)`]);
+    try {
+      const ot = new Typer(other, new Map());
+      const a = ot.analyze("select f.rank from t left join f on f match :q", "m");
+      assert.deepEqual(a.columns, [{ name: "rank", type: "number | null", json: false }]);
+    } finally {
+      other.close();
+    }
   });
 });
 

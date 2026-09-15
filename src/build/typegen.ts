@@ -8,7 +8,7 @@
 import { queryScope, querySources, sqliteName, unionType, unionMembers, type Cte } from "./scope.ts";
 import { GUARD_TABLE } from "../runtime/plan.ts";
 import type { ColumnFact, Engine, OutputColumn, TableFact } from "./facts.ts";
-import { aliasMap, columnRef, findCall, isKeyword, leadingComment, namedParams, nonNullFilterAlias, paramSites, quoteIdent, returningClause, selectItems, significant, splitAtCommas, tokenize, unquote } from "./scan.ts";
+import { aliasMap, columnRef, findCall, isKeyword, leadingComment, namedParams, nonNullFilterAlias, paramSites, quoteIdent, returningClause, selectItems, significant, splitAtCommas, tokenize, unconditionalMatchAliases, unquote } from "./scan.ts";
 
 export class BuildError extends Error {
   readonly sql: string | undefined;
@@ -249,7 +249,7 @@ export class Typer {
     return result;
   }
 
-  private sourceRows(source: ReturnType<typeof querySources>[number], environment: Map<string, Binding>, active: Set<Binding | string>, note: (r: Resolved) => Resolved): ScopeColumn[] {
+  private sourceRows(source: ReturnType<typeof querySources>[number], environment: Map<string, Binding>, active: Set<Binding | string>, note: (r: Resolved) => Resolved, matched = false): ScopeColumn[] {
     if (source.query) return this.scopeRows(source.query, environment, active, note);
     if (source.functionSql) {
       return this.engine.columns(this.scopeProbe(`select * from ${source.functionSql}`, environment)).map((column) => ({ name: column.name, type: "SqlValue", json: false }));
@@ -296,9 +296,10 @@ export class Typer {
     if (!table) throw new BuildError(`unknown source ${name}`, name);
     const rows: ScopeColumn[] = table.columns.map((column) => {
       const r = note(this.column(table.name, column.name, name));
+      const nullable = r.nullable && !(matched && table.virtual && column.name === "rank");
       return {
         name: column.name,
-        type: r.nullable ? unionType(r.type, "null") : r.type,
+        type: nullable ? unionType(r.type, "null") : r.type,
         json: false,
         ...(column.hidden ? { hidden: true } : {}),
         ...(table.virtual && column.name === table.name ? { matchOperandOf: table.name } : {}),
@@ -350,9 +351,10 @@ export class Typer {
     try { sources = querySources(sql); } catch (error) { throw new BuildError(`query scope: ${(error as Error).message}`, sql); }
     const context: ScopeContext = { rows: new Map(), visible: [], nullable: new Set(), environment, active, ...(parent ? { parent } : {}) };
     const aliases = new Map<string, string | null>();
+    const matchedAliases = new Set([...unconditionalMatchAliases(sql)].map(sqliteName));
     for (const source of sources) {
       const alias = sqliteName(source.alias);
-      const rows = this.sourceRows(source, environment, active, note);
+      const rows = this.sourceRows(source, environment, active, note, matchedAliases.has(alias));
       const common = new Set((source.natural ? rows.filter((column) => !column.hidden && context.visible.some((left) => sqliteName(left.name) === sqliteName(column.name))).map((column) => column.name) : source.using).map(sqliteName));
       const before = context.visible;
       if (source.join === "right" || source.join === "full") {
