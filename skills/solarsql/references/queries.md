@@ -64,7 +64,7 @@ A BLOB cast returns `Uint8Array | null` unless the complete inner expression pro
 | Column of the select list | Type |
 |---|---|
 | a column of a table, or `t.*` | the declared type ([schema.md](schema.md)); `\| null` when an outer join can omit its source |
-| a column through a view, CTE, or derived table | its defining query's type, including its nullability and JSON shape |
+| a column through a view, CTE, or derived table | its defining query's type, including its nullability and JSON shape (ADR 0048) |
 | a scalar SELECT | its single output type, with `\| null` for an empty result |
 | a string, number, or NULL literal | the literal's type |
 | a BLOB literal, such as `x'00ff'` or `X''` | `Uint8Array` |
@@ -76,9 +76,9 @@ A BLOB cast returns `Uint8Array | null` unless the complete inner expression pro
 | `json_object('k', c, ...)` | `{ k: T; ... }` |
 | `json((select json_group_array(...) from child where child.parent_id = o.id))` inside a `json_object` | a nested array; without the `json()` the column holds JSON text |
 | `VALUES` | union of all row types by column position |
-| `UNION` or `UNION ALL` | union of branch types by column position |
-| `INTERSECT` or `EXCEPT` | the left input's types |
-| `RIGHT JOIN` or `FULL JOIN` | source types with nullability for each side that can be absent |
+| `UNION` or `UNION ALL` | union of branch types by column position (ADR 0048) |
+| `INTERSECT` or `EXCEPT` | the left input's types (ADR 0048) |
+| `RIGHT JOIN` or `FULL JOIN` | source types with nullability for each side that can be absent (ADR 0048) |
 
 A JSON constructor must span the complete expression, with supported FILTER or OVER clauses for an aggregate.
 An enclosing scalar expression such as `length(json_object(...))` needs an explicit CAST.
@@ -97,7 +97,7 @@ These clauses change the result values and order; they retain the inferred eleme
 SQLite validates combinations with FILTER and OVER.
 
 A `json_group_array` over the outer side of a `left join` needs `filter (where l.id is not null)`, or a parent with no children gets one null element. `coalesce(..., '[]')` gives the empty array.
-Only an exact `filter (where alias.column is not null)` removes that alias's outer nullability from the generated array element type.
+Only an exact `filter (where alias.column is not null)` removes that alias's outer nullability from the generated array element type (ADR 0047).
 Other predicates retain conservative nullability; filtering one alias does not narrow another alias.
 
 Each catalog query contains one SELECT or VALUES statement, optionally preceded by WITH.
