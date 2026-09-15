@@ -8,7 +8,7 @@ Commit `134a51f` ("Reject a parameter in an assertion instead of silently bindin
 
 Measured directly (the commit's own added test): an assertion `select count(*) = 0 as ok from orders o where o.user_id = :uid and not exists (select 1 from users u where u.id = o.user_id)`, against data with real orphaned rows, reported `ok: true` before this fix — the unbound `:uid` made the WHERE clause vacuous, so the assertion silently passed on a real violation.
 
-Neither existing ADR admits this refusal. ADR 0057 (rehearse's founding decision) covers the snapshot-and-check mechanism generally and does not mention rejecting a parameter inside an assertion's SQL text. ADR 0088 is a different mechanism: it validates the runtime parameter *object* an adapter binds against a generated operation's declared keys, not a SQL parameter placeholder appearing in `checks.assertions`' SQL text, which is meant to take none.
+Neither existing ADR admits this refusal. ADR 0057 (rehearse's founding decision) constrains the proposed SQL itself (denies database attachments and transaction control) and names caller-supplied data assertions as one of four checks, alongside integrity, foreign keys, and old query structure; it does not constrain what an assertion's own SQL text may contain. ADR 0088 is a different mechanism: it validates the runtime parameter *object* an adapter binds against a generated operation's declared keys, not a SQL parameter placeholder appearing in `checks.assertions`' SQL text, which is meant to take none.
 
 ## Decision
 
