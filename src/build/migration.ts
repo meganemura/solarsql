@@ -259,8 +259,34 @@ function byName(a: { name: string }, b: { name: string }): number {
   return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
 }
 
+// Column and foreign-key order is declaration order, not a property of the
+// table's shape: `ALTER TABLE ... ADD COLUMN` appends at the end, so two
+// legitimate histories (two branches each adding a column, merged in either
+// order) can declare the same columns in a different order, the same fact
+// ADR 0101 established for a rebuild's replay-time check. Reordering a
+// column with an inline `references` clause also reorders `foreignKeys`
+// (SQLite's own `pragma_foreign_key_list` follows declaration order), so
+// both fields sort here, the same way `constraints` already did.
 function tableShape(t: Table): unknown {
-  return { name: t.name, columns: t.columns, foreignKeys: t.foreignKeys, constraints: [...t.constraints].sort(), withoutRowid: t.withoutRowid, strict: t.strict, rowidAlias: t.rowidAlias };
+  return {
+    name: t.name,
+    columns: [...t.columns].sort(byName),
+    foreignKeys: [...t.foreignKeys].sort(byForeignKey),
+    constraints: [...t.constraints].sort(),
+    withoutRowid: t.withoutRowid,
+    strict: t.strict,
+    rowidAlias: t.rowidAlias,
+  };
+}
+
+// Keyed on every field, not only `from`: SQLite allows more than one foreign
+// key declared from the same column (with different actions or targets), and
+// a partial key would leave those in declaration order, reintroducing the
+// same order sensitivity this function exists to remove.
+function byForeignKey(a: ForeignKey, b: ForeignKey): number {
+  const key = (f: ForeignKey) => `${f.from}\0${f.table}\0${f.to}\0${f.onUpdate}\0${f.onDelete}`;
+  const ka = key(a), kb = key(b);
+  return ka < kb ? -1 : ka > kb ? 1 : 0;
 }
 
 function same(a: unknown, b: unknown): boolean {
