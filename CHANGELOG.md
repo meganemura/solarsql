@@ -5,6 +5,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 ## Unreleased
 
 - Fixed: `diff()` no longer proposes a rebuild, or refuses outright behind an `ON DELETE` foreign key, for a table whose columns or inline foreign keys are declared in a different order than the deployed schema replays them in; only an actual change to the column or foreign-key set is treated as one (ADR 0115).
+- Fixed: a DML statement's own top-level WHERE parameter compared to a column on an `UPDATE ... FROM` join's null-producing side now types `| null`, the same as the identical comparison inside a SELECT scope already did (ADR 0112).
+- Fixed: a WITH-prefixed UPDATE, `INSERT ... ON CONFLICT DO UPDATE`, or `REPLACE ... ON CONFLICT DO UPDATE` types its SET-clause parameter from the target column, instead of `SqlValue`; the WITH clause no longer hides the statement's own verb from the target-table lookup.
 - Added: the build also refuses a CHECK constraint, a view, or a trigger whose own body calls a SQL function outside D1 and a Durable Object's own SQLite allowlist, including one no query or plan item ever selects or fires, and a migration file already on disk that has the same problem (ADR 0114).
 - Added: the build refuses a query or a command plan item that calls a SQL function outside D1 and a Durable Object's own SQLite allowlist, instead of accepting it locally and failing on every call once deployed (ADR 0113).
 - Fixed: `solarsql migration` runs every check `solarsql build` runs, including the module-boundary check, before it writes a migration file (ADR 0096).
