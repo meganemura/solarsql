@@ -87,6 +87,7 @@ Shared SQL reports all its catalog locations.
 | `duplicate output column` | give each result column a distinct AS name |
 | `query scope does not match SQLite's output columns` | use explicit result columns for this unsupported projection |
 | `is an expression with no type` | wrap the expression in `cast(... as integer)`, `cast(... as real)`, `cast(... as text)`, or `cast(... as blob)` |
+| `do not stabilize within 32 steps` | use CAST for the recursive expression |
 | `is the match operand of` | use it in a `<table> match :param` condition, or as the first argument of `highlight(...)`, `snippet(...)`, or `bm25(...)`, instead of selecting it directly |
 | `json_group_array over the outer join alias` | add `filter (where <alias>.<column> is not null)` |
 | `inside json yields JSON text` | wrap the subquery in `json(...)` |
@@ -94,6 +95,7 @@ Shared SQL reports all its catalog locations.
 | `json_object key must be a string literal` | write the key as `'name'` |
 | `is used with two different types` | give the two places of the parameter one type, or use two parameters |
 | `of this statement is` | the same statement text sits in two commands with two types; give it a type of its own, or split it |
+| `in one statement and` | the same parameter name has two types across the plan's statements; use one type, or two parameter names |
 | `uses changes(), which counts the statement right before it` | put the assert right after the statement it counts |
 | `the returns clause uses changes()` | read the command's changes result instead |
 | `RETURNING clause is discarded` | move the read into the command's `returns` field instead |
@@ -113,10 +115,13 @@ Shared SQL reports all its catalog locations.
 | `is not in modules` | the configuration imports a module it does not list; add the module's directory to `modules` |
 | `migration pending. Write the migration` | run `npx solarsql migration <name>` |
 | `migration blocked:` | follow the reason. For an ordinary removal, copy the exact JSON and command. For another block, split an ambiguous change, add a default, or write a data-preserving migration for a rebuild with foreign-key delete actions |
+| `Invalid migration intent` | check the file is valid JSON matching the migration-intent shape; the rest of the message names the specific problem |
 | `generated files are stale` | run `npx solarsql build` |
 | `migration name must match` | rename: `[a-z0-9_]+` |
 | `module name must match` | rename: `[a-z][a-z0-9_]*` |
+| `requires an integer` | pass `--timeout-ms` a positive integer, at most 2147483647 |
 | `exists. init is for a project without one` | init never writes over a file; add a module by hand ([schema.md](schema.md)) |
+| `migrations/ exists` | init never writes over a project with a migration history; add a module by hand ([schema.md](schema.md)) |
 
 A statement that does not prepare fails with the engine's own message, such as `no such column: x`, under the module and the statement.
 
