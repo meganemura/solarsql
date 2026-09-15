@@ -20,7 +20,7 @@ Triggers of the module keep it in step with the table it indexes.
 ## Why
 
 FTS5 is the engine's own search, so the same SQL runs on every target and the types come from the same facts.
-A search table has no ALTER, so drop and create is the only migration; the rows come back through the triggers or a rebuild of the index, and the table it indexes keeps them.
+A search table has no ALTER, so drop and create is the only migration; drop and create take the shadow tables with them, so the search entries start empty while the table it indexes keeps its rows. A later write brings its own row back through the trigger; an existing row returns only when the migration also inserts it.
 `search()` is a name of its own because a search table is not STRICT and has no primary key, which the rules for `table()` require.
 
 ## Consequences
