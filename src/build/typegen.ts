@@ -461,15 +461,15 @@ export class Typer {
     if (items.length !== outputs.length) return bare();
     const scratch = `select ${items.map((i) => i.text).join(", ")} from ${quoteIdent(table)}`;
     const affinities = this.engine.affinities(scratch);
-    // A bare RETURNING column names no alias, so it can only mean the
-    // statement's own target table. `aliases` spans the whole SQL text,
-    // including a nested subquery's own aliases (for example inside a
-    // json() value); those are irrelevant to this resolution and would
-    // make an otherwise-unambiguous name look ambiguous. outerOnly excludes
-    // them, without narrowing `aliases` itself, which paramType and the
-    // json value types below still need at full width.
-    const bareAliases = aliasMap(sql, true);
-    return outputs.map((out, i) => this.outputColumn(sql, out, items[i]!, aliases, new Set(), affinities, note, undefined, bareAliases));
+    // A RETURNING clause has exactly one row source, the statement's own
+    // target table (ADR 0100), so every branch below resolves against that
+    // table alone. `aliases` (the caller's parameter, spanning the whole SQL
+    // text) would also carry a nested subquery's own aliases, for example
+    // inside a json() value; those are irrelevant to RETURNING's own
+    // resolution and would make an otherwise-unambiguous name look
+    // ambiguous, or unresolvable. outerOnly excludes them.
+    const outerAliases = aliasMap(sql, true);
+    return outputs.map((out, i) => this.outputColumn(sql, out, items[i]!, outerAliases, new Set(), affinities, note));
   }
 
   private outputColumn(
@@ -481,15 +481,14 @@ export class Typer {
     affinities: Map<string, string>,
     note: (r: Resolved) => Resolved,
     scope?: ScopeContext,
-    bareAliases: Map<string, string | null> = aliases,
   ): Analysis["columns"][number] {
     if (out.table && out.column) {
       const table = this.tables.get(out.table);
       if (table?.virtual && out.column === out.table) throw this.matchOperandRefusal(out.name, out.table, sql);
       const r = note(this.column(out.table, out.column, sql));
       const ref = item ? columnRef(item.expr) : null;
-      const alias = ref?.alias ?? (ref ? this.aliasOfBareColumn(bareAliases, ref.column) : null);
-      const unresolved = item !== null && (alias === null || bareAliases.get(alias) !== out.table);
+      const alias = ref?.alias ?? (ref ? this.aliasOfBareColumn(aliases, ref.column) : null);
+      const unresolved = item !== null && (alias === null || aliases.get(alias) !== out.table);
       const joinNull = unresolved || (alias !== null && nullableAliases.has(alias));
       return { name: out.name, type: r.nullable || joinNull ? `${r.type} | null` : r.type, json: false };
     }

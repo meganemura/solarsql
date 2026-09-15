@@ -304,6 +304,49 @@ describe("Typer.analyze", () => {
     const a = t.analyze("update orders set note = note where id = :id returning id", "orders");
     assert.deepEqual(a.columns, [{ name: "id", type: "OrdersId", json: false }]);
   });
+
+  // The bare-column branch resolves against the RETURNING target table alone
+  // (the tests above). The CAST branch and the json_object branch used to
+  // resolve their own bare column references a different way, against the
+  // whole SQL text's aliases, so a nested subquery's own alias of the same
+  // column name (here, order_lines' own "id", inside the json() value) made
+  // the outer "id" reference look ambiguous or unresolvable to them, even
+  // though only one alias of "id" exists in the RETURNING clause's own scope.
+  test("a RETURNING CAST branch types a bare NOT NULL column non-null, even when a nested json() subquery has its own alias of the same column name", () => {
+    const a = t.analyze(
+      `update orders set note = note where id = :id
+       returning cast(id as text) as t,
+         json_object('lines', json((select json_group_array(json_object('sku', l.sku))
+           from order_lines l where l.order_id = orders.id))) as data`,
+      "orders",
+    );
+    assert.equal(a.columns.find((c) => c.name === "t")?.type, "string");
+  });
+
+  test("a RETURNING CAST branch types a bare NOT NULL column non-null with no nested subquery involved", () => {
+    const a = t.analyze("update orders set note = note where id = :id returning cast(id as text) as t", "orders");
+    assert.equal(a.columns.find((c) => c.name === "t")?.type, "string");
+  });
+
+  test("a RETURNING json_object branch resolves a bare column, even when a nested json() subquery has its own alias of the same column name", () => {
+    const a = t.analyze(
+      `update orders set note = note where id = :id
+       returning json_object('id', id,
+         'lines', json((select json_group_array(json_object('sku', l.sku))
+           from order_lines l where l.order_id = orders.id))) as data`,
+      "orders",
+    );
+    const dataColumn = a.columns.find((c) => c.name === "data");
+    assert.equal(dataColumn?.json, true);
+    assert.equal(dataColumn?.type, '{ "id": OrdersId; "lines": Array<{ "sku": string }> }');
+  });
+
+  test("a RETURNING json_object branch resolves a bare column with no nested subquery involved", () => {
+    const a = t.analyze("update orders set note = note where id = :id returning json_object('id', id) as data", "orders");
+    const dataColumn = a.columns.find((c) => c.name === "data");
+    assert.equal(dataColumn?.json, true);
+    assert.equal(dataColumn?.type, '{ "id": OrdersId }');
+  });
 });
 
 describe("a full-text search table's own match-operand column refuses to be selected", () => {
