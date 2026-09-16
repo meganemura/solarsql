@@ -107,7 +107,7 @@ const HISTORY = "solarsql_migrations";
 export function migrate(storage: StorageLike, files: readonly MigrationFile[], options: MigrationOptions = {}): string[] {
   const ordered = [...files].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
   for (let i = 0; i < ordered.length; i++) {
-    if (ordered[i]!.name === ordered[i - 1]?.name) throw new MigrationHistoryError("DUPLICATE_MIGRATION", `Duplicate migration: ${ordered[i]!.name}`, ordered[i]!.name);
+    if (ordered[i]!.name === ordered[i - 1]?.name) throw new MigrationHistoryError("DUPLICATE_MIGRATION", `Duplicate migration: ${ordered[i]!.name}. List each migration file once.`, ordered[i]!.name);
     for (const sql of splitStatements(ordered[i]!.sql)) {
       const first = significant(tokenize(sql))[0]?.text.toUpperCase();
       if (first && ["BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE"].includes(first)) {

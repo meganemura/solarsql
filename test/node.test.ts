@@ -120,7 +120,8 @@ test('migration history rejects changes, gaps, duplicates and insertion before a
       [[first, first], 'DUPLICATE_MIGRATION'],
       [[{name:'0001_earlier.sql', sql:'delete from saved'}, first], 'MIGRATION_ORDER'],
     ] as const) {
-      assert.throws(() => migrate(raw, files), (e: unknown) => (e as {code: string}).code === code);
+      assert.throws(() => migrate(raw, files), (e: unknown) => (e as {code: string}).code === code
+        && (code !== 'DUPLICATE_MIGRATION' || /Duplicate migration: 0002_initial\.sql\. List each migration file once\./.test((e as Error).message)));
       assert.equal(raw.prepare('select value from saved').get()!.value, 'retained');
     }
     const bad = { name:'0003_bad.sql', sql:"delete from saved; insert into absent values (1)" };
