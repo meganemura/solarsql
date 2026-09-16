@@ -544,6 +544,81 @@ export const referrals = table(\`
     }
   });
 
+  test("a column-level deferred foreign key is refused with the fix in the message", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/customers/module.ts");
+      writeFileSync(schema, readFileSync(schema, "utf8") + `
+export const referrals = table(\`
+  create table referrals (
+    id text primary key not null,
+    customer_id text references customers(id) deferrable initially deferred
+  ) strict
+\`);
+`);
+      await expectBuildError(dir, /table referrals declares a foreign key as DEFERRABLE INITIALLY DEFERRED \(column customer_id\)\. D1 and the Durable Object adapter cannot classify or catch/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a table-level deferred foreign key constraint is refused", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/customers/module.ts");
+      writeFileSync(schema, readFileSync(schema, "utf8") + `
+export const referrals = table(\`
+  create table referrals (
+    id text primary key not null,
+    customer_id text,
+    foreign key (customer_id) references customers(id) deferrable initially deferred
+  ) strict
+\`);
+`);
+      await expectBuildError(dir, /table referrals declares a foreign key as DEFERRABLE INITIALLY DEFERRED \(table constraint `foreign key\(customer_id\) references customers\(id\) deferrable initially deferred`\)/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("NOT DEFERRABLE, a bare DEFERRABLE, and DEFERRABLE INITIALLY IMMEDIATE are SQLite's ordinary immediate behavior and build", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/customers/module.ts");
+      writeFileSync(schema, readFileSync(schema, "utf8") + `
+export const referrals = table(\`
+  create table referrals (
+    id text primary key not null,
+    a text references customers(id) not deferrable,
+    b text references customers(id) deferrable,
+    c text references customers(id) deferrable initially immediate
+  ) strict
+\`);
+`);
+      await build(join(dir, "example/solarsql.config.ts"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a column merely named deferrable is not refused", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/customers/module.ts");
+      writeFileSync(schema, readFileSync(schema, "utf8") + `
+export const referrals = table(\`
+  create table referrals (
+    id text primary key not null,
+    "deferrable" text
+  ) strict
+\`);
+`);
+      await build(join(dir, "example/solarsql.config.ts"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a foreign key with no column list resolves to the target's primary key and builds", async () => {
     const dir = copy();
     try {

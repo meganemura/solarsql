@@ -15,7 +15,7 @@ import { Engine, type Access, type OutputColumn } from "./facts.ts";
 import { applied, diff, introspect, open, type DropIntent, type Rename, type RenameRepair } from "./migration.ts";
 import type { MigrationIntent } from "./migration-intent.ts";
 import { migrationSequence, nextMigrationFile, withMigrationLock, writeNewMigration } from "./migration-files.ts";
-import { created, indexTarget, quoteIdent, triggerTarget, type RebuildRecord } from "./scan.ts";
+import { created, definitions, indexTarget, isKeyword, quoteIdent, significant, tokenize, triggerTarget, type RebuildRecord } from "./scan.ts";
 import { sqliteName } from "./scope.ts";
 import { shellArgument } from "./shell.ts";
 import { writeGeneratedFile } from "./output.ts";
@@ -251,6 +251,28 @@ export function declaredDdl(modules: readonly Module[]): string[] {
   ];
 }
 
+// A foreign key declared DEFERRABLE INITIALLY DEFERRED resolves at the
+// enclosing transaction's commit, not at the write that violates it.
+// pragma_foreign_key_list (facts.ts's foreignKeys) never carries this
+// modifier, so the check works from the table's own declared SQL text.
+// Only the exact three-token sequence counts: NOT DEFERRABLE, a bare
+// DEFERRABLE, and DEFERRABLE INITIALLY IMMEDIATE are all SQLite's ordinary
+// immediate behavior and must not be refused (measured in node:sqlite:
+// only DEFERRABLE INITIALLY DEFERRED defers a foreign-key exception past
+// the writing transactionSync closure). A plain substring match on
+// "deferrable" would also refuse a column merely named `deferrable`.
+function deferredForeignKeyDeclaration(sql: string): { column: string } | { constraint: string } | null {
+  const isDeferredInitiallyDeferred = (text: string): boolean => {
+    const t = significant(tokenize(text));
+    return t.some((tok, i) => isKeyword(tok, "deferrable") && isKeyword(t[i + 1], "initially") && isKeyword(t[i + 2], "deferred"));
+  };
+  const defs = definitions(sql);
+  if (!defs) return null;
+  for (const [name, def] of defs.columns) if (isDeferredInitiallyDeferred(def)) return { column: name };
+  for (const constraint of defs.constraints) if (isDeferredInitiallyDeferred(constraint)) return { constraint };
+  return null;
+}
+
 export async function build(configPath: string, options: BuildOptions = {}): Promise<BuildResult> {
   const buildStarted = performance.now();
   const write = options.write ?? true;
@@ -272,6 +294,10 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
 
   // Ownership: one module per table.
   const owner = new Map<string, Module>();
+  // The table's own declared SQL text, keyed by table name, for the one
+  // check below (deferred foreign keys) that pragma_foreign_key_list
+  // cannot answer and so must read the original CREATE TABLE string.
+  const declaredTableSql = new Map<string, string>();
   for (const m of modules) {
     for (const sql of m.tables) {
       const c = created(sql);
@@ -279,6 +305,7 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
       const other = owner.get(c.name);
       if (other) throw new BuildError(`table ${c.name} is declared by module ${other.name} and by module ${m.name}`);
       owner.set(c.name, m);
+      declaredTableSql.set(c.name, sql);
     }
     for (const sql of m.indexes) {
       const c = created(sql);
@@ -352,6 +379,21 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
         if (!targetColumn || !target.columns.some((c) => sqliteName(c.name) === sqliteName(targetColumn!))) {
           throw new BuildError(`table ${t.name} has a foreign key to ${fk.table}(${fk.to ?? "its primary key"}), which has no such column. Fix the column name, or declare it on ${fk.table}.`);
         }
+      }
+      // A DEFERRABLE INITIALLY DEFERRED foreign key resolves at commit, not
+      // at the write that violates it. D1 and the Durable Object adapter
+      // cannot classify that failure the way an immediate foreign key's
+      // failure is classified: on D1, run() falls through to an
+      // unclassified throw; on a Durable Object, run()'s caller observes a
+      // false success before the platform discards the response and resets
+      // storage. Refuse the declaration itself, since neither target can be
+      // fixed to catch it.
+      const deferred = declaredTableSql.has(t.name) ? deferredForeignKeyDeclaration(declaredTableSql.get(t.name)!) : null;
+      if (deferred) {
+        const where = "column" in deferred ? `column ${deferred.column}` : `table constraint \`${deferred.constraint}\``;
+        throw new BuildError(
+          `table ${t.name} declares a foreign key as DEFERRABLE INITIALLY DEFERRED (${where}). D1 and the Durable Object adapter cannot classify or catch a violation of it: it surfaces as an opaque platform error, or, on a Durable Object, as a false success the caller cannot detect before the platform resets storage. Declare the key immediate instead (SQLite's own default: omit DEFERRABLE, or write NOT DEFERRABLE or DEFERRABLE INITIALLY IMMEDIATE), and order the command's plan to insert the referenced row first. solarsql's own generated migrations use \`pragma defer_foreign_keys = on\` for a rebuild, but that is a session-scoped pragma, not a permanent schema declaration, and this refusal does not apply to it.`,
+        );
       }
       // Id is a string contract. Other primary keys retain their storage type.
       if (pk.length === 1 && pk[0]!.type.toUpperCase() === "TEXT") brands.set(t.name, { table: t.name, column: pk[0]!.name, typeName: brandName(t.name), module: m.name });
