@@ -193,7 +193,7 @@ A person reading the error sees the constraint kind; solarsql's own classifier d
 Node and a Durable Object carry the same cost, not only D1: `migrate()`'s own `pragma_foreign_key_check` scan (above) throws `Migration <file>: FOREIGN KEY constraint failed (pragma_foreign_key_check): [...]`, and `constraintFailure()` returns `null` for that message too, for the same reason -- its `Migration <file>: ` prefix and `(pragma_foreign_key_check): [...]` suffix both survive `bareMessage()` unstripped.
 This is measured for D1's local apply and for `db.batch()` directly; a remote apply's own rejection message under a real violation has not been observed the same way -- wrangler applies a rebuild file in one call there too, but the one remote run on record found empty tables and no violation to reject.
 
-On node:sqlite, `migrate(db, migrations)` from `solarsql/node` does the same, and returns the names applied now.
+On node:sqlite, `migrate(db, migrations)` from `solarsql/node` applies the pending files once, in name order, and records each; it returns the names applied now.
 
 There is no down migration. A change back is the next migration.
 
