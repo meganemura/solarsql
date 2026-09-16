@@ -271,12 +271,14 @@ test("missing generated files report the rebuild command as an action in JSON", 
       const path = join(f.dir, config);
       writeFileSync(path, `import { orderQueries } from "./modules/orders/public.ts";\nexport const queries = orderQueries;\n${readFileSync(path, "utf8")}`);
     }
-    const result = f.run("build", "--check", "--json");
-    assert.equal(result.status, 1, result.stderr);
-    const report = JSON.parse(result.stdout);
-    assert.equal(report.diagnostics[0].code, "BUILD_FAILED");
-    assert.ok(typeof report.diagnostics[0].action === "string" && report.diagnostics[0].action.length > 0, JSON.stringify(report.diagnostics[0]));
-    assert.equal(report.diagnostics[0].action, `Run \`npx solarsql build ${quotedConfig}\`.`);
+    for (const commandArgs of [["inspect"], ["build", "--check", "--json"]]) {
+      const result = f.run(...commandArgs);
+      assert.equal(result.status, 1, result.stderr);
+      const report = JSON.parse(result.stdout);
+      assert.equal(report.diagnostics[0].code, "BUILD_FAILED");
+      assert.ok(typeof report.diagnostics[0].action === "string" && report.diagnostics[0].action.length > 0, JSON.stringify(report.diagnostics[0]));
+      assert.equal(report.diagnostics[0].action, `Run \`npx solarsql build ${quotedConfig}\`.`);
+    }
   }
 });
 
