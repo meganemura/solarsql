@@ -360,6 +360,19 @@ test('a Durable Object rebuild that violates a new NOT NULL rolls back the schem
 // this divergence: it always threw synchronously and rolled back only its
 // own file, matching this shim.
 //
+// pragma foreign_key_check scans every foreign key in the database, not
+// only the ones the current file's own statements touch: a violation that
+// predates this file (a row a different table wrote while pragma
+// foreign_keys was off, or one left over from before this check existed)
+// fails the next file that happens to run, and the error names that file,
+// not the file or the statement that actually created the violation. That
+// file's own changes still roll back even when they had nothing to do with
+// the violation, and every later file is blocked the same way until the
+// violation itself is fixed. Measured directly (a raw insert bypassing
+// migrate() entirely, followed by an unrelated harmless migration file
+// through migrate()): the harmless file's own error names it as the
+// culprit.
+//
 // Each of these five related tests covers one neighboring part of this:
 // - "a Durable Object rebuild that violates a new NOT NULL rolls back the
 //   schema, the row, and the history insert together" (above) covers a
