@@ -23,5 +23,6 @@ SOLARSQL_REMOTE_URL=https://solarsql-example.<your subdomain>.workers.dev SOLARS
 ```
 
 `npm test` skips it without the URL. The observe test is skipped on remote D1, because a deployed Worker runs several isolates and the hook's events live in one.
+This test runs the example's own steps -- the queries and commands its module already declares -- against the store the reset just emptied; it does not run a migration file, so a rebuild that carries `pragma defer_foreign_keys = on` is not among the steps it sends.
 
 A user's own Worker follows the same shape: a `wrangler.jsonc` with the D1 binding and `migrations_dir`, and a Durable Object class with `new_sqlite_classes`. wrangler's own init writes the Worker; solarsql writes none.

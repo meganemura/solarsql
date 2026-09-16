@@ -6,9 +6,10 @@
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { D1Harness, type WorkerOk } from "./d1.ts";
+import { D1Harness, type WorkerError, type WorkerOk } from "./d1.ts";
 import { applied, diff, introspect, open, render } from "../src/build/migration.ts";
 import { splitStatements } from "../src/build/scan.ts";
+import { constraintFailure } from "../src/runtime/plan.ts";
 
 const v1 = [
   `create table customers (id text primary key not null, name text not null)`,
@@ -127,6 +128,89 @@ describe("D1 applies generated migrations", () => {
   test("a third diff against the declaration is empty on the node:sqlite side", () => {
     const plan = diff(introspect(applied([file1, file2])), introspect(open(v2)));
     assert.deepEqual(plan, { kind: "ok", statements: [] });
+  });
+});
+
+// Pinning test, not a regression test: it records what D1's own batch API
+// does today with a rebuild that carries `pragma defer_foreign_keys = on`,
+// so a future change in that behavior shows up here. The pragma defers the
+// rebuild's own foreign-key check past the statements this test can send
+// and inspect individually, to D1's own end-of-batch commit -- a platform
+// commit the caller does not control, unlike a SQLite COMMIT. A violation
+// surfacing there reaches the caller as an opaque platform message, not
+// SQLite's own "FOREIGN KEY constraint failed" text, so constraintFailure()
+// (src/runtime/plan.ts) cannot classify it. The pragma itself stays: it is
+// correct SQLite and Node and a Durable Object both need it.
+describe("D1's own end-of-batch commit turns a deferred foreign-key violation opaque", () => {
+  const fkBefore = [
+    `create table customers (id integer primary key)`,
+    `create table orders (id text primary key not null, customer_id integer)`,
+  ];
+  const fkAfter = [
+    `create table customers (id integer primary key)`,
+    `create table orders (id text primary key not null, customer_id integer references customers(id))`,
+  ];
+
+  function generateFk(): string {
+    const plan = diff(introspect(open(fkBefore)), introspect(open(fkAfter)));
+    assert.equal(plan.kind, "ok", JSON.stringify(plan));
+    if (plan.kind !== "ok") throw new Error("unreachable");
+    return render(2, "add-customer-fk", plan.statements).sql;
+  }
+
+  test("with no orphaned row, the pragma-carrying rebuild applies cleanly", async (t) => {
+    const d1 = new D1Harness();
+    t.after(() => d1.dispose());
+    const seed = await d1.batch(splitStatements(`${fkBefore.join(";\n")};`).map((sql) => ({ sql })));
+    assert.equal(seed.ok, true, JSON.stringify(seed));
+    const rows = await d1.batch([
+      { sql: "insert into customers values (1)" },
+      { sql: "insert into orders values ('a', 1)" },
+    ]);
+    assert.equal(rows.ok, true, JSON.stringify(rows));
+    const reply = await d1.batch(splitStatements(generateFk()).map((sql) => ({ sql })));
+    assert.equal(reply.ok, true, JSON.stringify(reply));
+  });
+
+  test("with the pragma line removed, the same orphaned row classifies as a foreign-key failure", async (t) => {
+    const d1 = new D1Harness();
+    t.after(() => d1.dispose());
+    const seed = await d1.batch(splitStatements(`${fkBefore.join(";\n")};`).map((sql) => ({ sql })));
+    assert.equal(seed.ok, true, JSON.stringify(seed));
+    const orphan = await d1.batch([{ sql: "insert into orders values ('a', 999)" }]);
+    assert.equal(orphan.ok, true, JSON.stringify(orphan));
+    const withoutPragma = splitStatements(generateFk()).filter((sql) => !sql.includes("defer_foreign_keys"));
+    const reply = await d1.batch(withoutPragma.map((sql) => ({ sql })));
+    assert.equal(reply.ok, false, JSON.stringify(reply));
+    assert.deepEqual(constraintFailure(reply), { kind: "foreign_key" });
+  });
+
+  test("with the pragma line in place, the same orphaned row rejects with an opaque platform message, and the batch rolls back", async (t) => {
+    const d1 = new D1Harness();
+    t.after(() => d1.dispose());
+    const seed = await d1.batch(splitStatements(`${fkBefore.join(";\n")};`).map((sql) => ({ sql })));
+    assert.equal(seed.ok, true, JSON.stringify(seed));
+    const orphan = await d1.batch([{ sql: "insert into orders values ('a', 999)" }]);
+    assert.equal(orphan.ok, true, JSON.stringify(orphan));
+    const reply = await d1.batch(splitStatements(generateFk()).map((sql) => ({ sql })));
+    assert.equal(reply.ok, false, JSON.stringify(reply));
+    // Measured on Miniflare's D1 binding on 2026-09-17: reply.name is
+    // "Error" (workerd's own JS Error, not a named D1 error class), and the
+    // message is the platform's reset text, not SQLite's own constraint
+    // text. Cloudflare may rename or reword this; that drift is what this
+    // assertion pins down. It is a supporting check, not the main one below.
+    assert.equal((reply as WorkerError).name, "Error");
+    assert.match((reply as WorkerError).message, /Durable Object was reset and rolled back/);
+    // The main assertion: constraintFailure() cannot classify this message,
+    // so a caller sees an unclassified throw instead of the structured
+    // { ok: false, kind: "foreign_key" } that the pragma-free case above
+    // gets (src/d1.ts's run() falls back to `throw e` in exactly this case).
+    assert.equal(constraintFailure(reply), null);
+
+    const schema = await d1.all("select sql from sqlite_schema where name = 'orders'");
+    assert.equal(schema.ok, true, JSON.stringify(schema));
+    const stored = (rows(schema as WorkerOk)[0] as { sql: string }).sql;
+    assert.equal(stored.toLowerCase(), fkBefore[1]!.toLowerCase());
   });
 });
 
