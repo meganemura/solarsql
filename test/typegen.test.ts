@@ -655,6 +655,27 @@ describe("a row-value SET assignment pairs each parameter with the column at the
       });
     } finally { engine.close(); }
   });
+
+  test("a row-value SET slot that holds an expression, not a bare parameter, still types that expression's parameter from its column", () => {
+    const engine = new Engine(rowValueDdl);
+    try {
+      const t = new Typer(engine, new Map());
+      const a = t.analyze("update orders set (customer_id, status) = (:x, coalesce(:y, 'draft')) where id = :id", "m");
+      assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["x", "string"], ["y", "SqlValue"], ["id", "string"]]);
+    } finally { engine.close(); }
+  });
+
+  test("a row-value SET whose right-hand side is a subquery emits no parameter site for that clause", () => {
+    const engine = new Engine(rowValueDdl);
+    try {
+      const t = new Typer(engine, new Map());
+      const a = t.analyze(
+        "update orders set (customer_id, status) = (select customer_id, status from orders limit 1) where id = :id",
+        "m",
+      );
+      assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["id", "string"]]);
+    } finally { engine.close(); }
+  });
 });
 
 // SQLite's row-value comparison, `where (c1, c2) = (:p1, :p2)`, puts each
@@ -732,6 +753,58 @@ describe("a row-value comparison pairs each parameter with the column at the sam
     } finally { engine.close(); }
   });
 
+  test("a row-value comparison against a RIGHT JOIN's null-producing side allows null, matching the same columns compared with AND; a RIGHT JOIN's null-producing side is its left table, order_lines, not the right one", () => {
+    const engine = new Engine(compareDdl);
+    try {
+      const t = new Typer(engine, new Map());
+      // orders (o) is the right side of "order_lines l right join orders o",
+      // so RIGHT JOIN keeps every one of its rows: it is the guaranteed side.
+      const guaranteedRowValue = t.analyze(
+        "select l.id from order_lines l right join orders o on o.id = l.order_id where (o.customer_id, o.status) = (:c, :s)",
+        "m",
+      );
+      const guaranteedAndChain = t.analyze(
+        "select l.id from order_lines l right join orders o on o.id = l.order_id where o.customer_id = :c and o.status = :s",
+        "m",
+      );
+      const guaranteedExpected = [["c", "string"], ["s", '"draft" | "confirmed"']];
+      assert.deepEqual(guaranteedRowValue.params.map((p) => [p.name, p.type]), guaranteedExpected);
+      assert.deepEqual(guaranteedAndChain.params.map((p) => [p.name, p.type]), guaranteedExpected);
+      // order_lines (l) is the left side of the same RIGHT JOIN, so it is
+      // the side RIGHT JOIN may leave unmatched: the null-producing side,
+      // even though it is written on the left of the join keyword.
+      const nullRowValue = t.analyze(
+        "select l.id from order_lines l right join orders o on o.id = l.order_id where (l.order_id, l.qty) = (:oid, :q)",
+        "m",
+      );
+      const nullAndChain = t.analyze(
+        "select l.id from order_lines l right join orders o on o.id = l.order_id where l.order_id = :oid and l.qty = :q",
+        "m",
+      );
+      const nullExpected = [["oid", "string | null"], ["q", "number | null"]];
+      assert.deepEqual(nullRowValue.params.map((p) => [p.name, p.type]), nullExpected);
+      assert.deepEqual(nullAndChain.params.map((p) => [p.name, p.type]), nullExpected);
+    } finally { engine.close(); }
+  });
+
+  test("a row-value comparison against a FULL JOIN's side allows null, matching the same columns compared with AND", () => {
+    const engine = new Engine(compareDdl);
+    try {
+      const t = new Typer(engine, new Map());
+      const rowValue = t.analyze(
+        "select l.id from order_lines l full join orders o on o.id = l.order_id where (o.customer_id, o.status) = (:c, :s)",
+        "m",
+      );
+      const andChain = t.analyze(
+        "select l.id from order_lines l full join orders o on o.id = l.order_id where o.customer_id = :c and o.status = :s",
+        "m",
+      );
+      const expected = [["c", "string | null"], ["s", '"draft" | "confirmed" | null']];
+      assert.deepEqual(rowValue.params.map((p) => [p.name, p.type]), expected);
+      assert.deepEqual(andChain.params.map((p) => [p.name, p.type]), expected);
+    } finally { engine.close(); }
+  });
+
   test("the `<` and `is` operators type a row-value comparison the same as `=` does", () => {
     const engine = new Engine(compareDdl);
     try {
@@ -748,6 +821,24 @@ describe("a row-value comparison pairs each parameter with the column at the sam
       const t = new Typer(engine, new Map());
       const a = t.analyze("select id from orders where (:c, :s) = (customer_id, status)", "m");
       assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["c", "string"], ["s", '"draft" | "confirmed"']]);
+    } finally { engine.close(); }
+  });
+
+  test("a mixed row value, one position with the column on the left and the other with the column on the right, types each parameter from its own position's column", () => {
+    const engine = new Engine(compareDdl);
+    try {
+      const t = new Typer(engine, new Map());
+      const a = t.analyze("select id from orders where (customer_id, :s) = (:c, status)", "m");
+      assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["s", '"draft" | "confirmed"'], ["c", "string"]]);
+    } finally { engine.close(); }
+  });
+
+  test("a row-value tuple inside an IN list keeps every parameter typed as SqlValue, unlike a row-value comparison with = or <", () => {
+    const engine = new Engine(compareDdl);
+    try {
+      const t = new Typer(engine, new Map());
+      const a = t.analyze("select id from orders where (customer_id, status) in ((:c, :s))", "m");
+      assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["c", "SqlValue"], ["s", "SqlValue"]]);
     } finally { engine.close(); }
   });
 
@@ -807,14 +898,23 @@ describe("a row-value comparison pairs each parameter with the column at the sam
     } finally { engine.close(); }
   });
 
-  test("a row-value comparison types the same as the same columns written as an AND chain, for any non-empty subset, on a LEFT JOIN's null-producing side", () => {
+  test("a row-value comparison types the same as the same columns written as an AND chain, for any non-empty subset, on a LEFT, RIGHT, or FULL JOIN's null-producing side", () => {
     const engine = new Engine(compareDdl);
     try {
       const t = new Typer(engine, new Map());
       const columns = ["customer_id", "status", "note"];
+      // Each FROM clause below keeps `o` (orders) on the join's
+      // null-producing side: the right side of LEFT, the left side of
+      // RIGHT (since RIGHT keeps every row of its right-hand table), and
+      // either side of FULL.
+      const froms = [
+        "from order_lines l left join orders o on o.id = l.order_id",
+        "from orders o right join order_lines l on o.id = l.order_id",
+        "from order_lines l full join orders o on o.id = l.order_id",
+      ];
       hegel.test((tc) => {
         const subset = tc.draw(gs.arrays(gs.sampledFrom(columns), { minSize: 1, maxSize: columns.length, unique: true }));
-        const from = "from order_lines l left join orders o on o.id = l.order_id";
+        const from = tc.draw(gs.sampledFrom(froms));
         const andChain = `select l.id ${from} where ${subset.map((c) => `o.${c} = :${c}`).join(" and ")}`;
         const rowValue = `select l.id ${from} where (${subset.map((c) => `o.${c}`).join(", ")}) = (${subset.map((c) => `:${c}`).join(", ")})`;
         const andChainParams = t.analyze(andChain, "m").params.map((p) => [p.name, p.type]);
