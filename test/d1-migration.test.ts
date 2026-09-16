@@ -131,17 +131,18 @@ describe("D1 applies generated migrations", () => {
   });
 });
 
-// Pinning test, not a regression test: it records what D1's own batch API
-// does today with a rebuild that carries `pragma defer_foreign_keys = on`,
-// so a future change in that behavior shows up here. The pragma defers the
+// This block pins what D1's own batch API does with a rebuild that carries
+// `pragma defer_foreign_keys = on`, and regression-tests bareMessage()'s
+// strip of D1's reset text against that fixture. The pragma defers the
 // rebuild's own foreign-key check past the statements this test can send
 // and inspect individually, to D1's own end-of-batch commit -- a platform
 // commit the caller does not control, unlike a SQLite COMMIT. A violation
-// surfacing there reaches the caller as an opaque platform message, not
-// SQLite's own "FOREIGN KEY constraint failed" text, so constraintFailure()
-// (src/runtime/plan.ts) cannot classify it. The pragma itself stays: it is
+// surfacing there reaches the caller wrapped in D1's own reset text, not
+// SQLite's "FOREIGN KEY constraint failed" text alone, but bareMessage()
+// (src/runtime/plan.ts) strips that wrapper, so constraintFailure() classifies
+// it the same as the pragma-free case below. The pragma itself stays: it is
 // correct SQLite and Node and a Durable Object both need it.
-describe("D1's own end-of-batch commit turns a deferred foreign-key violation opaque", () => {
+describe("D1's own end-of-batch commit still lets constraintFailure() classify a deferred foreign-key violation", () => {
   const fkBefore = [
     `create table customers (id integer primary key)`,
     `create table orders (id text primary key not null, customer_id integer)`,
@@ -185,7 +186,7 @@ describe("D1's own end-of-batch commit turns a deferred foreign-key violation op
     assert.deepEqual(constraintFailure(reply), { kind: "foreign_key" });
   });
 
-  test("with the pragma line in place, the same orphaned row rejects with an opaque platform message, and the batch rolls back", async (t) => {
+  test("with the pragma line in place, the same orphaned row still classifies as a foreign-key failure, and the batch rolls back", async (t) => {
     const d1 = new D1Harness();
     t.after(() => d1.dispose());
     const seed = await d1.batch(splitStatements(`${fkBefore.join(";\n")};`).map((sql) => ({ sql })));
@@ -197,18 +198,16 @@ describe("D1's own end-of-batch commit turns a deferred foreign-key violation op
     // Measured on Miniflare's D1 binding on 2026-09-17: reply.name is
     // "Error" (workerd's own JS Error, not a named D1 error class), and the
     // message is the platform's reset text prefixed onto SQLite's own
-    // constraint text, not SQLite's text alone. constraintFailure() still
-    // can't classify it: bareMessage() strips only a known `D1_ERROR:`
-    // prefix, not this one. Cloudflare may rename or reword this; that
-    // drift is what this assertion pins down. It is a supporting check,
-    // not the main one below.
+    // constraint text, not SQLite's text alone. Cloudflare may rename or
+    // reword this; that drift is what this assertion pins down. It is a
+    // supporting check, not the main one below.
     assert.equal((reply as WorkerError).name, "Error");
     assert.match((reply as WorkerError).message, /Durable Object was reset and rolled back/);
-    // The main assertion: constraintFailure() cannot classify this message,
-    // so a caller sees an unclassified throw instead of the structured
-    // { ok: false, kind: "foreign_key" } that the pragma-free case above
-    // gets (src/d1.ts's run() falls back to `throw e` in exactly this case).
-    assert.equal(constraintFailure(reply), null);
+    // The main assertion: bareMessage() (src/runtime/plan.ts) now strips
+    // this reset text, so constraintFailure() classifies it the same as the
+    // pragma-free case above, instead of leaving a caller with an
+    // unclassified throw.
+    assert.deepEqual(constraintFailure(reply), { kind: "foreign_key" });
 
     const schema = await d1.all("select sql from sqlite_schema where name = 'orders'");
     assert.equal(schema.ok, true, JSON.stringify(schema));

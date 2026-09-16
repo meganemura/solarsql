@@ -65,7 +65,7 @@ Three sites gate the same allowlist ADR 0113 established, using the same call-sc
 - DEFAULT expressions: no divergence measured today; the future risk above is recorded, not acted on.
 - `GENERATED ALWAYS AS` columns: already refused everywhere, by unrelated mechanisms.
 - `migration.ts`'s `open()`: a third `db.exec` DDL entry point, left unwrapped, because both of its callers already feed it DDL that passed one of the two other gated sites in the same build run. `build.ts`'s `migrationStatus()` calls `open(declaredDdl(modules))` with the exact list the `Engine` constructor already validated earlier in the same `build()` call. `migration.ts`'s own rebuild-candidate path calls `open([current.sql, ...keptIndexes])` with `current.sql`, a table's `CREATE TABLE` text read back from the schema `applied()` just replayed. Neither caller introduces DDL text that `open()` is the first thing to see.
-- A deferred foreign key (`DEFERRABLE INITIALLY DEFERRED`): a different declared-DDL shape the build also refuses, for an unrelated reason (not a function call; D1 and a Durable Object's own `run()` cannot classify or catch a violation of it). See ADR 0117.
+- A deferred foreign key (`DEFERRABLE INITIALLY DEFERRED`): a different declared-DDL shape the build also refuses, for an unrelated reason (not a function call; a Durable Object's own `run()` cannot catch a violation of it, and the refusal stands across all three targets even where D1's own classifier can). See ADR 0117.
 
 ### A pre-existing comment's overgeneralization, corrected in the same change
 

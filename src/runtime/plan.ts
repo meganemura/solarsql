@@ -113,11 +113,19 @@ function errorDetails(error: unknown): { message: string; errcode?: number } {
   } catch { return { message: "" }; }
 }
 
-// The message of an engine error without the D1 prefix and the extended
-// result code suffix that D1 and a Durable Object append.
+// The message of an engine error without the D1 prefix, D1's own
+// end-of-batch reset prefix, and the extended result code suffix that D1
+// and a Durable Object append. D1 raises the reset prefix when a deferred
+// constraint (for example a foreign key deferred past the statements a
+// caller sent) fails at D1's own implicit commit rather than at the
+// statement that caused it; SQLite's own constraint text follows the
+// colon, so stripping the prefix exposes it unchanged.
 function bareMessage(error: unknown): string {
   const message = errorDetails(error).message;
-  return message.replace(/^D1_ERROR:\s*/, "").replace(/:\s*SQLITE_CONSTRAINT(?:_[A-Z]+)?\s*(?:\(extended:[^)]*\))?\s*$/, "");
+  return message
+    .replace(/^D1_ERROR:\s*/, "")
+    .replace(/^Durable Object was reset and rolled back to its last known good state because the application left the database in a state where constraints were violated:\s*/, "")
+    .replace(/:\s*SQLITE_CONSTRAINT(?:_[A-Z]+)?\s*(?:\(extended:[^)]*\))?\s*$/, "");
 }
 
 // A constraint failure as a value, when the error is one. The text formats

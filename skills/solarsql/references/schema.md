@@ -41,7 +41,7 @@ export const orderSearch = search(`create virtual table order_search using fts5(
 - A trigger sits on a table or a view of its module, and its body touches the tables of that module only (an INSTEAD OF trigger sits on a view of the module).
 - A view is read by the queries of its module like a table. A view over another module's table needs `readsAll` on the module.
 - A search table is `create virtual table ... using fts5(...)`. The module owns it like a table. It has no ALTER: a change drops it and creates it again. Rows already in the indexed table at that point do not come back through the triggers, which fire only on a later write; the migration needs an explicit statement to repopulate them (ADR 0034).
-- A foreign key is immediate (SQLite's own default). The build refuses one declared `deferrable initially deferred`, column-level or as a table constraint: D1 and a Durable Object cannot classify or catch a violation of a deferred foreign key the way they classify an immediate one's (ADR 0117). Order a command's plan to insert a referenced row first instead.
+- A foreign key is immediate (SQLite's own default). The build refuses one declared `deferrable initially deferred`, column-level or as a table constraint: a Durable Object cannot catch a violation of a deferred foreign key at all, and a schema shared across all three targets must stay safe on the one that cannot, even though D1's own classifier now recognizes this violation the same as an immediate one's (ADR 0117). Order a command's plan to insert a referenced row first instead.
 - The leading `--` lines of a statement are its documentation, and the build keeps them in the generated file.
 
 ## Types from the DDL

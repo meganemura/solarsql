@@ -6,10 +6,14 @@
 // Boundary: local Miniflare evidence only, the same evidence the refusal's
 // message and the ADR 0114 addendum cite. No proactive scan is added to
 // run() here (that option was rejected: see the addendum), so this test
-// documents a limit, not a fix.
+// documents the Durable Object false success as a limit that stands, and
+// on D1 the classification bareMessage() now gives the same underlying
+// failure.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
+import * as hegel from "@hegeldev/hegel";
+import * as gs from "@hegeldev/hegel/generators";
 import { constraintFailure } from "../src/runtime/plan.ts";
 import { workerMiniflare } from "./worker.ts";
 
@@ -45,7 +49,7 @@ test("on a Durable Object, run() classifies an immediate foreign-key violation, 
   assert.match(text, /FOREIGN KEY constraint failed/);
 });
 
-test("on D1, run() classifies an immediate foreign-key violation, but falls through to an unclassified throw for a deferred one", async (t) => {
+test("on D1, run() classifies both an immediate and a deferred foreign-key violation", async (t) => {
   const mf = workerMiniflare(resolve(root, "test/deferred-foreign-key.worker.ts"), root, {});
   t.after(() => mf.dispose());
   const send = async (body: { variant: "immediate" | "deferred"; id: string; parentId: string }): Promise<ProbeReply> => {
@@ -59,15 +63,34 @@ test("on D1, run() classifies an immediate foreign-key violation, but falls thro
 
   // D1's batch() rejects at its own implicit commit, the same as the
   // Durable Object case above, but D1 does not discard the rejection the
-  // way the platform reset above does: run()'s catch sees it, cannot match
-  // it to a known constraint message, and falls through to `throw e`
-  // (src/d1.ts), so the worker's own try/catch around db.run observes it
-  // directly, unlike the Durable Object case.
+  // way the platform reset above does: run()'s catch sees it. bareMessage()
+  // (src/runtime/plan.ts) strips D1's reset-text prefix, so constraintFailure()
+  // now matches SQLite's own "FOREIGN KEY constraint failed" text underneath
+  // it, and run() resolves the same structured result the immediate case
+  // gets, instead of falling through to `throw e`.
   const deferred = await send({ variant: "deferred", id: "d1-deferred-1", parentId: "missing" });
-  assert.equal(deferred.threw, true);
-  assert.match(deferred.message ?? "", /FOREIGN KEY constraint failed/);
-  // Proof that this is the P3 diagnostics-only cost the ticket named, not a
-  // silent misclassification: constraintFailure (src/runtime/plan.ts) does
-  // not recognize this message as a foreign_key failure either.
-  assert.equal(constraintFailure(new Error(deferred.message ?? "")), null);
+  assert.deepEqual(deferred, { threw: false, result: { ok: false, kind: "foreign_key" } });
+});
+
+// D1's reset prefix carries no information about which constraint failed --
+// it wraps SQLite's own constraint text unchanged. bareMessage() strips the
+// prefix without inspecting what follows it, so constraintFailure() should
+// classify a prefixed message exactly the way it classifies the bare one,
+// for every constraint kind it recognizes, not only FOREIGN KEY.
+const resetPrefix = "Durable Object was reset and rolled back to its last known good state because the application left the database in a state where constraints were violated: ";
+
+test("D1's reset prefix does not change what constraintFailure() sees, for any constraint kind", () => {
+  hegel.test((tc) => {
+    const text = tc.draw(gs.sampledFrom([
+      "FOREIGN KEY constraint failed",
+      "UNIQUE constraint failed: t.c",
+      "CHECK constraint failed: k",
+      "NOT NULL constraint failed: t.c",
+    ]));
+    const suffix = tc.draw(gs.sampledFrom(["", ": SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_FOREIGNKEY)"]));
+    const bare = constraintFailure(new Error(text + suffix));
+    assert.notEqual(bare, null);
+    const prefixed = constraintFailure(new Error(resetPrefix + text + suffix));
+    assert.deepEqual(prefixed, bare);
+  });
 });
