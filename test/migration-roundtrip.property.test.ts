@@ -353,6 +353,64 @@ test("a rename on a table that also needs a rebuild preserves rows and row ident
   }
 });
 
+// A generated column takes no value in the rebuild's restore INSERT (its
+// column list excludes generated columns); SQLite computes the value itself
+// from the copied row data. This pins that computation for a row that
+// existed before the column did, for both storage kinds.
+test("a stored generated column added by a rebuild computes correctly for a row that predates it", () => {
+  const current = open([
+    "create table t (id integer primary key, a integer not null) strict",
+    "insert into t (a) values (5), (7)",
+  ]);
+  const target = open([
+    "create table t (id integer primary key, a integer not null, b integer as (a * 2) stored) strict",
+  ]);
+  try {
+    const plan = diff(introspect(current), introspect(target));
+    assert.equal(plan.kind, "ok", plan.kind === "blocked" ? plan.reason : "");
+    if (plan.kind !== "ok") return;
+    assert.ok(plan.statements.some((s) => s.includes("_solarsql_new_")), "expected a rebuild, not a cheap ALTER");
+    for (const statement of plan.statements) current.exec(statement);
+    assert.deepEqual(shape(introspect(current)), shape(introspect(target)));
+    // node:sqlite rows have a null prototype; spread each into a plain
+    // object so deepEqual compares values, not the prototype.
+    const rows = current.prepare("select id, a, b from t order by id").all().map((r: any) => ({ ...r }));
+    assert.deepEqual(rows, [
+      { id: 1, a: 5, b: 10 },
+      { id: 2, a: 7, b: 14 },
+    ]);
+  } finally {
+    current.close();
+    target.close();
+  }
+});
+
+test("a virtual generated column added to a populated table computes correctly without a rebuild", () => {
+  const current = open([
+    "create table t (id integer primary key, a integer not null) strict",
+    "insert into t (a) values (5), (7)",
+  ]);
+  const target = open([
+    "create table t (id integer primary key, a integer not null, b integer as (a * 2) virtual) strict",
+  ]);
+  try {
+    const plan = diff(introspect(current), introspect(target));
+    assert.equal(plan.kind, "ok", plan.kind === "blocked" ? plan.reason : "");
+    if (plan.kind !== "ok") return;
+    assert.ok(!plan.statements.some((s) => s.includes("_solarsql_new_")), "expected a cheap ALTER, not a rebuild");
+    for (const statement of plan.statements) current.exec(statement);
+    assert.deepEqual(shape(introspect(current)), shape(introspect(target)));
+    const rows = current.prepare("select id, a, b from t order by id").all().map((r: any) => ({ ...r }));
+    assert.deepEqual(rows, [
+      { id: 1, a: 5, b: 10 },
+      { id: 2, a: 7, b: 14 },
+    ]);
+  } finally {
+    current.close();
+    target.close();
+  }
+});
+
 // The blocked path is rare under the generator, so one case pins it: a
 // table that loses one column and gains another in one change.
 test("a table that loses and gains a column in one change is blocked", () => {
