@@ -328,6 +328,60 @@ test('a Durable Object rebuild that violates a new NOT NULL rolls back the schem
   } finally { raw.close(); }
 });
 
+// A new foreign key defers its check to the end of the transaction
+// (pragma defer_foreign_keys, src/build/migration.ts), so an orphaned row
+// can pass every statement inside the transactionSync closure and only
+// fail at "release savepoint solarsql_transaction", after the closure
+// returns but still inside storageOf()'s try block. This test proves that
+// migrate()'s own savepoint still rolls back the schema, the row, and the
+// history insert together in that case, and leaves no open transaction
+// behind. This is Node's storageOf() implementation, not a real Durable
+// Object's own transactionSync.
+//
+// Each of these four related tests covers one neighboring part of this:
+// - "a Durable Object rebuild that violates a new NOT NULL rolls back the
+//   schema, the row, and the history insert together" (above) covers a
+//   constraint that throws inside the closure, at the restore-insert
+//   statement, rather than at RELEASE.
+// - "Node savepoints retain deferred foreign-key semantics at the outer
+//   boundary" (this file) covers the RELEASE-throw recovering cleanly, at
+//   the raw storageOf()/transactionSync level with a hand-written
+//   deferrable column, rather than through migrate()'s own composition of
+//   the rebuild's statements and the history insert.
+// - "adding a foreign key fails at commit on an orphaned row, not
+//   mid-rebuild, and the file rolls back" (test/strict-migration.test.ts)
+//   covers the same schema shape, the same pragma, the same FOREIGN KEY
+//   message, and the same diff()/render() pipeline, through a raw
+//   begin/statement-loop/commit/rollback, rather than through a migrate()
+//   call and its savepoint.
+// - "a transaction-ending conflict propagates failed cleanup through
+//   public commands" (this file) covers the opposite outcome, where the
+//   cleanup rollback itself also fails and produces an AggregateError.
+test('a Durable Object rebuild that violates a new foreign key rolls back the schema, the row, and the history insert together, and leaves no transaction open', () => {
+  const before = [`create table parent (id text primary key not null)`, `create table child (id text primary key not null, parent_id text)`];
+  const after = [`create table parent (id text primary key not null)`, `create table child (id text primary key not null, parent_id text references parent(id))`];
+  const initial = diff(introspect(open([])), introspect(open(before)));
+  if (initial.kind !== 'ok') throw new Error(initial.reason);
+  const f1 = render(1, 'initial', [...initial.statements, "insert into parent values ('p1')", "insert into child values ('c1', 'missing')"]);
+  const tightened = diff(introspect(open(before)), introspect(open(after)));
+  if (tightened.kind !== 'ok') throw new Error(tightened.reason);
+  const f2 = render(2, 'foreign_key', tightened.statements, tightened.rebuilds ?? []);
+  const originalSchema = introspect(open(before)).tables.get('child')!.sql;
+  const raw = new DatabaseSync(':memory:');
+  try {
+    assert.throws(() => migrate(raw, [{ name: f1.filename, sql: f1.sql }, { name: f2.filename, sql: f2.sql }]), (e: unknown) => {
+      assert.ok(!(e instanceof MigrationHistoryError), 'expected the raw engine error, not a MigrationHistoryError');
+      assert.match((e as Error).message, /FOREIGN KEY constraint failed/);
+      return true;
+    });
+    assert.deepEqual(raw.prepare('select name from solarsql_migrations').all().map(r => ({ ...r })), [{ name: f1.filename }]);
+    assert.equal((raw.prepare("select sql from sqlite_schema where name = 'child'").get() as { sql: string }).sql, originalSchema);
+    assert.deepEqual(raw.prepare('select * from child').all().map(r => ({ ...r })), [{ id: 'c1', parent_id: 'missing' }]);
+    assert.doesNotThrow(() => raw.exec('begin'), 'the failed migration must leave no savepoint or transaction open');
+    raw.exec('rollback');
+  } finally { raw.close(); }
+});
+
 test('nested Node transactions retain exactly the successful writes', async () => {
   const {test:property}=await import('@hegeldev/hegel');
   const gs=await import('@hegeldev/hegel/generators');
