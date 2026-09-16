@@ -162,7 +162,13 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
   // own after-check narrows this set to what still predates that file (see
   // the comment on that check).
   let before = new Set<string>();
-  if (!callerOwnsTransaction) {
+  // Skip the scan itself when no file below will run: the per-file loop
+  // (ordered.slice(history.length)) never touches before then, so it would
+  // sit unread. An already-migrated Durable Object hits this on every
+  // activation: migrations.md's constructor pattern calls
+  // blockConcurrencyWhile(() => migrate(ctx.storage, migrations)) on every
+  // instantiation and reactivation, not only the first.
+  if (!callerOwnsTransaction && ordered.length > history.length) {
     for (const key of violationKeys(storage, storage.sql.exec(`pragma foreign_key_check`).toArray())) {
       if (key !== null) before.add(key);
     }

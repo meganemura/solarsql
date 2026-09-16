@@ -673,3 +673,40 @@ test('a transaction-ending conflict propagates failed cleanup through public com
     assert.throws(()=>raw.exec('commit'),/no transaction/);
   }finally{raw.close();}
 });
+
+// migrate()'s before-snapshot (src/durable.ts) exists to tell a violation
+// that predates the first file apart from one a later file introduces, so
+// it only has work to do when a file below will actually run. Once every
+// listed file is already applied, the per-file loop never runs, before is
+// never read, and the scan is a wasted full-database pass -- paid on every
+// call a Durable Object constructor makes, not only the first. This test
+// counts pragma foreign_key_check calls through a wrapped StorageLike. The
+// first assert observes the pragma running while a file applies (it does not
+// by itself tell the before-snapshot's one call apart from the per-file
+// after-check's own call, both of which match); the second assert is the fix
+// itself: no new call when nothing is left to apply.
+test('migrate() skips its pre-loop pragma foreign_key_check when every listed migration file is already applied', async () => {
+  const { storageOf } = await import('../src/node.ts');
+  const { migrate: migrateStorage } = await import('../src/durable.ts');
+  const raw = new DatabaseSync(':memory:');
+  try {
+    const inner = storageOf(raw);
+    let foreignKeyCheckCalls = 0;
+    const storage = {
+      ...inner,
+      sql: {
+        exec: (sql: string, ...bindings: unknown[]) => {
+          if (sql.includes('foreign_key_check')) foreignKeyCheckCalls++;
+          return inner.sql.exec(sql, ...bindings);
+        },
+      },
+    };
+    const files = [{ name: '0001_initial.sql', sql: 'create table t (id integer primary key not null)' }];
+    assert.deepEqual(migrateStorage(storage, files), [files[0]!.name]);
+    assert.ok(foreignKeyCheckCalls > 0, 'expected pragma foreign_key_check to run while a file applies');
+    const callsAfterFirstRun = foreignKeyCheckCalls;
+    assert.deepEqual(migrateStorage(storage, files), []);
+    assert.equal(foreignKeyCheckCalls, callsAfterFirstRun, 'migrate() must not call pragma foreign_key_check again once every listed file is already applied');
+    assert.deepEqual(raw.prepare('select name from solarsql_migrations').all().map(r => ({ ...r })), [{ name: files[0]!.name }]);
+  } finally { raw.close(); }
+});
