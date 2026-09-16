@@ -171,7 +171,6 @@ The referencing column's value matters on its own: a statement that only changes
 When every violation found after the file ran already existed before it ran, the error says the violation predates the file, instead of blaming the file for it; the rollback stays the same, and only this file's own change rolls back.
 This distinction needs a table with exactly one primary-key column, of a declared type other than INTEGER, to read the value back.
 On a table with an INTEGER PRIMARY KEY (a rowid alias), a composite primary key, or a WITHOUT ROWID table (its rowid is always null), `migrate()` cannot read a value back this way, so it always blames the named file, even when the violation predates it.
-Query `pragma foreign_key_check` yourself, on the same database, before generating or applying a migration, if you want to rule out a pre-existing violation ahead of time (running.md's Adapters section shows the one-line raw SQL call for each target -- D1, Durable Object, Node -- that reaches past the generated queries and commands to do this).
 
 For example, `migrate()` throws a plain `Error` (not the `MigrationHistoryError` below), and the word `predates` appears in its message. The message embeds the violation in the same row shape `pragma foreign_key_check` itself returns, such as `{"table":"child","rowid":1,"parent":"parent","fkid":0}` for a `child` row whose `parent_id` no longer names a row in `parent`. A repair migration file's own statements can remove the violating row directly:
 
@@ -182,6 +181,7 @@ delete from child where parent_id = 'missing';
 
 Passing this file to `migrate()` removes the violation before the end-of-file check runs, so it applies with no error and joins the history as `0001_repair.sql`. A later, unrelated file applies normally after it: the block does not carry forward past the repair.
 Confirm this against your own deployment with the remote test (`deploy.md`) before relying on it.
+Query `pragma foreign_key_check` yourself, on the same database, before generating or applying a migration, if you want to rule out a pre-existing violation ahead of time (running.md's Adapters section shows the one-line raw SQL call for each target -- D1, Durable Object, Node -- that reaches past the generated queries and commands to do this).
 
 A rebuild that adds a foreign key an existing row already violates carries `pragma defer_foreign_keys = on`, so the file's own foreign-key check waits until commit instead of failing mid-rebuild.
 On D1, wrangler's local apply sends one `batch()` per file (v0-measurements.md, section 4c), the same shape `src/d1.ts` uses for a command's own `db.batch()` call.
