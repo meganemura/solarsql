@@ -178,6 +178,19 @@ Use the same option with Durable Object storage. This records the supplied SQL a
 Subsequent calls compare exact SQL, including comments and whitespace.
 D1 migrations applied through wrangler retain wrangler's history behavior; this check does not wrap that workflow.
 
+`REBUILD_LOSES_COLUMN` and `REBUILD_REVIVES_DECLARATION` come from `migrate()` itself, which checks rebuild safety against the applied database, separately from the static check in `build --check`.
+
+| code | Fix |
+|---|---|
+| `DUPLICATE_MIGRATION` | List each migration file once. |
+| `MIGRATION_TRANSACTION` | Remove transaction control statements. |
+| `MISSING_MIGRATION` | Supply the full history. |
+| `MIGRATION_ORDER` | Append a new file instead. |
+| `LEGACY_HISTORY` | Verify the legacy files before using adoptLegacyHistory. |
+| `MIGRATION_CHANGED` | Restore the file and append a new migration. |
+| `REBUILD_LOSES_COLUMN` | Regenerate the file against the current schema. |
+| `REBUILD_REVIVES_DECLARATION` | Regenerate the file against the current schema. |
+
 ## Rehearse with existing data
 
 ```sh
