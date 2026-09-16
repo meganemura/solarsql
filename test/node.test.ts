@@ -338,7 +338,7 @@ test('a Durable Object rebuild that violates a new NOT NULL rolls back the schem
 // behind. This is Node's storageOf() implementation, not a real Durable
 // Object's own transactionSync.
 //
-// Each of these four related tests covers one neighboring part of this:
+// Each of these five related tests covers one neighboring part of this:
 // - "a Durable Object rebuild that violates a new NOT NULL rolls back the
 //   schema, the row, and the history insert together" (above) covers a
 //   constraint that throws inside the closure, at the restore-insert
@@ -357,6 +357,16 @@ test('a Durable Object rebuild that violates a new NOT NULL rolls back the schem
 // - "a transaction-ending conflict propagates failed cleanup through
 //   public commands" (this file) covers the opposite outcome, where the
 //   cleanup rollback itself also fails and produces an AggregateError.
+// - "migrate() composes with a caller-owned transaction opened before the
+//   call, and a deferred foreign key from the migration fails at the
+//   caller's own commit" (below) opens the caller's transaction before
+//   calling migrate(), pairing with "a Durable Object rebuild that
+//   violates a new foreign key rolls back the schema, the row, and the
+//   history insert together, and leaves no transaction open" (below, no
+//   caller transaction at all) and with "Node savepoints retain deferred
+//   foreign-key semantics at the outer boundary" (this file, a
+//   caller-owned transaction around a hand-written transactionSync rather
+//   than around migrate() itself).
 test('a Durable Object rebuild that violates a new foreign key rolls back the schema, the row, and the history insert together, and leaves no transaction open', () => {
   const before = [`create table parent (id text primary key not null)`, `create table child (id text primary key not null, parent_id text)`];
   const after = [`create table parent (id text primary key not null)`, `create table child (id text primary key not null, parent_id text references parent(id))`];
@@ -379,6 +389,32 @@ test('a Durable Object rebuild that violates a new foreign key rolls back the sc
     assert.deepEqual(raw.prepare('select * from child').all().map(r => ({ ...r })), [{ id: 'c1', parent_id: 'missing' }]);
     assert.doesNotThrow(() => raw.exec('begin'), 'the failed migration must leave no savepoint or transaction open');
     raw.exec('rollback');
+  } finally { raw.close(); }
+});
+
+test("migrate() composes with a caller-owned transaction opened before the call, and a deferred foreign key from the migration fails at the caller's own commit", () => {
+  const before = [`create table parent (id text primary key not null)`, `create table child (id text primary key not null, parent_id text)`];
+  const after = [`create table parent (id text primary key not null)`, `create table child (id text primary key not null, parent_id text references parent(id))`];
+  const initial = diff(introspect(open([])), introspect(open(before)));
+  if (initial.kind !== 'ok') throw new Error(initial.reason);
+  const f1 = render(1, 'initial', [...initial.statements, "insert into parent values ('p1')", "insert into child values ('c1', 'missing')"]);
+  const tightened = diff(introspect(open(before)), introspect(open(after)));
+  if (tightened.kind !== 'ok') throw new Error(tightened.reason);
+  const f2 = render(2, 'foreign_key', tightened.statements, tightened.rebuilds ?? []);
+  const originalSchema = introspect(open(before)).tables.get('child')!.sql;
+  const raw = new DatabaseSync(':memory:');
+  try {
+    assert.deepEqual(migrate(raw, [{ name: f1.filename, sql: f1.sql }]), [f1.filename]);
+    raw.exec('begin');
+    assert.deepEqual(migrate(raw, [{ name: f1.filename, sql: f1.sql }, { name: f2.filename, sql: f2.sql }]), [f2.filename]);
+    assert.deepEqual(raw.prepare('select name from solarsql_migrations').all().map(r => ({ ...r })), [{ name: f1.filename }, { name: f2.filename }]);
+    assert.equal(raw.isTransaction, true);
+    assert.throws(() => raw.exec('commit'), /FOREIGN KEY constraint failed/);
+    assert.equal(raw.isTransaction, true);
+    raw.exec('rollback');
+    assert.deepEqual(raw.prepare('select name from solarsql_migrations').all().map(r => ({ ...r })), [{ name: f1.filename }]);
+    assert.equal((raw.prepare("select sql from sqlite_schema where name = 'child'").get() as { sql: string }).sql, originalSchema);
+    assert.deepEqual(raw.prepare('select * from child').all().map(r => ({ ...r })), [{ id: 'c1', parent_id: 'missing' }]);
   } finally { raw.close(); }
 });
 

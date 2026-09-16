@@ -132,6 +132,7 @@ See [D1 value conversion](https://developers.cloudflare.com/d1/worker-api/#type-
 The Node adapter uses savepoints, so direct SQL and typed commands can share a caller-owned transaction.
 An ordinary command failure rolls back its work. The caller still owns the outer COMMIT or ROLLBACK.
 Deferred constraints can fail at that outer commit after an inner command returned success.
+`migrate()` uses the same savepoints, so a deferred constraint that a migration adds also fails at the outer commit.
 SQLite transaction-ending conflicts such as `INSERT OR ROLLBACK` can roll back the outer transaction.
 Failed savepoint cleanup throws an `AggregateError`; inspect its original cause and do not continue as if the outer transaction survived.
 This behavior applies to Node; D1 uses its batch API (ADR 0072).
