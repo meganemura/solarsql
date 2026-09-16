@@ -65,6 +65,12 @@ A caller that picks a data source by table, or drops a cache by table, reads it 
 | `durable(ctx.storage, options?)` from `solarsql/durable` | a Durable Object's SQLite storage | one `transactionSync` |
 | `node(db, options?)` from `solarsql/node` | a `DatabaseSync` of node:sqlite | one savepoint; an enclosing transaction remains owned by its caller |
 
+A caller can also reach past the generated queries and commands and run raw SQL directly against the underlying binding, one line per target:
+
+- D1: `const rows = (await env.DB.prepare(sql).all()).results;` -- D1's `.all()` resolves to `{ success, meta, results }`, not a plain array; take `.results` for the rows. Cloudflare also ships a CLI that runs a raw statement with no application code at all: `npx wrangler d1 execute <database> --command "..."`.
+- Durable Object: `const rows = ctx.storage.sql.exec(sql).toArray();` -- `.exec()` returns a cursor, so `.toArray()` reads it into a plain array (`src/durable.ts` uses this same pattern throughout). A Durable Object has no REPL and no external client, so run this line temporarily inside code where `ctx.storage` is already in scope -- typically the constructor's `blockConcurrencyWhile` block -- log the rows, then delete the line once you have confirmed what you needed.
+- Node: `const rows = raw.prepare(sql).all();` -- `raw`, the underlying `node:sqlite` `DatabaseSync` a test or script constructs and passes to `node()`, returns rows as a plain array too.
+
 `options.observe` is a hook for a logger or a tracer, called once per call:
 
 ```ts
