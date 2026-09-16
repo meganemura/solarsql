@@ -761,6 +761,14 @@ export class Typer {
     // The DML statement's own top-level clauses have no enclosing SELECT
     // scope, so `context` is undefined and `scopedReference` (which reads
     // outer-join nullability from `context.nullable`) never runs for them.
+    // The same gap reaches a nested subquery that correlates to one of
+    // those top-level aliases too: there `context` is set, but a DML
+    // statement's own clause is not itself a SELECT, so `context` has no
+    // `parent` for `scopedReference` to walk to and it fails to resolve the
+    // reference. `a` still names one of the DML statement's own top-level
+    // aliases (never the subquery's own -- those resolve through `resolved`
+    // above), so the wrap below is correct for that case as well (ADR 0112
+    // second addendum).
     // `sourceContext`, called here the same detached way `nestedJsonType`
     // already calls it on a scope-less SQL string, walks the statement's
     // own FROM/JOIN syntax (an UPDATE ... FROM's join, or nothing for a
@@ -787,7 +795,7 @@ export class Typer {
       const table = a === null ? null : scope.get(a) ?? null;
       if (!table || !this.tables.has(table)) return null;
       const r = this.column(table, column, sql);
-      if (context !== undefined || a === null) return r;
+      if (a === null) return r;
       if (topLevelNullable === undefined) {
         const tokens = significant(tokenize(sql));
         let environment = new Map<string, Binding>();

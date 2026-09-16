@@ -149,6 +149,89 @@ describe("Typer.analyze", () => {
     assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["q", "number | null"]]);
   });
 
+  test("a parameter in a nested SET-clause subquery, correlated to an outer LEFT JOIN's null-producing alias, allows null", () => {
+    const a = t.analyze(
+      `update orders set note = (select 1 from order_lines x where x.sku = 'a' and tg.name is :n)
+       from order_lines ol left join tags tg on tg.line_id = ol.id
+       where orders.id = ol.order_id`,
+      "orders",
+    );
+    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["n", "string | null"]]);
+  });
+
+  test("a parameter in a nested WHERE-clause EXISTS subquery, correlated to an outer LEFT JOIN's null-producing alias, allows null", () => {
+    const a = t.analyze(
+      `update orders set note = 'unchanged'
+       from order_lines ol left join tags tg on tg.line_id = ol.id
+       where orders.id = ol.order_id
+         and exists (select 1 from order_lines x where x.sku = 'a' and tg.name is :n)`,
+      "orders",
+    );
+    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["n", "string | null"]]);
+  });
+
+  test("a parameter in a nested SET-clause subquery, correlated to an outer RIGHT JOIN's null-producing alias, allows null", () => {
+    const a = t.analyze(
+      `update orders set note = (select 1 from order_lines x where x.sku = 'a' and ol.sku is :s)
+       from order_lines ol right join tags tg on tg.line_id = ol.id
+       where orders.id = ol.order_id`,
+      "orders",
+    );
+    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["s", "string | null"]]);
+  });
+
+  test("a parameter in a nested WHERE-clause EXISTS subquery, correlated to an outer RIGHT JOIN's null-producing alias, allows null", () => {
+    const a = t.analyze(
+      `update orders set note = 'unchanged'
+       from order_lines ol right join tags tg on tg.line_id = ol.id
+       where orders.id = ol.order_id
+         and exists (select 1 from order_lines x where x.sku = 'a' and ol.sku is :s)`,
+      "orders",
+    );
+    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["s", "string | null"]]);
+  });
+
+  test("a parameter in a nested SET-clause subquery, correlated to an outer FULL JOIN's alias, allows null", () => {
+    const a = t.analyze(
+      `update orders set note = (select 1 from order_lines x where x.sku = 'a' and tg.name is :n)
+       from order_lines ol full join tags tg on tg.line_id = ol.id
+       where orders.id = ol.order_id`,
+      "orders",
+    );
+    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["n", "string | null"]]);
+  });
+
+  test("a parameter in a nested WHERE-clause EXISTS subquery, correlated to an outer FULL JOIN's alias, allows null", () => {
+    const a = t.analyze(
+      `update orders set note = 'unchanged'
+       from order_lines ol full join tags tg on tg.line_id = ol.id
+       where orders.id = ol.order_id
+         and exists (select 1 from order_lines x where x.sku = 'a' and tg.name is :n)`,
+      "orders",
+    );
+    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["n", "string | null"]]);
+  });
+
+  test("a parameter in a nested subquery, correlated to a join's guaranteed alias, stays non-null", () => {
+    const a = t.analyze(
+      `update orders set note = (select 1 from order_lines x where x.sku = 'a' and ol.sku is :s)
+       from order_lines ol left join tags tg on tg.line_id = ol.id
+       where orders.id = ol.order_id`,
+      "orders",
+    );
+    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["s", "string"]]);
+  });
+
+  test("a parameter in a nested subquery correlated to a join alias inside an INSERT ... SELECT is unaffected: its enclosing SELECT scope already resolves it", () => {
+    const a = t.analyze(
+      `insert into orders (id, customer_id, status, note)
+       select ol.id, ol.order_id, 'draft', (select 1 from order_lines x where x.sku = 'a' and tg.name is :n)
+       from order_lines ol left join tags tg on tg.line_id = ol.id`,
+      "orders",
+    );
+    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["n", "string | null"]]);
+  });
+
   test("a JSON aggregation over an outer join with a filter", () => {
     const a = t.analyze(
       `select o.id, c.name as customer_name,
