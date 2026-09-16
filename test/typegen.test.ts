@@ -183,18 +183,28 @@ describe("Typer.analyze", () => {
     assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["m", "string"]]);
   });
 
-  // The fixed-point resolution a recursive CTE needs (sourceRows' own
-  // 32-iteration loop) is a SELECT-scope-only path; a DML statement's own
-  // top-level clause does not run it, so a parameter compared to a
-  // recursive CTE's output column keeps falling back to SqlValue instead of
-  // throwing. This boundary is intentional, not a remaining gap.
-  test("a top-level WHERE parameter compared to a recursive CTE's own output column still falls back to SqlValue, without throwing", () => {
+  // A top-level reference to a CTE with more than one branch (a UNION with
+  // no self-reference at all) used to hit the same SqlValue fall-back as a
+  // recursive CTE, even without any recursion to resolve.
+  test("a top-level WHERE parameter compared to a multi-branch UNION CTE's own output column resolves to that column's real type", () => {
+    const a = t.analyze(
+      `with c as (select id, name from customers where id = 'a' union select id, name from customers where id = 'b')
+       update orders set note = :n from c where orders.customer_id = c.id and c.name is :m`,
+      "orders",
+    );
+    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["n", "string | null"], ["m", "string"]]);
+  });
+
+  // sourceRows' own 32-iteration fixed-point loop resolves a recursive CTE
+  // referenced from a SELECT scope; a top-level reference now runs the same
+  // loop, so this resolves rather than falling back to SqlValue.
+  test("a top-level WHERE parameter compared to a recursive CTE's own output column resolves to that column's real type", () => {
     const a = t.analyze(
       `with recursive c(n) as (select 1 union all select cast(n + 1 as integer) from c where n < 5)
        update orders set note = :x from c where orders.id = :id and c.n is :m`,
       "orders",
     );
-    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["x", "string | null"], ["id", "OrdersId"], ["m", "SqlValue"]]);
+    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["x", "string | null"], ["id", "OrdersId"], ["m", "number | null"]]);
   });
 
   test("a parameter in a nested SET-clause subquery, correlated to an outer LEFT JOIN's null-producing alias, allows null", () => {

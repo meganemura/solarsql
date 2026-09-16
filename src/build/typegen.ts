@@ -5,7 +5,7 @@
 // Boundary: no file system, no module layout, no boundary check. build.ts
 // owns those. A shape this file cannot type becomes a BuildError with the
 // SQL and the reason.
-import { queryScope, querySources, sqliteName, unionType, unionMembers, type Cte } from "./scope.ts";
+import { queryScope, querySources, sqliteName, unionType, unionMembers, type Cte, type Source } from "./scope.ts";
 import { GUARD_TABLE } from "../runtime/plan.ts";
 import type { ColumnFact, Engine, OutputColumn, TableFact } from "./facts.ts";
 import { aliasMap, columnRef, findCall, isKeyword, leadingComment, namedParams, nonNullFilterAlias, paramSites, quoteIdent, returningClause, selectItems, significant, splitAtCommas, tokenize, type Token, unconditionalMatchAliases, unquote } from "./scan.ts";
@@ -733,19 +733,21 @@ export class Typer {
     return context;
   }
 
-  // Resolve one column of a CTE bound at the DML statement's own top level,
-  // the same way sourceRows resolves a FROM-list reference to a CTE: the
-  // same recursion guard (`new Set([binding])`, since ofRef has no `active`
-  // set of its own to extend), the same `rename` to the CTE's declared
-  // columns, and the same recursive call into scopeRows for the CTE's own
-  // SELECT. A recursive CTE's own fixed-point loop is a SELECT-scope-only
-  // path this does not run; that CTE's alias falls back to SqlValue here,
-  // same as before this method existed.
-  private topLevelCteColumn(binding: Binding, column: string, note: (r: Resolved) => Resolved): Resolved | null {
-    const scope = queryScope(binding.sql);
-    if (scope.branches.length !== 1 && !scope.operators.some((op) => !op.startsWith("union"))) return null;
-    const rename = (rows: ScopeColumn[]) => rows.map((row, i) => ({ ...row, name: binding.columns[i] ?? row.name }));
-    const rows = rename(this.scopeRows(binding.sql, binding.environment, new Set([binding]), note));
+  // Resolve one column of a CTE bound at the DML statement's own top level
+  // by delegating to sourceRows, the same method a FROM-list reference to a
+  // CTE uses in a SELECT scope. This covers a multi-branch UNION CTE and a
+  // genuinely recursive CTE the same way sourceRows already does there: the
+  // fixed-point loop that resolves either lives inside sourceRows, not here.
+  // The Source below stands in for a FROM-list entry that has no FROM-list
+  // text in the DML statement itself, so it is built rather than found by
+  // querySources; `alias`, `join`, `using`, and `natural` are placeholders
+  // because sourceRows's CTE branch (through `environment`, keyed on
+  // `name`) never reads them. `active` must start empty: sourceRows adds
+  // `binding` to it on the first call, and a caller that pre-seeds it would
+  // make sourceRows treat a non-recursive CTE as already-active recursion.
+  private topLevelCteColumn(binding: Binding, column: string, topLevelEnvironment: Map<string, Binding>, note: (r: Resolved) => Resolved): Resolved | null {
+    const source: Source = { alias: binding.name, name: binding.name, schema: null, query: null, functionSql: null, join: "inner", using: [], natural: false };
+    const rows = this.sourceRows(source, topLevelEnvironment, new Set(), note);
     const found = rows.find((row) => sqliteName(row.name) === sqliteName(column));
     if (!found) return null;
     const members = unionMembers(found.type);
@@ -835,7 +837,7 @@ export class Typer {
       // top-level reference to a CTE lands here rather than at
       // `this.tables`, which holds no entry for it (ADR 0112 Consequences).
       const binding = topLevelEnvironment.get(sqliteName(table));
-      const r = binding ? this.topLevelCteColumn(binding, column, note) : this.tables.has(table) ? this.column(table, column, sql) : null;
+      const r = binding ? this.topLevelCteColumn(binding, column, topLevelEnvironment, note) : this.tables.has(table) ? this.column(table, column, sql) : null;
       if (!r) return null;
       if (a === null) return r;
       if (topLevelNullable === undefined) topLevelNullable = this.sourceContext(sql, topLevelEnvironment, new Set(), note).context.nullable;
