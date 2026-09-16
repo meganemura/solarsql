@@ -8,7 +8,7 @@
 // runtime/plan.ts defines.
 import type { AdapterOptions, BatchRows, Command, CommandResult, Database, Entry, GeneratedMap, ParamsArg, PlanShape, Query, Read, Row, SqlValue, StatementMeta } from "./index.ts";
 import { GUARD_CLEANUP, assertFailure, assertStatement, assertToken, bindValues, constraintFailure, observed, outcomeOf, parseJson, validateParams } from "./runtime/plan.ts";
-import { created, definitions, normalize, parseRebuildRecords, quoteIdent, redeclaredByFile, revivedDeclaration, significant, splitStatements, tokenize, unknownDeclaration } from "./build/scan.ts";
+import { created, definitions, isKeyword, normalize, parseRebuildRecords, quoteIdent, redeclaredByFile, revivedDeclaration, significant, splitStatements, tokenize, unknownDeclaration } from "./build/scan.ts";
 
 // The part of DurableObjectStorage this adapter uses. Structural, so no
 // type package is needed.
@@ -326,6 +326,13 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
 // and a later file's after-check), or null when the row cannot be resolved
 // that way.
 //
+// How this key reads a table's single primary-key column, per the block
+// comment below: an ordinary named column read back by value, `row.rowid`
+// itself in place of a column readback (AUTOINCREMENT's rowid-alias case),
+// or null when the table stays unkeyable (composite key, WITHOUT ROWID, or
+// a plain `integer primary key` with no AUTOINCREMENT).
+type PkResolution = { kind: "column"; name: string } | { kind: "rowid" } | null;
+//
 // rowid alone is not a safe key: a file that deletes a violating row and
 // then inserts a different, new violating row in the same statement can
 // have the new row reuse the deleted row's rowid (measured directly --
@@ -382,15 +389,35 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
 // every column of a composite key, so requiring exactly one pk column
 // excludes those) whose declared type is not INTEGER (an `integer primary
 // key` column is a rowid alias, so reading it back would just read the same
-// rowid this key is trying to improve on). A WITHOUT ROWID table (rowid
-// always null) has no rowid to look the row up by in the first place. All
-// three shapes stay unkeyable here, and an unkeyable row always makes its
-// file's own after-check treat the violation as new (see allPredate above):
-// this project does not try to tell a pre-existing violation apart from a
-// new one on those tables. A migration that renames the referencing column
-// itself joins them: the name is part of this key, so the rename changes
-// it even though the same row still names the same missing parent
-// (migrations.md).
+// rowid this key is trying to improve on) -- unless that column also carries
+// AUTOINCREMENT, read from the table's own CREATE TABLE text the same way
+// tableStatements() (src/build/migration.ts) already does, with the same
+// tokenize()/isKeyword() pair. AUTOINCREMENT is exactly the guarantee this
+// key needs: it forces every new rowid to exceed sqlite_sequence's own
+// high-water mark, so a plain `integer primary key` can reuse a deleted
+// row's rowid but an autoincrementing one never does (measured directly:
+// deleting the one row of each kind of table and inserting a new one left
+// the plain table's new row at the deleted rowid, and the autoincrementing
+// table's new row past it). On that shape, this key uses `row.rowid` itself
+// in place of a column readback -- reading the column back would only
+// return the same rowid a second time. A plain `integer primary key`, with
+// no AUTOINCREMENT, keeps no such guarantee and stays unkeyable. A WITHOUT
+// ROWID table (rowid always null) has no rowid to look the row up by in the
+// first place, and a composite primary key has no single column to read;
+// both stay unkeyable too, and an unkeyable row always makes its file's own
+// after-check treat the violation as new (see allPredate above): this
+// project does not try to tell a pre-existing violation apart from a new
+// one on those tables. A migration that renames the referencing column
+// itself joins the unkeyable list: the name is part of this key, so the
+// rename changes it even though the same row still names the same missing
+// parent (migrations.md). A migration whose statements reassign an
+// AUTOINCREMENT row's own rowid (`update child set id = ... where ...`)
+// joins it too, in effect: nothing here tracks that reassignment, so the
+// before-snapshot's `row.rowid` for that row no longer matches the row's
+// rowid at the after-check, and the mismatch falls back to blaming the
+// file, the same safe default an unkeyable row gets (measured directly:
+// reassigning id from 1 to 999 changed pragma_foreign_key_check's own
+// reported rowid from 1 to 999 between the two calls).
 //
 // table_info and foreign_key_list are cached per table for the lifetime of
 // one violationKeys() call (its own map, declared inside the function, not
@@ -404,19 +431,31 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
 // and a cache spanning both would then read the wrong column, or a column
 // that no longer exists, for a row the later call resolves.
 function violationKeys(storage: StorageLike, violations: Record<string, unknown>[]): (string | null)[] {
-  const pkColumn = new Map<string, string | null>();
+  const pkColumn = new Map<string, PkResolution>();
   const foreignKeys = new Map<string, { from: string[]; to: string[] } | null>();
   return violations.map((row) => {
     if (row.rowid === null || row.rowid === undefined) return null;
     const table = String(row.table);
-    let column = pkColumn.get(table);
-    if (column === undefined) {
+    let resolution = pkColumn.get(table);
+    if (resolution === undefined) {
       const info = storage.sql.exec(`pragma table_info(${quoteIdent(table)})`).toArray();
       const pks = info.filter((c) => Number(c.pk) !== 0);
-      column = pks.length === 1 && String(pks[0]!.type).toUpperCase() !== "INTEGER" ? String(pks[0]!.name) : null;
-      pkColumn.set(table, column);
+      if (pks.length !== 1) {
+        resolution = null;
+      } else if (String(pks[0]!.type).toUpperCase() !== "INTEGER") {
+        resolution = { kind: "column", name: String(pks[0]!.name) };
+      } else {
+        // A single-column INTEGER PRIMARY KEY: a rowid alias. Read the
+        // table's own declaration, the same way tableStatements()
+        // (src/build/migration.ts) already does, to tell an AUTOINCREMENT
+        // one (see the block comment above) from a plain one.
+        const schemaRow = storage.sql.exec(`select sql from sqlite_schema where type = 'table' and lower(name) = lower(?)`, table).toArray()[0];
+        const auto = schemaRow !== undefined && tokenize(String(schemaRow.sql)).some((t) => isKeyword(t, "autoincrement"));
+        resolution = auto ? { kind: "rowid" } : null;
+      }
+      pkColumn.set(table, resolution);
     }
-    if (column === null) return null;
+    if (resolution === null) return null;
     const cacheKey = JSON.stringify([table, row.fkid]);
     let fk = foreignKeys.get(cacheKey);
     if (fk === undefined) {
@@ -427,16 +466,22 @@ function violationKeys(storage: StorageLike, violations: Record<string, unknown>
       foreignKeys.set(cacheKey, fk);
     }
     if (fk === null) return null;
-    // Every selected column gets its own alias, even the primary-key
-    // column when it is also one of the referencing columns (a
-    // self-referencing foreign key, or a foreign key declared on the
-    // primary-key column itself): without an alias per position, a
-    // repeated column name would collapse to one property on the result
-    // row, silently losing one of the two readings this key needs.
-    const selectList = [column, ...fk.from].map((c, i) => `${quoteIdent(c)} as v${i}`).join(", ");
+    // AUTOINCREMENT's rowid-alias column is not part of this select: it
+    // would only read back the same row.rowid already in hand (see the
+    // block comment above), so this list holds the referencing columns
+    // alone in that case. Every selected column still gets its own alias,
+    // even a referencing column that is also the primary-key column (a
+    // foreign key declared on the primary-key column itself): without an
+    // alias per position, a repeated column name would collapse to one
+    // property on the result row, silently losing one of the readings this
+    // key needs.
+    const pkColumns = resolution.kind === "column" ? [resolution.name] : [];
+    const selectList = [...pkColumns, ...fk.from].map((c, i) => `${quoteIdent(c)} as v${i}`).join(", ");
     const readback = storage.sql.exec(`select ${selectList} from ${quoteIdent(table)} where rowid = ?`, row.rowid).toArray()[0];
     if (readback === undefined) return null;
-    const values = [column, ...fk.from].map((_, i) => readback[`v${i}`]);
-    return JSON.stringify([table, String(row.parent), fk.from, fk.to, ...values]);
+    const values = [...pkColumns, ...fk.from].map((_, i) => readback[`v${i}`]);
+    const pkValue = resolution.kind === "rowid" ? row.rowid : values[0];
+    const referencingValues = resolution.kind === "rowid" ? values : values.slice(1);
+    return JSON.stringify([table, String(row.parent), fk.from, fk.to, pkValue, ...referencingValues]);
   });
 }
