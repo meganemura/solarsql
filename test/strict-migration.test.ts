@@ -1,5 +1,10 @@
 // Adding STRICT to an existing table is a table rebuild, and a row whose
 // stored value does not match the declared type fails that rebuild loudly.
+// The same is true of tightening an existing column's constraint -- NOT
+// NULL, UNIQUE, CHECK, or a foreign key -- against rows the generator
+// cannot see: the rebuild's own restore step re-inserts each row under the
+// new declaration, the engine checks it there, and a violation rolls back
+// the whole file the same way a STRICT type mismatch does.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { applied, diff, introspect, open, render } from "../src/build/migration.ts";
@@ -27,6 +32,70 @@ test("a stored text in an integer column fails the rebuild, and the file rolls b
   }, /cannot store TEXT value in INTEGER column/);
   db.exec("rollback");
   assert.deepEqual(db.prepare("select * from t").all().map((r) => ({ ...r })), [{ id: "a", n: "twelve" }]);
+});
+
+test("adding NOT NULL to an existing column fails the rebuild on a null row, and the file rolls back", () => {
+  const before = [`create table orders (id text primary key not null, note text)`];
+  const after = [`create table orders (id text primary key not null, note text not null)`];
+  const plan = diff(introspect(open(before)), introspect(open(after)));
+  if (plan.kind !== "ok") throw new Error(plan.reason);
+  const db = applied([render(1, "before", before).sql, "insert into orders values ('a', null);"]);
+  db.exec("begin");
+  assert.throws(() => {
+    for (const s of splitStatements(render(2, "not-null", plan.statements).sql)) db.exec(s);
+  }, /NOT NULL constraint failed: orders\.note/);
+  db.exec("rollback");
+  assert.deepEqual(db.prepare("select * from orders").all().map((r) => ({ ...r })), [{ id: "a", note: null }]);
+});
+
+test("adding UNIQUE to an existing column fails the rebuild on a duplicate, and the file rolls back", () => {
+  const before = [`create table customers (id text primary key not null, email text)`];
+  const after = [`create table customers (id text primary key not null, email text unique)`];
+  const plan = diff(introspect(open(before)), introspect(open(after)));
+  if (plan.kind !== "ok") throw new Error(plan.reason);
+  const seed = "insert into customers values ('a', 'x@example.com'); insert into customers values ('b', 'x@example.com');";
+  const db = applied([render(1, "before", before).sql, seed]);
+  db.exec("begin");
+  assert.throws(() => {
+    for (const s of splitStatements(render(2, "unique", plan.statements).sql)) db.exec(s);
+  }, /UNIQUE constraint failed: customers\.email/);
+  db.exec("rollback");
+  assert.deepEqual(db.prepare("select * from customers").all().map((r) => ({ ...r })), [
+    { id: "a", email: "x@example.com" },
+    { id: "b", email: "x@example.com" },
+  ]);
+});
+
+test("tightening a CHECK constraint fails the rebuild on a violating row, and the file rolls back", () => {
+  const before = [`create table order_lines (id text primary key not null, qty integer)`];
+  const after = [`create table order_lines (id text primary key not null, qty integer check (qty > 0))`];
+  const plan = diff(introspect(open(before)), introspect(open(after)));
+  if (plan.kind !== "ok") throw new Error(plan.reason);
+  const db = applied([render(1, "before", before).sql, "insert into order_lines values ('a', -1);"]);
+  db.exec("begin");
+  assert.throws(() => {
+    for (const s of splitStatements(render(2, "check", plan.statements).sql)) db.exec(s);
+  }, /CHECK constraint failed: qty > 0/);
+  db.exec("rollback");
+  assert.deepEqual(db.prepare("select * from order_lines").all().map((r) => ({ ...r })), [{ id: "a", qty: -1 }]);
+});
+
+// pragma defer_foreign_keys defers a rebuild's own foreign-key checks to
+// commit, so an orphaned row does not fail while the rebuild's statements
+// run -- it fails at commit, and the whole file still rolls back.
+test("adding a foreign key fails at commit on an orphaned row, not mid-rebuild, and the file rolls back", () => {
+  const before = [`create table customers (id integer primary key)`, `create table orders (id text primary key not null, customer_id integer)`];
+  const after = [`create table customers (id integer primary key)`, `create table orders (id text primary key not null, customer_id integer references customers(id))`];
+  const plan = diff(introspect(open(before)), introspect(open(after)));
+  if (plan.kind !== "ok") throw new Error(plan.reason);
+  const db = applied([render(1, "before", before).sql, "insert into orders values ('a', 999);"]);
+  db.exec("begin");
+  assert.doesNotThrow(() => {
+    for (const s of splitStatements(render(2, "foreign-key", plan.statements).sql)) db.exec(s);
+  });
+  assert.throws(() => db.exec("commit"), /FOREIGN KEY constraint failed/);
+  db.exec("rollback");
+  assert.deepEqual(db.prepare("select * from orders").all().map((r) => ({ ...r })), [{ id: "a", customer_id: 999 }]);
 });
 
 test('rebuilds retain accessible row identities across aliases, shadowing, and renames', () => {

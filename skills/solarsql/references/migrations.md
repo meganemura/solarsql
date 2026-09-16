@@ -113,7 +113,7 @@ explicit migration that preserves the required rows and foreign keys.
 | a new column with a default, or nullable | `alter table t add column ...` |
 | a new `not null` column without a default | refused; give it a default |
 | a table that both loses and gains a column | blocked until `renames` gives each data-preserving mapping; split an ambiguous multi-column change when needed |
-| a changed column, constraint, or foreign key; a dropped column; a new stored generated column on a table with rows | a rebuild: create the new table, copy common columns into a side table, drop the original, rename the new table, restore rows, then drop the side table; one transaction with `pragma defer_foreign_keys = on` first |
+| a changed column, constraint, or foreign key; a dropped column; a new stored generated column on a table with rows | a rebuild: create the new table, copy common columns into a side table, drop the original, rename the new table, restore rows, then drop the side table; one transaction with `pragma defer_foreign_keys = on` first. A row that violates the new declaration -- NOT NULL, UNIQUE, CHECK, or a foreign key -- fails the restore insert, or fails at commit for a deferred foreign key; either way the whole rebuild rolls back |
 | a rebuild referenced through ON DELETE CASCADE, SET NULL, SET DEFAULT, or RESTRICT | blocked; write an explicit migration that preserves related rows and foreign keys |
 | a changed view or trigger | `drop` then `create` |
 | any rebuild | every view is dropped first and created last, because a rename under a view fails |

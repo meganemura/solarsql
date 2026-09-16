@@ -4,7 +4,8 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { migrate, node } from "../src/node.ts";
+import { migrate, MigrationHistoryError, node } from "../src/node.ts";
+import { diff, introspect, open, render } from "../src/build/migration.ts";
 import { read, type Observed } from "../src/index.ts";
 import { migrations } from "../example/migrations/index.ts";
 import { customerCommands, type CustomersId } from "../example/modules/customers/public.ts";
@@ -292,6 +293,38 @@ test('Node savepoints retain deferred foreign-key semantics at the outer boundar
     raw.exec('insert into p values(2);commit');
     assert.equal(raw.prepare('select count(*) as n from c').get()!.n,1);
   }finally{raw.close();}
+});
+
+// migrate() wraps a file's statements and its solarsql_migrations insert in
+// one transactionSync() call (src/durable.ts). A rebuild that violates a
+// new NOT NULL throws inside that closure, so storageOf's transactionSync
+// (above) rolls back the savepoint before rethrowing: the schema, the row,
+// and the history table all land back where the first file left them.
+test('a Durable Object rebuild that violates a new NOT NULL rolls back the schema, the row, and the history insert together', () => {
+  const before = [`create table orders (id text primary key not null, note text)`];
+  const after = [`create table orders (id text primary key not null, note text not null)`];
+  // Two plain open()-based schemas, diffed the way build.ts diffs them.
+  // introspect()-ing a live, already-migrated database here would pick up
+  // its own solarsql_migrations table as a schema object and make diff()
+  // report kind: "blocked".
+  const initial = diff(introspect(open([])), introspect(open(before)));
+  if (initial.kind !== 'ok') throw new Error(initial.reason);
+  const f1 = render(1, 'initial', [...initial.statements, "insert into orders values ('a', null)"]);
+  const tightened = diff(introspect(open(before)), introspect(open(after)));
+  if (tightened.kind !== 'ok') throw new Error(tightened.reason);
+  const f2 = render(2, 'not_null', tightened.statements, tightened.rebuilds ?? []);
+  const originalSchema = introspect(open(before)).tables.get('orders')!.sql;
+  const raw = new DatabaseSync(':memory:');
+  try {
+    assert.throws(() => migrate(raw, [{ name: f1.filename, sql: f1.sql }, { name: f2.filename, sql: f2.sql }]), (e: unknown) => {
+      assert.ok(!(e instanceof MigrationHistoryError), 'expected the raw engine error, not a MigrationHistoryError');
+      assert.match((e as Error).message, /NOT NULL constraint failed: orders\.note/);
+      return true;
+    });
+    assert.deepEqual(raw.prepare('select name from solarsql_migrations').all().map(r => ({ ...r })), [{ name: f1.filename }]);
+    assert.equal((raw.prepare("select sql from sqlite_schema where name = 'orders'").get() as { sql: string }).sql, originalSchema);
+    assert.deepEqual(raw.prepare('select * from orders').all().map(r => ({ ...r })), [{ id: 'a', note: null }]);
+  } finally { raw.close(); }
 });
 
 test('nested Node transactions retain exactly the successful writes', async () => {
