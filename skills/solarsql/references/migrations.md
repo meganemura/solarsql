@@ -172,6 +172,14 @@ When every violation found after the file ran already existed before it ran, the
 This distinction needs a table with exactly one primary-key column, of a declared type other than INTEGER, to read the value back.
 On a table with an INTEGER PRIMARY KEY (a rowid alias), a composite primary key, or a WITHOUT ROWID table (its rowid is always null), `migrate()` cannot read a value back this way, so it always blames the named file, even when the violation predates it.
 Query `pragma foreign_key_check` yourself, on the same database, before generating or applying a migration, if you want to rule out a pre-existing violation ahead of time.
+For example, `migrate()` throws a plain `Error` (not the `MigrationHistoryError` below), and the word `predates` appears in its message. The message embeds the violation in the same row shape `pragma foreign_key_check` itself returns, such as `{"table":"child","rowid":1,"parent":"parent","fkid":0}` for a `child` row whose `parent_id` no longer names a row in `parent`. A repair migration file's own statements can remove the violating row directly:
+
+```sql
+-- 0001_repair.sql
+delete from child where parent_id = 'missing';
+```
+
+Passing this file to `migrate()` removes the violation before the end-of-file check runs, so it applies with no error and joins the history as `0001_repair.sql`. A later, unrelated file applies normally after it: the block does not carry forward past the repair.
 Confirm this against your own deployment with the remote test (`deploy.md`) before relying on it.
 
 On node:sqlite, `migrate(db, migrations)` from `solarsql/node` does the same, and returns the names applied now.
