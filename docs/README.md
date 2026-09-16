@@ -123,6 +123,12 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0108](adr/0108-rehearsal-cases-execute-with-real-parameters.md) | Rehearsal cases execute with real parameters |
 | [0109](adr/0109-the-worker-report-channel-requires-a-protocol-and-a-token.md) | The worker report channel requires a protocol and a token |
 | [0110](adr/0110-a-write-plan-items-returning-clause-is-refused.md) | A write plan item's RETURNING clause is refused |
+| [0111](adr/0111-the-json-group-array-filter-refusal-also-covers-right-and-full-joins.md) | The `json_group_array` filter refusal also covers RIGHT and FULL joins |
+| [0112](adr/0112-a-dml-statements-own-where-and-set-clause-parameters-resolve-against-its-outer-aliases.md) | A DML statement's own WHERE and SET clause parameters resolve against its outer aliases |
+| [0113](adr/0113-the-build-refuses-a-function-call-outside-workerds-own-sqlite-allowlist.md) | The build refuses a function call outside workerd's own SQLite allowlist |
+| [0114](adr/0114-the-build-also-refuses-a-denied-function-inside-ddl.md) | The build also refuses a denied function inside DDL |
+| [0115](adr/0115-diffs-own-shape-comparison-ignores-column-and-foreign-key-order.md) | `diff()`'s own shape comparison ignores column and foreign key order |
+| [0116](adr/0116-a-rebuild-refuses-to-revive-a-sibling-migrations-drop.md) | A rebuild refuses to revive a sibling migration's drop |
 
 ## Measurements
 
