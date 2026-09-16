@@ -159,6 +159,12 @@ ctx.blockConcurrencyWhile(async () => {
 });
 ```
 
+A migration applied this way that adds a foreign key an existing row violates does not fail the way the same migration fails on node:sqlite.
+Measured directly against workerd (Miniflare's bundled runtime, the same engine Cloudflare deploys): the deferred foreign-key check fires at the request's own implicit commit, after `migrate()` has already returned normally inside the constructor's `blockConcurrencyWhile`.
+The constructor never sees an error; the platform discards the request and resets the object with its own error instead, and every migration file applied in that turn rolls back together, not only the violating one.
+An immediate constraint (NOT NULL, UNIQUE, CHECK, or a non-deferred foreign key) does not show this: it still throws inside `migrate()` and rolls back only its own file.
+Confirm a deferred foreign key against your own deployment with the remote test (`deploy.md`) before relying on `migrate()` reporting it.
+
 On node:sqlite, `migrate(db, migrations)` from `solarsql/node` does the same, and returns the names applied now.
 
 There is no down migration. A change back is the next migration.
@@ -170,7 +176,8 @@ They store the applied SQL and reject changed contents, missing files, duplicate
 An error has `name: "MigrationHistoryError"`, a `code`, and the relevant `migration` name when available.
 Restore the applied files and append a new file to repair changed contents, a missing file, or an out-of-order file.
 A duplicate name is a caller error, not a history conflict: list each migration file once.
-A file runs in one transaction; transaction control statements inside files are rejected.
+A file runs in one transaction on node:sqlite; transaction control statements inside files are rejected.
+On a Durable Object under workerd, a deferred foreign-key check does not fire inside that transaction: see Applying, above, for what fires instead and when.
 
 An older database can have name-only history. The runner rejects it with `LEGACY_HISTORY` before new migrations execute.
 After checking the original files against your deployment records and database, call `migrate(db, files, { adoptLegacyHistory: true })` once.

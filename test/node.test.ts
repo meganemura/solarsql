@@ -335,8 +335,20 @@ test('a Durable Object rebuild that violates a new NOT NULL rolls back the schem
 // returns but still inside storageOf()'s try block. This test proves that
 // migrate()'s own savepoint still rolls back the schema, the row, and the
 // history insert together in that case, and leaves no open transaction
-// behind. This is Node's storageOf() implementation, not a real Durable
-// Object's own transactionSync.
+// behind, on Node's storageOf() implementation.
+//
+// A real Durable Object's own transactionSync does not behave the same
+// way for this one shape: measured directly against workerd (Miniflare's
+// bundled runtime, the same engine Cloudflare deploys), a deferred foreign
+// key added by migrate() is not caught at transactionSync's own RELEASE at
+// all. The check instead fires at the request's own implicit commit, after
+// migrate() has already returned normally; the caller's own code never
+// sees an error, and the platform itself discards the response and resets
+// the object with its own error instead. Every migration file applied in
+// that same request rolls back together, not only the violating one. An
+// immediate (non-deferred) constraint, such as the NOT NULL case above,
+// does not show this divergence: it still throws synchronously and rolls
+// back only its own file, matching this shim.
 //
 // Each of these five related tests covers one neighboring part of this:
 // - "a Durable Object rebuild that violates a new NOT NULL rolls back the
@@ -360,14 +372,14 @@ test('a Durable Object rebuild that violates a new NOT NULL rolls back the schem
 // - "migrate() composes with a caller-owned transaction opened before the
 //   call, and a deferred foreign key from the migration fails at the
 //   caller's own commit" (below) opens the caller's transaction before
-//   calling migrate(), pairing with "a Durable Object rebuild that
-//   violates a new foreign key rolls back the schema, the row, and the
-//   history insert together, and leaves no transaction open" (below, no
+//   calling migrate(), pairing with "a rebuild that violates a new foreign
+//   key rolls back the schema, the row, and the history insert together,
+//   and leaves no transaction open, on Node's storageOf() shim" (below, no
 //   caller transaction at all) and with "Node savepoints retain deferred
 //   foreign-key semantics at the outer boundary" (this file, a
 //   caller-owned transaction around a hand-written transactionSync rather
 //   than around migrate() itself).
-test('a Durable Object rebuild that violates a new foreign key rolls back the schema, the row, and the history insert together, and leaves no transaction open', () => {
+test("a rebuild that violates a new foreign key rolls back the schema, the row, and the history insert together, and leaves no transaction open, on Node's storageOf() shim", () => {
   const before = [`create table parent (id text primary key not null)`, `create table child (id text primary key not null, parent_id text)`];
   const after = [`create table parent (id text primary key not null)`, `create table child (id text primary key not null, parent_id text references parent(id))`];
   const initial = diff(introspect(open([])), introspect(open(before)));
