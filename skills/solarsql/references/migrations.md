@@ -168,7 +168,8 @@ There is no down migration. A change back is the next migration.
 The Node and Durable Object runners require the full ordered file history.
 They store the applied SQL and reject changed contents, missing files, duplicate names, and a new file before an applied file.
 An error has `name: "MigrationHistoryError"`, a `code`, and the relevant `migration` name when available.
-Restore the applied files and append a new file to repair a history conflict.
+Restore the applied files and append a new file to repair changed contents, a missing file, or an out-of-order file.
+A duplicate name is a caller error, not a history conflict: list each migration file once.
 A file runs in one transaction; transaction control statements inside files are rejected.
 
 An older database can have name-only history. The runner rejects it with `LEGACY_HISTORY` before new migrations execute.
