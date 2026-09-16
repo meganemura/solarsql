@@ -386,8 +386,12 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
       // failure is classified: on D1, run() falls through to an
       // unclassified throw; on a Durable Object, run()'s caller observes a
       // false success before the platform discards the response and resets
-      // storage. Refuse the declaration itself, since neither target can be
-      // fixed to catch it.
+      // storage. Fixing either target's classification is possible but
+      // rejected: a D1-only diagnostics fix would not reach the Durable
+      // Object's false success, and giving run() the per-call
+      // pragma_foreign_key_check scan migrate() already has would cost
+      // every command to guard a shape this declaration-time refusal
+      // already prevents.
       const deferred = declaredTableSql.has(t.name) ? deferredForeignKeyDeclaration(declaredTableSql.get(t.name)!) : null;
       if (deferred) {
         const where = "column" in deferred ? `column ${deferred.column}` : `table constraint \`${deferred.constraint}\``;
