@@ -232,6 +232,94 @@ describe("Typer.analyze", () => {
     assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["n", "string | null"]]);
   });
 
+  test("outer-join nullability propagation, exhaustively, across every UPDATE ... FROM and INSERT ... SELECT clause shape", () => {
+    // Regression guard for a bug class fixed three times in three separate
+    // code paths (ADR 0111, and ADR 0112's two Addenda): a path that resolves
+    // the right join alias but never wraps its type in `| null`, or never
+    // calls sourceContext at all. Plain loops sweep every distinct shape
+    // deterministically; Hegel would sample them.
+    const joinKinds = ["left", "right", "full"] as const;
+    const clauseKinds = ["set-subquery", "where-subquery", "top-level-where"] as const;
+    const sides = ["null-producing", "guaranteed"] as const;
+
+    // Fixed FROM shape: order_lines ol <join> tags tg on tg.line_id = ol.id.
+    // LEFT: ol is guaranteed, tg is null-producing. RIGHT flips that. FULL
+    // makes both sides null-producing, independent of `side`.
+    function aliasFor(joinKind: string, side: string): string {
+      const nullSide = joinKind === "right" ? "ol" : "tg";
+      const guaranteedSide = joinKind === "right" ? "tg" : "ol";
+      return side === "null-producing" ? nullSide : guaranteedSide;
+    }
+
+    // order_lines.sku and tags.name are both `text not null`, so every case
+    // below compares the same pair of type strings: "string" / "string | null".
+    function colFor(alias: string): string {
+      return alias === "tg" ? `${alias}.name` : `${alias}.sku`;
+    }
+
+    // The one rule under test, as a single expression both loops call: FULL
+    // JOIN makes every alias null-producing, regardless of which one `side` names.
+    function expectNullable(joinKind: string, side: string): boolean {
+      return joinKind === "full" || side === "null-producing";
+    }
+
+    const cases: { sql: string; expectNullable: boolean; label: string }[] = [];
+
+    for (const joinKind of joinKinds) {
+      const joinSql = `order_lines ol ${joinKind} join tags tg on tg.line_id = ol.id`;
+      for (const clauseKind of clauseKinds) {
+        for (const side of sides) {
+          const col = colFor(aliasFor(joinKind, side));
+          let sql: string;
+          if (clauseKind === "top-level-where") {
+            sql = `update orders set note = :note from ${joinSql} where orders.id = ol.order_id and ${col} is :p`;
+          } else if (clauseKind === "set-subquery") {
+            sql = `update orders set note = (select 1 from order_lines x where x.sku = 'a' and ${col} is :p) from ${joinSql} where orders.id = ol.order_id`;
+          } else {
+            sql = `update orders set note = 'unchanged' from ${joinSql} where orders.id = ol.order_id and exists (select 1 from order_lines x where x.sku = 'a' and ${col} is :p)`;
+          }
+          cases.push({ sql, expectNullable: expectNullable(joinKind, side), label: `update/${joinKind}/${clauseKind}/${side}` });
+        }
+      }
+    }
+
+    // INSERT ... SELECT has no SET clause and its own scope is a SELECT, so
+    // clauseKind never changes the SQL text here: the only meaningful nested
+    // shape is a WHERE-clause EXISTS subquery. These 6 cases are a control
+    // showing the fix also holds where the bug never applied.
+    for (const joinKind of joinKinds) {
+      const joinSql = `order_lines ol ${joinKind} join tags tg on tg.line_id = ol.id`;
+      for (const side of sides) {
+        const col = colFor(aliasFor(joinKind, side));
+        const sql = `insert into orders (id, customer_id, status) select ol.order_id, 'c1', 'draft' from ${joinSql} where exists (select 1 from order_lines x where x.sku = 'a' and ${col} is :p)`;
+        cases.push({ sql, expectNullable: expectNullable(joinKind, side), label: `insert-select/${joinKind}/${side}` });
+      }
+    }
+
+    assert.equal(cases.length, 24);
+    assert.equal(new Set(cases.map((c) => c.sql)).size, 24, "every case must build a distinct SQL string");
+
+    const thrown: string[] = [];
+    const mismatches: string[] = [];
+    for (const c of cases) {
+      let type: string | undefined;
+      try {
+        const a = t.analyze(c.sql, "orders");
+        type = a.params.find((p) => p.name === "p")?.type;
+      } catch (e) {
+        thrown.push(`${c.label}: ${(e as Error).message}`);
+        continue;
+      }
+      const isNullable = typeof type === "string" && type.includes("| null");
+      if (isNullable !== c.expectNullable) {
+        mismatches.push(`${c.label}: got ${JSON.stringify(type)}, expected nullable=${c.expectNullable}`);
+      }
+    }
+
+    assert.deepEqual(thrown, [], "Typer.analyze must not throw on any of the 24 cases");
+    assert.deepEqual(mismatches, []);
+  });
+
   test("a JSON aggregation over an outer join with a filter", () => {
     const a = t.analyze(
       `select o.id, c.name as customer_name,
