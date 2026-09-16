@@ -76,8 +76,11 @@ test("on D1, run() classifies both an immediate and a deferred foreign-key viola
 // it wraps SQLite's own constraint text unchanged. bareMessage() strips the
 // prefix without inspecting what follows it, so constraintFailure() should
 // classify a prefixed message exactly the way it classifies the bare one,
-// for every constraint kind it recognizes, not only FOREIGN KEY.
+// for every constraint kind it recognizes, not only FOREIGN KEY. D1 also
+// wraps the whole thing in its own `D1_ERROR: ` prefix, so that outer layer
+// must not change the result either.
 const resetPrefix = "Durable Object was reset and rolled back to its last known good state because the application left the database in a state where constraints were violated: ";
+const d1ErrorPrefix = "D1_ERROR: ";
 
 test("D1's reset prefix does not change what constraintFailure() sees, for any constraint kind", () => {
   hegel.test((tc) => {
@@ -88,9 +91,11 @@ test("D1's reset prefix does not change what constraintFailure() sees, for any c
       "NOT NULL constraint failed: t.c",
     ]));
     const suffix = tc.draw(gs.sampledFrom(["", ": SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_FOREIGNKEY)"]));
+    const wrappedInD1Error = tc.draw(gs.sampledFrom([false, true]));
     const bare = constraintFailure(new Error(text + suffix));
     assert.notEqual(bare, null);
-    const prefixed = constraintFailure(new Error(resetPrefix + text + suffix));
+    const message = wrappedInD1Error ? d1ErrorPrefix + resetPrefix + text + suffix : resetPrefix + text + suffix;
+    const prefixed = constraintFailure(new Error(message));
     assert.deepEqual(prefixed, bare);
   });
 });
