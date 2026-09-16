@@ -15,6 +15,11 @@ import { created, definitions, normalize, parseRebuildRecords, quoteIdent, redec
 export type StorageLike = {
   sql: { exec(sql: string, ...bindings: unknown[]): { toArray(): Record<string, unknown>[] } };
   transactionSync<T>(closure: () => T): T;
+  // Node's shim reports whether a transaction the caller opened before
+  // calling migrate() is still open (running.md's caller-owned-transaction
+  // composition). A Durable Object's storage has no such concept and leaves
+  // this undefined, which migrate() below treats as "no caller transaction".
+  inTransaction?: () => boolean;
 };
 
 export function durable(storage: StorageLike, options: AdapterOptions = {}): Database {
@@ -246,8 +251,34 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
         );
       }
     }
+    // Read before transactionSync opens its own savepoint: storageOf()'s
+    // transactionSync (src/node.ts) issues a SAVEPOINT itself, and
+    // node:sqlite reports isTransaction true as soon as any SAVEPOINT is
+    // open, whether or not the caller began one first. Reading
+    // inTransaction() from inside the closure would always see true on
+    // Node and could never tell a caller-owned transaction apart from
+    // migrate()'s own savepoint.
+    const callerOwnsTransaction = storage.inTransaction?.() === true;
     storage.transactionSync(() => {
       for (const statement of splitStatements(file.sql)) storage.sql.exec(statement).toArray();
+      // A new foreign key defers its check to commit (pragma
+      // defer_foreign_keys, src/build/migration.ts), so an orphaned row can
+      // pass every statement above and still violate the constraint. A real
+      // Durable Object does not raise that violation at this
+      // transactionSync's own RELEASE; it only fires at the request's own
+      // implicit commit, after migrate() has already returned, and the
+      // platform discards the response and resets the object instead of
+      // giving the caller a catchable error (see migrations.md). Running
+      // the same check the engine will run later, before this closure
+      // returns, converts it into an ordinary throw here, so it rolls back
+      // only this file, on every runtime. Skipped when the caller already
+      // owns an outer transaction (running.md's composition contract):
+      // that caller can still resolve an orphaned row before their own
+      // commit, and this check must not foreclose that by throwing early.
+      if (!callerOwnsTransaction) {
+        const violations = storage.sql.exec(`pragma foreign_key_check`).toArray();
+        if (violations.length > 0) throw new Error(`Migration ${file.name}: FOREIGN KEY constraint failed (pragma_foreign_key_check): ${JSON.stringify(violations)}`);
+      }
       storage.sql.exec(`insert into ${HISTORY} (name, applied_at, sql) values (?, ?, ?)`, file.name, new Date().toISOString(), file.sql);
     });
     applied.push(file.name);

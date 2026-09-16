@@ -36,6 +36,10 @@ export function storageOf(db: DatabaseSync): StorageLike {
         return { toArray: () => rows.map((r) => ({ ...r })) };
       },
     },
+    // node:sqlite reports this true as soon as any SAVEPOINT is open, not
+    // only a caller's own `begin`; migrate() (src/durable.ts) reads this
+    // before opening its own savepoint for that reason.
+    inTransaction: () => db.isTransaction,
     transactionSync<T>(closure: () => T): T {
       // SAVEPOINT owns an inner rollback boundary without committing the
       // caller's transaction. Repeated names resolve to the innermost mark.

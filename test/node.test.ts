@@ -337,18 +337,28 @@ test('a Durable Object rebuild that violates a new NOT NULL rolls back the schem
 // history insert together in that case, and leaves no open transaction
 // behind, on Node's storageOf() implementation.
 //
-// A real Durable Object's own transactionSync does not behave the same
+// A real Durable Object's own transactionSync used to not behave the same
 // way for this one shape: measured directly against workerd (Miniflare's
 // bundled runtime, the same engine Cloudflare deploys), a deferred foreign
-// key added by migrate() is not caught at transactionSync's own RELEASE at
-// all. The check instead fires at the request's own implicit commit, after
-// migrate() has already returned normally; the caller's own code never
-// sees an error, and the platform itself discards the response and resets
-// the object with its own error instead. Every migration file applied in
-// that same request rolls back together, not only the violating one. An
-// immediate (non-deferred) constraint, such as the NOT NULL case above,
-// does not show this divergence: it still throws synchronously and rolls
-// back only its own file, matching this shim.
+// key added by migrate() was not caught at transactionSync's own RELEASE at
+// all. The check instead fired at the request's own implicit commit, after
+// migrate() had already returned normally; the caller's own code never saw
+// an error, and the platform itself discarded the response and reset the
+// object with its own error instead. Every migration file applied in that
+// same request rolled back together, not only the violating one. migrate()
+// closes that gap itself now: its per-file transactionSync closure runs
+// `pragma foreign_key_check` before the history insert and throws a plain
+// Error (matching this shim's own /FOREIGN KEY constraint failed/ message,
+// asserted below) when it finds a violation, on every runtime, so only that
+// file rolls back and the object stays usable (test/migrate-durable-object.
+// test.ts covers this against workerd). That check is skipped when the
+// caller already owns an outer transaction (StorageLike.inTransaction, only
+// Node's storageOf() implements it): "migrate() composes with a
+// caller-owned transaction..." below still relies on SQLite's own deferred
+// check firing at the caller's own commit, unchanged. An immediate
+// (non-deferred) constraint, such as the NOT NULL case above, never showed
+// this divergence: it always threw synchronously and rolled back only its
+// own file, matching this shim.
 //
 // Each of these five related tests covers one neighboring part of this:
 // - "a Durable Object rebuild that violates a new NOT NULL rolls back the

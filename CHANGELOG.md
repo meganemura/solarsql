@@ -4,6 +4,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: on a Durable Object, `migrate()` now catches a deferred foreign-key violation a migration file introduces, instead of returning normally and letting the platform discard the response and reset the object at the request's own implicit commit; only the violating file rolls back, and the object stays usable. Node's `migrate()` gained the same check when no caller-owned transaction is already open; when the caller already opened one, the check is skipped and SQLite's own deferred check still fires at the caller's own commit, unchanged.
 - Fixed: a DML statement's own top-level parameter compared to a CTE's own output column now resolves that column's real type, instead of `SqlValue`, for a non-recursive CTE, a multi-branch UNION CTE, and a recursive CTE alike (ADR 0112).
 - Fixed: a parameter compared, inside a nested subquery in a DML statement's own SET or WHERE clause, to a column on that statement's own `UPDATE ... FROM` join's null-producing side now types `| null`, the same as the identical top-level comparison already did (ADR 0112).
 - Fixed: a missing generated file's error now carries a machine-readable `action` field with the rebuild command, in `build --check --json` and `inspect`.

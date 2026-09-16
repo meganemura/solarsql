@@ -159,11 +159,11 @@ ctx.blockConcurrencyWhile(async () => {
 });
 ```
 
-A migration applied this way that adds a foreign key an existing row violates does not fail the way the same migration fails on node:sqlite.
-Measured directly against workerd (Miniflare's bundled runtime, the same engine Cloudflare deploys): the deferred foreign-key check fires at the request's own implicit commit, after `migrate()` has already returned normally inside the constructor's `blockConcurrencyWhile`.
-The constructor never sees an error; the platform discards the request and resets the object with its own error instead, and every migration file applied in that turn rolls back together, not only the violating one.
-An immediate constraint (NOT NULL, UNIQUE, CHECK, or a non-deferred foreign key) does not show this: it still throws inside `migrate()` and rolls back only its own file.
-Confirm a deferred foreign key against your own deployment with the remote test (`deploy.md`) before relying on `migrate()` reporting it.
+A migration applied this way that adds a foreign key an existing row violates fails inside `migrate()` itself, the same as it already did on node:sqlite: `migrate()` runs `pragma foreign_key_check` at the end of each file's own transaction and throws a catchable error naming the violation when it finds one, so the constructor's `blockConcurrencyWhile` rejects and only that file rolls back.
+This closes a gap measured directly against workerd (Miniflare's bundled runtime, the same engine Cloudflare deploys): a deferred foreign-key check does not fire on its own at a Durable Object's `transactionSync` RELEASE, only later, at the request's own implicit commit, by which point `migrate()` had already returned normally and the platform discarded the response and reset the object instead of handing the constructor a catchable error.
+An immediate constraint (NOT NULL, UNIQUE, CHECK, or a non-deferred foreign key) never showed this: it always threw inside `migrate()` and rolled back only its own file.
+On Node, this check runs the same way when `migrate()` is called with no caller-owned transaction already open; when the caller already opened one before calling `migrate()`, the check is skipped and the deferred foreign-key check still fires at the caller's own commit instead, unchanged (`running.md`'s caller-owned-transaction composition).
+Confirm this against your own deployment with the remote test (`deploy.md`) before relying on it.
 
 On node:sqlite, `migrate(db, migrations)` from `solarsql/node` does the same, and returns the names applied now.
 
@@ -177,7 +177,7 @@ An error has `name: "MigrationHistoryError"`, a `code`, and the relevant `migrat
 Restore the applied files and append a new file to repair changed contents, a missing file, or an out-of-order file.
 A duplicate name is a caller error, not a history conflict: list each migration file once.
 A file runs in one transaction on node:sqlite; transaction control statements inside files are rejected.
-On a Durable Object under workerd, a deferred foreign-key check does not fire inside that transaction: see Applying, above, for what fires instead and when.
+On a Durable Object under workerd, and on Node with no caller-owned transaction already open, `migrate()` checks foreign keys itself at the end of each file's transaction: see Applying, above, for what that check does and when it is skipped.
 
 An older database can have name-only history. The runner rejects it with `LEGACY_HISTORY` before new migrations execute.
 After checking the original files against your deployment records and database, call `migrate(db, files, { adoptLegacyHistory: true })` once.
