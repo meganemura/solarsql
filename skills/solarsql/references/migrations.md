@@ -171,6 +171,7 @@ The referencing column's value matters on its own: a statement that only changes
 When every violation found after the file ran already existed before it ran, the error says the violation predates the file, instead of blaming the file for it; the rollback stays the same, and only this file's own change rolls back.
 This distinction needs a table with exactly one primary-key column, of a declared type other than INTEGER, to read the value back.
 On a table with an INTEGER PRIMARY KEY (a rowid alias), a composite primary key, or a WITHOUT ROWID table (its rowid is always null), `migrate()` cannot read a value back this way, so it always blames the named file, even when the violation predates it.
+A migration that renames the violated foreign key's own referencing column joins them: `migrate()` identifies a foreign key by its referencing column name among other things, so the rename changes that identity even though the same row still names the same missing parent, and `migrate()` blames the renaming file for a violation that predates it.
 
 For example, `migrate()` throws a plain `Error` (not the `MigrationHistoryError` below), and the word `predates` appears in its message. The message embeds the violation in the same row shape `pragma foreign_key_check` itself returns, such as `{"table":"child","rowid":1,"parent":"parent","fkid":0}` for a `child` row whose `parent_id` no longer names a row in `parent`. A repair migration file's own statements can remove the violating row directly:
 

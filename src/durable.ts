@@ -335,6 +335,26 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
 // rowid alone would then read the new row as the same already-known
 // violation the before-snapshot named.
 //
+// row.fkid is not safe either, even together with the primary-key value: a
+// rebuild of the violating row's own table can renumber it. SQLite assigns
+// fkid by each foreign key's position in the table's current declaration,
+// so a rebuild that adds, drops, or reorders a sibling foreign key on the
+// same table changes the surviving fkid values -- measured directly: a
+// table with two foreign keys keeps their fkid values only as long as its
+// declaration does not change; a rebuild that appends a third foreign key
+// can leave the earlier two at the same fkid values or renumber one of
+// them, depending on the column order the rebuild's CREATE TABLE ends up
+// with. A file that never touches the violating foreign key at all can
+// still renumber it this way, so the before-snapshot's fkid for that row
+// stops matching the after-check's, and the file gets blamed for a
+// violation that predates it. The key below identifies a foreign key by
+// what it points at instead: the parent table (`row.parent`, from
+// pragma_foreign_key_check itself) and the referencing and referenced
+// column names (`pragma foreign_key_list(table)`, matched by fkid within
+// one violationKeys() call only -- see the cache note below). Neither of
+// those changes when an unrelated foreign key is added, dropped, or
+// reordered on the same table.
+//
 // (table, fkid, primary-key value) is not enough either, on its own: a file
 // can leave the primary key untouched and still change which row the
 // foreign key points at, with no delete or insert at all. A plain
@@ -348,32 +368,44 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
 // foreign key) current value, read with `pragma foreign_key_list(table)` to
 // find which column or columns the given fkid names.
 //
-// (table, fkid, primary-key value, referencing-column values) tells every
-// case above apart. The primary-key half of the readback, `select <pk
-// column>, <referencing columns...> from <table> where rowid = ?`, only
-// works for a table with exactly one primary-key column (pragma table_info
-// reports pk 1, 2, ... on every column of a composite key, so requiring
-// exactly one pk column excludes those) whose declared type is not
-// INTEGER (an `integer primary key` column is a rowid alias, so reading it
-// back would just read the same rowid this key is trying to improve on).
-// A WITHOUT ROWID table (rowid always null) has no rowid to look the row
-// up by in the first place. All three shapes stay unkeyable here, and an
-// unkeyable row always makes its file's own after-check treat the
-// violation as new (see allPredate above): this project does not try to
-// tell a pre-existing violation apart from a new one on those tables.
+// (table, parent table, referencing and referenced column names,
+// primary-key value, referencing-column values) tells every case above
+// apart, and also two foreign keys on the same table that share a
+// referencing column but point at different columns of the same parent
+// table (measured directly: SQLite accepts two table-level FOREIGN KEY
+// clauses naming the same column with different REFERENCES targets) --
+// the referenced column name (`to`, alongside `from`) rules that out; the
+// referencing column name alone would collapse both into one key. The
+// primary-key half of the readback, `select <pk column>, <referencing
+// columns...> from <table> where rowid = ?`, only works for a table with
+// exactly one primary-key column (pragma table_info reports pk 1, 2, ... on
+// every column of a composite key, so requiring exactly one pk column
+// excludes those) whose declared type is not INTEGER (an `integer primary
+// key` column is a rowid alias, so reading it back would just read the same
+// rowid this key is trying to improve on). A WITHOUT ROWID table (rowid
+// always null) has no rowid to look the row up by in the first place. All
+// three shapes stay unkeyable here, and an unkeyable row always makes its
+// file's own after-check treat the violation as new (see allPredate above):
+// this project does not try to tell a pre-existing violation apart from a
+// new one on those tables. A migration that renames the referencing column
+// itself joins them: the name is part of this key, so the rename changes
+// it even though the same row still names the same missing parent
+// (migrations.md).
 //
 // table_info and foreign_key_list are cached per table for the lifetime of
 // one violationKeys() call (its own map, declared inside the function, not
 // shared across calls), so a violation-heavy pragma_foreign_key_check
-// result queries a table's shape once, not once per row. The cache does not
-// span the two call sites in migrate() above (the before-snapshot and each
+// result queries a table's shape once, not once per row. row.fkid is stable
+// within that one call (both are cache lookup keys here, not part of the
+// returned key), so the cache keys on it safely; the cache does not span
+// the two call sites in migrate() above (the before-snapshot and each
 // file's own after-check): a rebuild between those two calls can recreate a
 // table with a different fkid numbering or a different referencing column,
 // and a cache spanning both would then read the wrong column, or a column
 // that no longer exists, for a row the later call resolves.
 function violationKeys(storage: StorageLike, violations: Record<string, unknown>[]): (string | null)[] {
   const pkColumn = new Map<string, string | null>();
-  const refColumns = new Map<string, string[] | null>();
+  const foreignKeys = new Map<string, { from: string[]; to: string[] } | null>();
   return violations.map((row) => {
     if (row.rowid === null || row.rowid === undefined) return null;
     const table = String(row.table);
@@ -385,26 +417,26 @@ function violationKeys(storage: StorageLike, violations: Record<string, unknown>
       pkColumn.set(table, column);
     }
     if (column === null) return null;
-    const refKey = JSON.stringify([table, row.fkid]);
-    let refs = refColumns.get(refKey);
-    if (refs === undefined) {
+    const cacheKey = JSON.stringify([table, row.fkid]);
+    let fk = foreignKeys.get(cacheKey);
+    if (fk === undefined) {
       const fkList = storage.sql.exec(`pragma foreign_key_list(${quoteIdent(table)})`).toArray()
         .filter((r) => Number(r.id) === Number(row.fkid))
         .sort((a, b) => Number(a.seq) - Number(b.seq));
-      refs = fkList.length > 0 ? fkList.map((r) => String(r.from)) : null;
-      refColumns.set(refKey, refs);
+      fk = fkList.length > 0 ? { from: fkList.map((r) => String(r.from)), to: fkList.map((r) => String(r.to)) } : null;
+      foreignKeys.set(cacheKey, fk);
     }
-    if (refs === null) return null;
+    if (fk === null) return null;
     // Every selected column gets its own alias, even the primary-key
     // column when it is also one of the referencing columns (a
     // self-referencing foreign key, or a foreign key declared on the
     // primary-key column itself): without an alias per position, a
     // repeated column name would collapse to one property on the result
     // row, silently losing one of the two readings this key needs.
-    const selectList = [column, ...refs].map((c, i) => `${quoteIdent(c)} as v${i}`).join(", ");
+    const selectList = [column, ...fk.from].map((c, i) => `${quoteIdent(c)} as v${i}`).join(", ");
     const readback = storage.sql.exec(`select ${selectList} from ${quoteIdent(table)} where rowid = ?`, row.rowid).toArray()[0];
     if (readback === undefined) return null;
-    const values = [column, ...refs].map((_, i) => readback[`v${i}`]);
-    return JSON.stringify([table, row.fkid, ...values]);
+    const values = [column, ...fk.from].map((_, i) => readback[`v${i}`]);
+    return JSON.stringify([table, String(row.parent), fk.from, fk.to, ...values]);
   });
 }

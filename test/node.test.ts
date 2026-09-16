@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { migrate, MigrationHistoryError, node } from "../src/node.ts";
 import { diff, introspect, open, render } from "../src/build/migration.ts";
+import { splitStatements } from "../src/build/scan.ts";
 import { read, type Observed } from "../src/index.ts";
 import { migrations } from "../example/migrations/index.ts";
 import { customerCommands, type CustomersId } from "../example/modules/customers/public.ts";
@@ -366,10 +367,11 @@ test('a Durable Object rebuild that violates a new NOT NULL rolls back the schem
 // foreign_keys was off, or one left over from before this check existed)
 // could otherwise fail the next file that happens to run and blame that
 // file for it. migrate() now tells the two cases apart: it keys each
-// violated row by (table, fkid, primary-key value, referencing-column
-// value) and compares that key across files; the error says the violation
-// predates this file when every key named already existed before this
-// file ran. That keying needs a single non-INTEGER primary-key column to
+// violated row by (table, parent table, referencing and referenced column
+// names, primary-key value, referencing-column value) and compares that key
+// across files; the error says the violation predates this file when every
+// key named already existed before this file ran. That keying needs a
+// single non-INTEGER primary-key column to
 // read back; on a table with an INTEGER PRIMARY KEY, a composite key, or
 // WITHOUT ROWID, migrate() cannot rule this file out, and blames it still.
 //
@@ -454,8 +456,9 @@ test("migrate() composes with a caller-owned transaction opened before the call,
 });
 
 // migrate()'s pre-existing-violation message (src/durable.ts) keys a
-// pragma_foreign_key_check row by (table, fkid, primary-key value,
-// referencing-column values), read back with one `select <pk column>,
+// pragma_foreign_key_check row by (table, parent table, referencing and
+// referenced column names, primary-key value, referencing-column values),
+// read back with one `select <pk column>,
 // <referencing columns...> from <table> where rowid = ?`, rather than by
 // rowid alone: a file that deletes the table's only violating row and then
 // inserts a different violating row can have the new row reuse the deleted
@@ -507,10 +510,11 @@ test("a file that deletes a pre-existing violating row and inserts a different v
   } finally { raw.close(); }
 });
 
-// (table, fkid, primary-key value) alone is not enough: a file that only
-// changes which missing parent a violating row points at, leaving the
-// primary-key value untouched, would still read as "the same already-known
-// violation" under that key. Reproduced directly against node:sqlite (a raw
+// (table, parent table, referencing and referenced column names,
+// primary-key value) alone is not enough: a file that only changes which
+// missing parent a violating row points at, leaving the primary-key value
+// untouched, would still read as "the same already-known violation" under
+// that key. Reproduced directly against node:sqlite (a raw
 // delete-then-insert with the same primary-key value below, and, in the
 // third test, a single update with no delete or insert at all).
 // violationKeys() (src/durable.ts) adds the referencing column's (or
@@ -628,6 +632,69 @@ test("an unrelated file applied after a raw, pre-existing violation reads that v
       return true;
     });
     assert.deepEqual(raw.prepare('select name from solarsql_migrations').all(), []);
+  } finally { raw.close(); }
+});
+
+// SQLite assigns a foreign key's fkid by its position in the table's
+// current declaration, so a rebuild of the violating row's own table can
+// renumber a foreign key the rebuild never touched: adding a third foreign
+// key to a two-foreign-key table can change which fkid the earlier two
+// keep. violationKeys() (src/durable.ts) used to include row.fkid in its
+// key, so a violation on the untouched foreign key stopped matching the
+// before-snapshot across that rebuild, and this file's own
+// pragma_foreign_key_check treated a violation that predates it as newly
+// introduced. The key now identifies a foreign key by what it points at
+// (the parent table and the referencing and referenced column names)
+// instead of by its position, so it survives the renumbering.
+test("a rebuild that adds an unrelated foreign key to the violating row's own table, renumbering an untouched foreign key, still reads the violation as predating the file", () => {
+  const before = [
+    `create table parentA (id text primary key not null)`,
+    `create table parentB (id text primary key not null)`,
+    `create table child (id text primary key not null, a_id text references parentA(id), b_id text references parentB(id))`,
+  ];
+  const after = [
+    `create table parentA (id text primary key not null)`,
+    `create table parentB (id text primary key not null)`,
+    `create table child (id text primary key not null, a_id text references parentA(id), b_id text references parentB(id), c_id text references parentA(id))`,
+  ];
+  const initial = diff(introspect(open([])), introspect(open(before)));
+  if (initial.kind !== 'ok') throw new Error(initial.reason);
+  const f1 = render(1, 'initial', [...initial.statements, "insert into parentA values ('a1')", "insert into parentB values ('b1')"]);
+  const added = diff(introspect(open(before)), introspect(open(after)));
+  if (added.kind !== 'ok') throw new Error(added.reason);
+  const f2 = render(2, 'add_c', added.statements, added.rebuilds ?? []);
+
+  const fkidOf = (db: DatabaseSync) => (db.prepare('pragma foreign_key_list(child)').all() as { from: string; id: number }[]).find(fk => fk.from === 'b_id')!.id;
+
+  // The rebuild really does renumber b_id's fkid, checked on its own
+  // connection with no violation to roll back: without this, the assertion
+  // below would pass even if this SQLite version happened not to renumber
+  // anything here, guarding nothing.
+  const probe = new DatabaseSync(':memory:');
+  try {
+    assert.deepEqual(migrate(probe, [{ name: f1.filename, sql: f1.sql }]), [f1.filename]);
+    const fkidBefore = fkidOf(probe);
+    for (const statement of splitStatements(f2.sql)) probe.exec(statement);
+    assert.notEqual(fkidOf(probe), fkidBefore, "the rebuild must renumber b_id's fkid for this test to guard against the bug it names");
+  } finally { probe.close(); }
+
+  const raw = new DatabaseSync(':memory:');
+  try {
+    assert.deepEqual(migrate(raw, [{ name: f1.filename, sql: f1.sql }]), [f1.filename]);
+
+    // A pre-existing violation on b_id, injected the same way the positive
+    // control above does: bypassing migrate() entirely, as a raw write or a
+    // row left over from before this check existed would.
+    raw.exec('pragma foreign_keys=off');
+    raw.exec("insert into child values ('c1', 'a1', 'missing-b')");
+    raw.exec('pragma foreign_keys=on');
+
+    assert.throws(() => migrate(raw, [{ name: f1.filename, sql: f1.sql }, { name: f2.filename, sql: f2.sql }]), (e: unknown) => {
+      assert.ok(!(e instanceof MigrationHistoryError), 'expected the raw engine error, not a MigrationHistoryError');
+      assert.match((e as Error).message, /pragma_foreign_key_check/);
+      assert.match((e as Error).message, /predates/);
+      return true;
+    });
   } finally { raw.close(); }
 });
 
