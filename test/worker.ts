@@ -34,7 +34,7 @@ export function loadWorkerModules(entry: string, root: string): WorkerModule[] {
   return [...modules.values()];
 }
 
-export function workerMiniflare(entry: string, root: string, options: { durableObjects?: Record<string, string> } = {}): Miniflare {
+export function workerMiniflare(entry: string, root: string, options: { durableObjects?: Record<string, string>; unsafeInspectDurableObjects?: boolean } = {}): Miniflare {
   const modules = loadWorkerModules(entry, root);
   return new Miniflare(
     convertV4MiniflareOptions({
@@ -44,6 +44,10 @@ export function workerMiniflare(entry: string, root: string, options: { durableO
       compatibilityFlags: ["nodejs_compat"],
       d1Databases: { DB: "example-db" },
       durableObjects: Object.fromEntries(Object.entries(options.durableObjects ?? {}).map(([binding, className]) => [binding, { className, useSQLite: true }])),
+      // Only set when a test needs unsafeGetDurableObjectStorage to inject
+      // raw rows before migrate() runs: every other caller's Miniflare
+      // options object stays exactly what it was before this flag existed.
+      ...(options.unsafeInspectDurableObjects ? { unsafeInspectDurableObjects: true } : {}),
     }),
   );
 }

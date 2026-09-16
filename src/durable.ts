@@ -143,6 +143,30 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
       }
     });
   }
+  // Read before transactionSync opens its own savepoint: storageOf()'s
+  // transactionSync (src/node.ts) issues a SAVEPOINT itself, and
+  // node:sqlite reports isTransaction true as soon as any SAVEPOINT is
+  // open, whether or not the caller began one first. Reading
+  // inTransaction() from inside a file's own closure would always see true
+  // on Node and could never tell a caller-owned transaction apart from
+  // migrate()'s own savepoint. Read once, here, for every file below: this
+  // does not change file to file.
+  const callerOwnsTransaction = storage.inTransaction?.() === true;
+  // pragma foreign_key_check (below, per file) scans the whole database,
+  // not only the rows that file's own statements touch, so a violation
+  // already present before the first file runs would otherwise get blamed
+  // on whichever later file happens to run next (migrations.md). Read it
+  // once here, before any file's statements run, and resolve each row to a
+  // key (violationKeys below) while every row still names the same data it
+  // will after a later file's statements delete or replace it. Each file's
+  // own after-check narrows this set to what still predates that file (see
+  // the comment on that check).
+  let before = new Set<string>();
+  if (!callerOwnsTransaction) {
+    for (const key of violationKeys(storage, storage.sql.exec(`pragma foreign_key_check`).toArray())) {
+      if (key !== null) before.add(key);
+    }
+  }
   const applied: string[] = [];
   for (const file of ordered.slice(history.length)) {
     for (const { table, columns, constraints, indexes, triggers } of parseRebuildRecords(file.sql)) {
@@ -251,14 +275,6 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
         );
       }
     }
-    // Read before transactionSync opens its own savepoint: storageOf()'s
-    // transactionSync (src/node.ts) issues a SAVEPOINT itself, and
-    // node:sqlite reports isTransaction true as soon as any SAVEPOINT is
-    // open, whether or not the caller began one first. Reading
-    // inTransaction() from inside the closure would always see true on
-    // Node and could never tell a caller-owned transaction apart from
-    // migrate()'s own savepoint.
-    const callerOwnsTransaction = storage.inTransaction?.() === true;
     storage.transactionSync(() => {
       for (const statement of splitStatements(file.sql)) storage.sql.exec(statement).toArray();
       // A new foreign key defers its check to commit (pragma
@@ -277,11 +293,112 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
       // commit, and this check must not foreclose that by throwing early.
       if (!callerOwnsTransaction) {
         const violations = storage.sql.exec(`pragma foreign_key_check`).toArray();
-        if (violations.length > 0) throw new Error(`Migration ${file.name}: FOREIGN KEY constraint failed (pragma_foreign_key_check): ${JSON.stringify(violations)}`);
+        if (violations.length === 0) {
+          // The whole database has no foreign-key violation at this point,
+          // so the next file's own before is empty; carrying this file's
+          // now-stale before forward could match a later file's own new
+          // violation against a key this file's statements already cleared.
+          before = new Set();
+        } else {
+          const afterKeys = violationKeys(storage, violations);
+          const allPredate = afterKeys.every((key) => key !== null && before.has(key));
+          if (allPredate) {
+            throw new Error(`Migration ${file.name}: FOREIGN KEY constraint failed (pragma_foreign_key_check): ${JSON.stringify(violations)}. Every violation listed predates ${file.name}. This file's own statements did not introduce it. Repair the violation, then apply ${file.name} again.`);
+          }
+          throw new Error(`Migration ${file.name}: FOREIGN KEY constraint failed (pragma_foreign_key_check): ${JSON.stringify(violations)}`);
+        }
       }
       storage.sql.exec(`insert into ${HISTORY} (name, applied_at, sql) values (?, ?, ?)`, file.name, new Date().toISOString(), file.sql);
     });
     applied.push(file.name);
   }
   return applied;
+}
+
+// Resolve each row pragma foreign_key_check returns ({table, rowid, parent,
+// fkid}) to a key comparable across two different calls (a before-snapshot
+// and a later file's after-check), or null when the row cannot be resolved
+// that way.
+//
+// rowid alone is not a safe key: a file that deletes a violating row and
+// then inserts a different, new violating row in the same statement can
+// have the new row reuse the deleted row's rowid (measured directly --
+// a table with exactly one row, that row deleted and immediately replaced
+// by one insert, got the same rowid `1` the deleted row had, because the
+// first insert into an empty rowid table always gets rowid `1`). Keying on
+// rowid alone would then read the new row as the same already-known
+// violation the before-snapshot named.
+//
+// (table, fkid, primary-key value) is not enough either, on its own: a file
+// can leave the primary key untouched and still change which row the
+// foreign key points at, with no delete or insert at all. A plain
+// `update child set parent_id = 'missing-B' where id = 'c1'`, changing an
+// existing violation's referenced value from one missing row to another,
+// reproduces this (measured directly against node:sqlite): the primary key
+// `'c1'` matches the before-snapshot, so a key without the referencing
+// column reads it as the same already-known violation, when this file's own
+// statement is the one that pointed it at a currently-missing parent. The
+// key below adds the referencing column's (or columns', for a composite
+// foreign key) current value, read with `pragma foreign_key_list(table)` to
+// find which column or columns the given fkid names.
+//
+// (table, fkid, primary-key value, referencing-column values) tells every
+// case above apart. The primary-key half of the readback, `select <pk
+// column>, <referencing columns...> from <table> where rowid = ?`, only
+// works for a table with exactly one primary-key column (pragma table_info
+// reports pk 1, 2, ... on every column of a composite key, so requiring
+// exactly one pk column excludes those) whose declared type is not
+// INTEGER (an `integer primary key` column is a rowid alias, so reading it
+// back would just read the same rowid this key is trying to improve on).
+// A WITHOUT ROWID table (rowid always null) has no rowid to look the row
+// up by in the first place. All three shapes stay unkeyable here, and an
+// unkeyable row always makes its file's own after-check treat the
+// violation as new (see allPredate above): this project does not try to
+// tell a pre-existing violation apart from a new one on those tables.
+//
+// table_info and foreign_key_list are cached per table for the lifetime of
+// one violationKeys() call (its own map, declared inside the function, not
+// shared across calls), so a violation-heavy pragma_foreign_key_check
+// result queries a table's shape once, not once per row. The cache does not
+// span the two call sites in migrate() above (the before-snapshot and each
+// file's own after-check): a rebuild between those two calls can recreate a
+// table with a different fkid numbering or a different referencing column,
+// and a cache spanning both would then read the wrong column, or a column
+// that no longer exists, for a row the later call resolves.
+function violationKeys(storage: StorageLike, violations: Record<string, unknown>[]): (string | null)[] {
+  const pkColumn = new Map<string, string | null>();
+  const refColumns = new Map<string, string[] | null>();
+  return violations.map((row) => {
+    if (row.rowid === null || row.rowid === undefined) return null;
+    const table = String(row.table);
+    let column = pkColumn.get(table);
+    if (column === undefined) {
+      const info = storage.sql.exec(`pragma table_info(${quoteIdent(table)})`).toArray();
+      const pks = info.filter((c) => Number(c.pk) !== 0);
+      column = pks.length === 1 && String(pks[0]!.type).toUpperCase() !== "INTEGER" ? String(pks[0]!.name) : null;
+      pkColumn.set(table, column);
+    }
+    if (column === null) return null;
+    const refKey = JSON.stringify([table, row.fkid]);
+    let refs = refColumns.get(refKey);
+    if (refs === undefined) {
+      const fkList = storage.sql.exec(`pragma foreign_key_list(${quoteIdent(table)})`).toArray()
+        .filter((r) => Number(r.id) === Number(row.fkid))
+        .sort((a, b) => Number(a.seq) - Number(b.seq));
+      refs = fkList.length > 0 ? fkList.map((r) => String(r.from)) : null;
+      refColumns.set(refKey, refs);
+    }
+    if (refs === null) return null;
+    // Every selected column gets its own alias, even the primary-key
+    // column when it is also one of the referencing columns (a
+    // self-referencing foreign key, or a foreign key declared on the
+    // primary-key column itself): without an alias per position, a
+    // repeated column name would collapse to one property on the result
+    // row, silently losing one of the two readings this key needs.
+    const selectList = [column, ...refs].map((c, i) => `${quoteIdent(c)} as v${i}`).join(", ");
+    const readback = storage.sql.exec(`select ${selectList} from ${quoteIdent(table)} where rowid = ?`, row.rowid).toArray()[0];
+    if (readback === undefined) return null;
+    const values = [column, ...refs].map((_, i) => readback[`v${i}`]);
+    return JSON.stringify([table, row.fkid, ...values]);
+  });
 }

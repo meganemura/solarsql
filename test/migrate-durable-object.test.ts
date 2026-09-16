@@ -76,3 +76,82 @@ test("migrate() rolls back only the violating file on a real Durable Object, and
   assert.equal(isolated.status, 200);
   assert.deepEqual(isolated.body.historyNames, []);
 });
+
+// The two tests below inject a foreign-key violation directly into a fresh
+// Durable Object's storage, bypassing migrate() entirely, the same way a raw
+// write outside migrate() (or a row left over from before the
+// pragma_foreign_key_check migrate() runs today existed) can. Both need
+// unsafeGetDurableObjectStorage, which needs unsafeInspectDurableObjects on
+// the Miniflare instance (test/worker.ts), so each builds its own instance
+// rather than sharing the one above.
+test("migrate() applies a file that repairs a pre-existing violation, then applies a later file normally, on a real Durable Object", async (t) => {
+  const mf = workerMiniflare(resolve(root, "test/migrate-durable-object.worker.ts"), root, { durableObjects: { PROBE: "MigrateProbe" }, unsafeInspectDurableObjects: true });
+  t.after(() => mf.dispose());
+  const send = async (instance: string, files: { name: string; sql: string }[]) => {
+    const response = await mf.dispatchFetch(`http://localhost/${instance}`, { method: "POST", body: JSON.stringify(files) });
+    return { status: response.status, body: await response.json() as {
+      ok: boolean; applied: string[]; message: string | null; isMigrationHistoryError: boolean;
+      historyNames: string[]; childSchema: string | null; childRows: Record<string, unknown>[];
+    } };
+  };
+
+  const instance = "repair-file-probe";
+  const handle = await mf.unsafeGetDurableObjectStorage("", "MigrateProbe", { name: instance });
+  await handle.exec(`CREATE TABLE parent (id text primary key not null)`);
+  await handle.exec(`CREATE TABLE child (id text primary key not null, parent_id text references parent(id))`);
+  await handle.exec(`insert into parent values ('p1')`);
+  await handle.exec(`pragma foreign_keys=off`);
+  await handle.exec(`insert into child values ('c1', 'missing')`);
+  await handle.exec(`pragma foreign_keys=on`);
+
+  const repair = { name: "0001_repair.sql", sql: `delete from child where parent_id = 'missing';` };
+  const unrelated = { name: "0002_unrelated.sql", sql: `create table unrelated (id text primary key not null);` };
+
+  const applyRepair = await send(instance, [repair]);
+  assert.equal(applyRepair.status, 200);
+  assert.equal(applyRepair.body.ok, true);
+  assert.deepEqual(applyRepair.body.applied, [repair.name]);
+  assert.deepEqual(applyRepair.body.historyNames, [repair.name]);
+  assert.deepEqual(applyRepair.body.childRows, []);
+
+  // migrate() requires the full ordered history on every call, so the
+  // second call resupplies the already-applied repair file alongside the
+  // new one; only the new one is unapplied and so only it comes back in
+  // applied.
+  const applyUnrelated = await send(instance, [repair, unrelated]);
+  assert.equal(applyUnrelated.status, 200);
+  assert.equal(applyUnrelated.body.ok, true);
+  assert.deepEqual(applyUnrelated.body.applied, [unrelated.name]);
+  assert.deepEqual(applyUnrelated.body.historyNames, [repair.name, unrelated.name]);
+});
+
+test("migrate()'s pragma_foreign_key_check error says a violation predates the file it names, when every violation was already there before that file ran", async (t) => {
+  const mf = workerMiniflare(resolve(root, "test/migrate-durable-object.worker.ts"), root, { durableObjects: { PROBE: "MigrateProbe" }, unsafeInspectDurableObjects: true });
+  t.after(() => mf.dispose());
+  const send = async (instance: string, files: { name: string; sql: string }[]) => {
+    const response = await mf.dispatchFetch(`http://localhost/${instance}`, { method: "POST", body: JSON.stringify(files) });
+    return { status: response.status, body: await response.json() as {
+      ok: boolean; applied: string[]; message: string | null; isMigrationHistoryError: boolean;
+      historyNames: string[]; childSchema: string | null; childRows: Record<string, unknown>[];
+    } };
+  };
+
+  const instance = "predates-probe";
+  const handle = await mf.unsafeGetDurableObjectStorage("", "MigrateProbe", { name: instance });
+  await handle.exec(`CREATE TABLE parent (id text primary key not null)`);
+  await handle.exec(`CREATE TABLE child (id text primary key not null, parent_id text references parent(id))`);
+  await handle.exec(`insert into parent values ('p1')`);
+  await handle.exec(`pragma foreign_keys=off`);
+  await handle.exec(`insert into child values ('c1', 'missing')`);
+  await handle.exec(`pragma foreign_keys=on`);
+
+  const unrelated = { name: "0001_unrelated.sql", sql: `create table unrelated (id text primary key not null);` };
+  const applyUnrelated = await send(instance, [unrelated]);
+  assert.equal(applyUnrelated.status, 200);
+  assert.equal(applyUnrelated.body.ok, false);
+  assert.equal(applyUnrelated.body.isMigrationHistoryError, false);
+  assert.match(applyUnrelated.body.message ?? "", /FOREIGN KEY constraint failed/);
+  assert.match(applyUnrelated.body.message ?? "", /predates/);
+  // The blocked file's own change still rolled back: it never joined history.
+  assert.deepEqual(applyUnrelated.body.historyNames, []);
+});
