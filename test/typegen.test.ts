@@ -118,6 +118,22 @@ describe("Typer.analyze", () => {
     assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["note", "string | null"], ["q", "number"]]);
   });
 
+  test("an UPDATE ... FROM row-value comparison against the join's null-producing column allows null", () => {
+    const a = t.analyze(
+      "update orders set note = :note from order_lines l left join order_lines l2 on l2.order_id = l.order_id where (orders.id, l2.qty) = (l.order_id, :q)",
+      "orders",
+    );
+    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["note", "string | null"], ["q", "number | null"]]);
+  });
+
+  test("an UPDATE ... FROM row-value comparison against the join's guaranteed column stays non-null", () => {
+    const a = t.analyze(
+      "update orders set note = :note from order_lines l left join order_lines l2 on l2.order_id = l.order_id where (orders.id, l.qty) = (l.order_id, :q)",
+      "orders",
+    );
+    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["note", "string | null"], ["q", "number"]]);
+  });
+
   test("an UPDATE with its own WITH clause resolves a real-table alias sharing a join with a CTE alias", () => {
     // The SET clause keeps a literal, not a parameter: this test targets the
     // `ofRef`/`sourceContext` path a WHERE parameter takes, not the `set`
