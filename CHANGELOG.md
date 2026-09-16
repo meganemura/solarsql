@@ -4,6 +4,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: a DML statement's own top-level parameter compared to a CTE's own output column now resolves that column's real type, instead of `SqlValue`, for a non-recursive CTE, a multi-branch UNION CTE, and a recursive CTE alike (ADR 0112).
+- Fixed: a parameter compared, inside a nested subquery in a DML statement's own SET or WHERE clause, to a column on that statement's own `UPDATE ... FROM` join's null-producing side now types `| null`, the same as the identical top-level comparison already did (ADR 0112).
 - Fixed: a missing generated file's error now carries a machine-readable `action` field with the rebuild command, in `build --check --json` and `inspect`.
 - Fixed: the duplicate-migration error names its remedy: list each migration file once.
 - Fixed: a table rebuild now also refuses to replay when it would revive a table-level constraint, an index, or a trigger that an earlier migration already removed and this file's own target schema still declares, instead of silently restoring it; a rebuild that drops the same declaration itself still replays (ADR 0116).
