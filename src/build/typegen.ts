@@ -733,6 +733,27 @@ export class Typer {
     return context;
   }
 
+  // Resolve one column of a CTE bound at the DML statement's own top level,
+  // the same way sourceRows resolves a FROM-list reference to a CTE: the
+  // same recursion guard (`new Set([binding])`, since ofRef has no `active`
+  // set of its own to extend), the same `rename` to the CTE's declared
+  // columns, and the same recursive call into scopeRows for the CTE's own
+  // SELECT. A recursive CTE's own fixed-point loop is a SELECT-scope-only
+  // path this does not run; that CTE's alias falls back to SqlValue here,
+  // same as before this method existed.
+  private topLevelCteColumn(binding: Binding, column: string, note: (r: Resolved) => Resolved): Resolved | null {
+    const scope = queryScope(binding.sql);
+    if (scope.branches.length !== 1 && !scope.operators.some((op) => !op.startsWith("union"))) return null;
+    const rename = (rows: ScopeColumn[]) => rows.map((row, i) => ({ ...row, name: binding.columns[i] ?? row.name }));
+    const rows = rename(this.scopeRows(binding.sql, binding.environment, new Set([binding]), note));
+    const found = rows.find((row) => sqliteName(row.name) === sqliteName(column));
+    if (!found) return null;
+    const members = unionMembers(found.type);
+    const nullable = members.includes("null");
+    const type = found.json ? "string" : members.filter((member) => member !== "null").join(" | ") || "null";
+    return { type, nullable, brand: null };
+  }
+
   // The type of one named parameter, from where it sits in the statement.
   // Sites that name a column must agree on the base type. The parameter
   // allows null when every such site does, or when `:p is null` appears.
@@ -780,6 +801,21 @@ export class Typer {
     // parameterContext's SELECT scopes below, or a real-table alias sharing
     // a FROM/JOIN with a CTE alias (the CTE unresolved, `this.tables` has
     // no entry for it) fails sourceContext with "unknown source".
+    // The DML statement's own top-level WITH bindings. This depends only on
+    // `sql` and its tokens (no per-site difference), so it is built once
+    // here rather than inside `ofRef`'s lazy `topLevelNullable` block: a
+    // reference to a CTE alias needs it on every call, not only the first
+    // one that reaches the fallback below `this.tables.has(table)` used to
+    // gate it on. `topLevelNullable` itself stays lazy; it still only
+    // matters once a column has actually resolved.
+    const topLevelTokens = significant(tokenize(sql));
+    const topLevelEnvironment = new Map<string, Binding>();
+    const topLevelWith = topLevelTokens[0];
+    if (topLevelWith && isKeyword(topLevelWith, "with")) {
+      const end = topLevelTokens.find(next => next.start > topLevelWith.start && next.depth < topLevelWith.depth)?.start ?? sql.length;
+      const bindings = queryScope(sql.slice(topLevelWith.start, end), true);
+      for (const cte of bindings.ctes) topLevelEnvironment.set(sqliteName(cte.name), { ...cte, environment: topLevelEnvironment });
+    }
     let topLevelNullable: Set<string> | undefined;
     const ofRef = (alias: string | null, column: string): Resolved | null => {
       const resolved = context ? this.scopedReference({ alias, column }, context) : null;
@@ -793,20 +829,16 @@ export class Typer {
       const scope = context === undefined ? outerAliases : aliases;
       const a = alias ?? this.aliasOfBareColumn(scope, column);
       const table = a === null ? null : scope.get(a) ?? null;
-      if (!table || !this.tables.has(table)) return null;
-      const r = this.column(table, column, sql);
+      if (table === null) return null;
+      // `outerAliases`/`aliases` resolve a CTE alias to the CTE's own name
+      // (aliasMap, not null the way a derived table's alias resolves), so a
+      // top-level reference to a CTE lands here rather than at
+      // `this.tables`, which holds no entry for it (ADR 0112 Consequences).
+      const binding = topLevelEnvironment.get(sqliteName(table));
+      const r = binding ? this.topLevelCteColumn(binding, column, note) : this.tables.has(table) ? this.column(table, column, sql) : null;
+      if (!r) return null;
       if (a === null) return r;
-      if (topLevelNullable === undefined) {
-        const tokens = significant(tokenize(sql));
-        let environment = new Map<string, Binding>();
-        const first = tokens[0];
-        if (first && isKeyword(first, "with")) {
-          const end = tokens.find(next => next.start > first.start && next.depth < first.depth)?.start ?? sql.length;
-          const bindings = queryScope(sql.slice(first.start, end), true);
-          for (const cte of bindings.ctes) environment.set(sqliteName(cte.name), { ...cte, environment });
-        }
-        topLevelNullable = this.sourceContext(sql, environment, new Set(), note).context.nullable;
-      }
+      if (topLevelNullable === undefined) topLevelNullable = this.sourceContext(sql, topLevelEnvironment, new Set(), note).context.nullable;
       return topLevelNullable.has(sqliteName(a)) ? { ...r, nullable: true } : r;
     };
     for (const site of sites) {

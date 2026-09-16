@@ -149,6 +149,54 @@ describe("Typer.analyze", () => {
     assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["q", "number | null"]]);
   });
 
+  // A DML statement's own top-level clause has no enclosing SELECT scope, so
+  // a parameter compared to a CTE alias's own output column used to fall
+  // back through `this.tables`, which holds no entry for a CTE, and land on
+  // the generic SqlValue type instead of the CTE's real column type (ADR
+  // 0112's third Addendum).
+  test("a top-level WHERE parameter compared to a CTE's own output column resolves to that column's real type", () => {
+    const a = t.analyze(
+      `with c as (select id, name from customers)
+       update orders set note = :n from c where orders.customer_id = c.id and c.name is :m`,
+      "orders",
+    );
+    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["n", "string | null"], ["m", "string"]]);
+  });
+
+  test("a top-level WHERE parameter compared to a CTE's own output column allows null when that CTE alias is a LEFT JOIN's null-producing side", () => {
+    const a = t.analyze(
+      `with c as (select id, name from customers)
+       update orders set note = :n
+       from order_lines ol left join c on c.id = (select customer_id from orders where id = ol.order_id)
+       where orders.id = ol.order_id and c.name is :m`,
+      "orders",
+    );
+    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["n", "string | null"], ["m", "string | null"]]);
+  });
+
+  test("control: a SELECT-scope parameter compared to a CTE's own output column is unaffected, still the column's real type", () => {
+    const a = t.analyze(
+      `with c as (select id, name from customers)
+       select o.id from orders o join c on o.customer_id = c.id where c.name is :m`,
+      "orders",
+    );
+    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["m", "string"]]);
+  });
+
+  // The fixed-point resolution a recursive CTE needs (sourceRows' own
+  // 32-iteration loop) is a SELECT-scope-only path; a DML statement's own
+  // top-level clause does not run it, so a parameter compared to a
+  // recursive CTE's output column keeps falling back to SqlValue instead of
+  // throwing. This boundary is intentional, not a remaining gap.
+  test("a top-level WHERE parameter compared to a recursive CTE's own output column still falls back to SqlValue, without throwing", () => {
+    const a = t.analyze(
+      `with recursive c(n) as (select 1 union all select cast(n + 1 as integer) from c where n < 5)
+       update orders set note = :x from c where orders.id = :id and c.n is :m`,
+      "orders",
+    );
+    assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["x", "string | null"], ["id", "OrdersId"], ["m", "SqlValue"]]);
+  });
+
   test("a parameter in a nested SET-clause subquery, correlated to an outer LEFT JOIN's null-producing alias, allows null", () => {
     const a = t.analyze(
       `update orders set note = (select 1 from order_lines x where x.sku = 'a' and tg.name is :n)
