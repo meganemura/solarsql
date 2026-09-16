@@ -4,6 +4,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: a missing generated file's error now carries a machine-readable `action` field with the rebuild command, in `build --check --json` and `inspect`.
 - Fixed: the duplicate-migration error names its remedy: list each migration file once.
 - Fixed: a table rebuild now also refuses to replay when it would revive a table-level constraint, an index, or a trigger that an earlier migration already removed and this file's own target schema still declares, instead of silently restoring it; a rebuild that drops the same declaration itself still replays (ADR 0116).
 - Fixed: a row-value `SET` assignment (`update t set (c1, c2) = (:p1, :p2)`) types each parameter from the column at its position, instead of `SqlValue`; this also applies inside an upsert's `DO UPDATE SET`.

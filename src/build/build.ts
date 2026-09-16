@@ -110,7 +110,7 @@ export async function load(configPath: string, write = true): Promise<Loaded> {
     if (!existsSync(source)) throw new BuildError(`module ${name}: ${source} does not exist`);
     const generatedPath = join(dir, GENERATED_FILE);
     if (!existsSync(generatedPath)) {
-      if (!write) throw new BuildError(`module ${name}: ${generatedPath} is missing. Run: npx solarsql build ${shellArgument(configPath)}`);
+      if (!write) throw new BuildError(`module ${name}: ${generatedPath} is missing. Run: npx solarsql build ${shellArgument(configPath)}`, undefined, `Run \`npx solarsql build ${shellArgument(configPath)}\`.`);
       writeGeneratedFile(generatedPath, emitStub(library));
     }
   }
@@ -199,7 +199,7 @@ async function importConfig(absolute: string, write: boolean, stubbed: string[],
       const missing = missingGeneratedFile(e);
       if (missing === null || stubbed.includes(missing)) throw e;
       const name = basename(dirname(missing));
-      if (!write) throw new BuildError(`module ${name}: ${missing} is missing. Run: npx solarsql build ${shellArgument(configPath)}`);
+      if (!write) throw new BuildError(`module ${name}: ${missing} is missing. Run: npx solarsql build ${shellArgument(configPath)}`, undefined, `Run \`npx solarsql build ${shellArgument(configPath)}\`.`);
       // The library specifier is in the config, which has not loaded yet;
       // load() rewrites the stub once it has. The import is type-only, so
       // the specifier does not matter for this import.

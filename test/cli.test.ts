@@ -263,6 +263,23 @@ test("missing generated files retain the custom config in recovery commands with
   }
 });
 
+test("missing generated files report the rebuild command as an action in JSON", (t) => {
+  const f = fixture(t);
+  rmSync(f.generated);
+  for (const importsModule of [false, true]) {
+    if (importsModule) {
+      const path = join(f.dir, config);
+      writeFileSync(path, `import { orderQueries } from "./modules/orders/public.ts";\nexport const queries = orderQueries;\n${readFileSync(path, "utf8")}`);
+    }
+    const result = f.run("build", "--check", "--json");
+    assert.equal(result.status, 1, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.diagnostics[0].code, "BUILD_FAILED");
+    assert.ok(typeof report.diagnostics[0].action === "string" && report.diagnostics[0].action.length > 0, JSON.stringify(report.diagnostics[0]));
+    assert.equal(report.diagnostics[0].action, `Run \`npx solarsql build ${quotedConfig}\`.`);
+  }
+});
+
 test("a DDL-only nullability change updates types before its migration", (t) => {
   const f = fixture(t);
   assert.equal(f.run("build", "--check").status, 0);
