@@ -8,7 +8,7 @@
 // runtime/plan.ts defines.
 import type { AdapterOptions, BatchRows, Command, CommandResult, Database, Entry, GeneratedMap, ParamsArg, PlanShape, Query, Read, Row, SqlValue, StatementMeta } from "./index.ts";
 import { GUARD_CLEANUP, assertFailure, assertStatement, assertToken, bindValues, constraintFailure, observed, outcomeOf, parseJson, validateParams } from "./runtime/plan.ts";
-import { created, definitions, normalize, parseRebuildRecords, quoteIdent, significant, splitStatements, tokenize, unknownDeclaration } from "./build/scan.ts";
+import { created, definitions, normalize, parseRebuildRecords, quoteIdent, redeclaredByFile, revivedDeclaration, significant, splitStatements, tokenize, unknownDeclaration } from "./build/scan.ts";
 
 // The part of DurableObjectStorage this adapter uses. Structural, so no
 // type package is needed.
@@ -209,6 +209,39 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
         throw new MigrationHistoryError(
           "REBUILD_LOSES_COLUMN",
           `Migration ${file.name} rebuilds table ${quoteIdent(table)} without knowledge of trigger ${quoteIdent(created(badTrigger)?.name ?? badTrigger)} it already has: ${JSON.stringify(badTrigger)}. This database has already applied every earlier migration, so that trigger, and the behavior it maintains, would be lost if this migration ran. Regenerate ${file.name} against the current schema.`,
+          file.name,
+        );
+      }
+      // The mirror direction of the checks above: something this
+      // rebuild's generator saw and recorded is now missing from the live
+      // schema (an earlier migration, applied since, removed it), and this
+      // file's own statements redeclare it. Replaying it would restore what
+      // that earlier migration meant to remove. An entry recorded but
+      // missing, and not redeclared by this file, stays allowed: this
+      // rebuild's own generator chose to drop it, the case ADR 0099 and ADR
+      // 0102 already permit.
+      const redeclared = redeclaredByFile(file.sql, table);
+      const revivedConstraint = revivedDeclaration(constraints, defs?.constraints ?? [], redeclared.constraints, false);
+      if (revivedConstraint !== undefined) {
+        throw new MigrationHistoryError(
+          "REBUILD_REVIVES_DECLARATION",
+          `Migration ${file.name} rebuilds table ${quoteIdent(table)} and would restore a table-level constraint an earlier migration already removed: ${JSON.stringify(revivedConstraint)}. This file's target schema was generated before that removal and still declares it. Regenerate ${file.name} against the current schema.`,
+          file.name,
+        );
+      }
+      const revivedIndex = revivedDeclaration(indexes, actualIndexSql, redeclared.indexes, true);
+      if (revivedIndex !== undefined) {
+        throw new MigrationHistoryError(
+          "REBUILD_REVIVES_DECLARATION",
+          `Migration ${file.name} rebuilds table ${quoteIdent(table)} and would restore index ${quoteIdent(created(revivedIndex)?.name ?? revivedIndex)}, which an earlier migration already removed: ${JSON.stringify(revivedIndex)}. This file's target schema was generated before that removal and still declares it. Regenerate ${file.name} against the current schema.`,
+          file.name,
+        );
+      }
+      const revivedTrigger = revivedDeclaration(triggers, actualTriggerSql, redeclared.triggers, true);
+      if (revivedTrigger !== undefined) {
+        throw new MigrationHistoryError(
+          "REBUILD_REVIVES_DECLARATION",
+          `Migration ${file.name} rebuilds table ${quoteIdent(table)} and would restore trigger ${quoteIdent(created(revivedTrigger)?.name ?? revivedTrigger)}, which an earlier migration already removed: ${JSON.stringify(revivedTrigger)}. This file's target schema was generated before that removal and still declares it. Regenerate ${file.name} against the current schema.`,
           file.name,
         );
       }

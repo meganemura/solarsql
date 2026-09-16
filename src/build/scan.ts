@@ -1185,3 +1185,78 @@ export function unknownDeclaration(recorded: readonly string[], actual: readonly
   const known = new Set(recorded);
   return actual.find((a) => !known.has(a));
 }
+
+// The table-level constraints, indexes, and triggers a migration file's own
+// statements redeclare for one table, read from the file's SQL text rather
+// than from any RebuildRecord: a constraint from the file's own `CREATE
+// TABLE "_solarsql_new_<table>"` (the name renamedCreate(), in
+// src/build/migration.ts, always gives a rebuild's fresh copy), through the
+// same definitions() that already reads a live table's constraints; an
+// index or a trigger from every CREATE INDEX/CREATE TRIGGER statement in the
+// file whose own target table -- indexTarget()/triggerTarget() above, a
+// tokenized fact, not a text search -- is this table. A word-boundary regex
+// or a substring search on the table name cannot make that call soundly: in
+// a file that rebuilds both "t" and "tt" in one pass, "on tt(" contains "on
+// t" as a prefix, so a check anchored only on the left of the name would
+// attribute "tt"'s own index to "t" too (confirmed against the real
+// tokenizer before this function existed). The table name comparison is
+// case-insensitive for the same reason durable.ts's own table lookups are
+// (see the comment at its `schemaRow` lookup): a RebuildRecord's `table`
+// field and this function's own table argument can differ only in case, not
+// in spelling, from the live table and the file's own generated name.
+export function redeclaredByFile(fileSql: string, table: string): { constraints: string[]; indexes: string[]; triggers: string[] } {
+  const constraints: string[] = [];
+  const indexes: string[] = [];
+  const triggers: string[] = [];
+  const freshName = `_solarsql_new_${table}`.toLowerCase();
+  for (const statement of splitStatements(fileSql)) {
+    const c = created(statement);
+    if (c?.kind === "table" && c.name.toLowerCase() === freshName) {
+      constraints.push(...(definitions(statement)?.constraints ?? []));
+      continue;
+    }
+    const index = indexTarget(statement);
+    if (index && index.table.toLowerCase() === table.toLowerCase()) {
+      indexes.push(normalize(statement));
+      continue;
+    }
+    const trigger = triggerTarget(statement);
+    if (trigger && trigger.table.toLowerCase() === table.toLowerCase()) {
+      triggers.push(normalize(statement));
+      continue;
+    }
+  }
+  return { constraints, indexes, triggers };
+}
+
+// A declaration recorded at generation time, missing from the live schema
+// immediately before replay -- a sibling migration removed it since -- that
+// this same file's own statements redeclare for the table (redeclaredByFile,
+// above): reviving a sibling's drop with no refusal, the gap ADR 0102's
+// Consequences named and left open. The reverse of unknownDeclaration above,
+// and always called alongside it, never in its place: unknownDeclaration
+// still owns the "sibling added something this rebuild does not know to
+// recreate" direction, this function owns the mirror direction, "this
+// rebuild's own target schema still declares something a sibling removed."
+// An index or a trigger has a name, so it matches redeclared by name
+// (created(x)?.name): a sibling's clean drop of "idx1" is still a revival
+// even when this file also edited "idx1"'s own definition since it was
+// recorded, which exact-text matching alone would miss (measured: branch A
+// changes its own idx1 from "on t(c)" to "on t(c, a)", branch B drops idx1
+// outright; the recorded and the redeclared text differ, but the name does
+// not). A table-level constraint has no name, so it matches only by exact
+// normalized text -- the same limit ADR 0102 already accepted for
+// unknownDeclaration's own direction, for the same reason.
+export function revivedDeclaration(recorded: readonly string[], actual: readonly string[], redeclared: readonly string[], byName: boolean): string | undefined {
+  const live = new Set(actual);
+  const missing = recorded.filter((r) => !live.has(r));
+  if (!byName) {
+    const redeclaredSet = new Set(redeclared);
+    return missing.find((r) => redeclaredSet.has(r));
+  }
+  const redeclaredNames = new Set(redeclared.map((r) => created(r)?.name).filter((n): n is string => n !== undefined));
+  return missing.find((r) => {
+    const name = created(r)?.name;
+    return name !== undefined && redeclaredNames.has(name);
+  });
+}

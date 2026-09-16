@@ -4,6 +4,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: a table rebuild now also refuses to replay when it would revive a table-level constraint, an index, or a trigger that an earlier migration already removed and this file's own target schema still declares, instead of silently restoring it; a rebuild that drops the same declaration itself still replays (ADR 0116).
 - Fixed: a row-value `SET` assignment (`update t set (c1, c2) = (:p1, :p2)`) types each parameter from the column at its position, instead of `SqlValue`; this also applies inside an upsert's `DO UPDATE SET`.
 - Fixed: a row-value WHERE comparison (`where (c1, c2) = (:p1, :p2)`, either side holding the columns) types each parameter from the column at its position, instead of `SqlValue`; this includes `| null` when the comparison reaches a LEFT, RIGHT, or FULL JOIN's null-producing side, matching the same columns compared with `and`.
 - Fixed: `diff()` no longer proposes a rebuild, or refuses outright behind an `ON DELETE` foreign key, for a table whose columns or inline foreign keys are declared in a different order than the deployed schema replays them in; only an actual change to the column or foreign-key set is treated as one (ADR 0115).

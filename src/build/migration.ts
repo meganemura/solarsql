@@ -10,7 +10,7 @@
 // again, and its shadow tables are the engine's own.
 import { DatabaseSync } from "node:sqlite";
 import { withDeniedFunctions } from "./facts.ts";
-import { created, definitions, isKeyword, normalize, parseRebuildRecords, quoteIdent, REBUILD_HEADER, renamedColumn, splitStatements, tokenize, type RebuildRecord, type Token, unknownDeclaration } from "./scan.ts";
+import { created, definitions, isKeyword, normalize, parseRebuildRecords, quoteIdent, redeclaredByFile, REBUILD_HEADER, renamedColumn, revivedDeclaration, splitStatements, tokenize, type RebuildRecord, type Token, unknownDeclaration } from "./scan.ts";
 import { BuildError } from "./typegen.ts";
 
 export type Column = { name: string; type: string; notnull: boolean; dflt: string | null; pk: number; def: string; generated: boolean };
@@ -137,6 +137,45 @@ export function applied(files: readonly string[], names?: readonly string[]): Da
         throw new BuildError(
           `migration ${label} rebuilds table ${quoteIdent(table)} without knowledge of trigger ${quoteIdent(created(badTrigger)?.name ?? badTrigger)} it already has: ${JSON.stringify(badTrigger)}. ` +
           `A database that replays ${label} loses that trigger and the behavior it maintains. ` +
+          action,
+          undefined,
+          action,
+        );
+      }
+      // The mirror direction of the checks above: something this
+      // rebuild's generator saw and recorded is now missing from the schema
+      // this file starts from (an earlier migration removed it), and this
+      // file's own statements redeclare it. Replaying it would restore what
+      // that earlier migration meant to remove. An entry recorded but
+      // missing, and not redeclared by this file, stays allowed: this
+      // rebuild's own generator chose to drop it, the case ADR 0099 and ADR
+      // 0102 already permit.
+      const redeclared = redeclaredByFile(file, table);
+      const revivedConstraint = revivedDeclaration(constraints, actual.constraints, redeclared.constraints, false);
+      if (revivedConstraint !== undefined) {
+        throw new BuildError(
+          `migration ${label} rebuilds table ${quoteIdent(table)} and would restore a table-level constraint an earlier migration already removed: ${JSON.stringify(revivedConstraint)}. ` +
+          `A database that replays ${label} would bring that constraint back. ` +
+          action,
+          undefined,
+          action,
+        );
+      }
+      const revivedIndex = revivedDeclaration(indexes, actualIndexSql, redeclared.indexes, true);
+      if (revivedIndex !== undefined) {
+        throw new BuildError(
+          `migration ${label} rebuilds table ${quoteIdent(table)} and would restore index ${quoteIdent(created(revivedIndex)?.name ?? revivedIndex)}, which an earlier migration already removed: ${JSON.stringify(revivedIndex)}. ` +
+          `A database that replays ${label} would bring that index back. ` +
+          action,
+          undefined,
+          action,
+        );
+      }
+      const revivedTrigger = revivedDeclaration(triggers, actualTriggerSql, redeclared.triggers, true);
+      if (revivedTrigger !== undefined) {
+        throw new BuildError(
+          `migration ${label} rebuilds table ${quoteIdent(table)} and would restore trigger ${quoteIdent(created(revivedTrigger)?.name ?? revivedTrigger)}, which an earlier migration already removed: ${JSON.stringify(revivedTrigger)}. ` +
+          `A database that replays ${label} would bring that trigger, and the behavior it maintains, back. ` +
           action,
           undefined,
           action,
