@@ -31,3 +31,21 @@ test("every message fragment in build.md appears in the source of the build", ()
   assert.ok(fragments.length >= 20, `only ${fragments.length} fragments`);
   for (const fragment of fragments) assert.ok(source.includes(fragment), `build.md: "${fragment}" is not in src/build`);
 });
+
+test("every code in migrations.md's history integrity table appears in durable.ts", () => {
+  const source = readFileSync(join(root, "src/durable.ts"), "utf8");
+  const migrations = readFileSync(join(skill, "references/migrations.md"), "utf8");
+  const table = migrations.split("## Migration history integrity")[1]!.split("\n## ")[0]!;
+  const fragments = [...table.matchAll(/^\| `([^`]+)`/gm)].map((m) => m[1]!);
+  assert.ok(fragments.length >= 8, `only ${fragments.length} fragments`);
+  for (const fragment of fragments) assert.ok(source.includes(fragment), `migrations.md: "${fragment}" is not in src/durable.ts`);
+});
+
+test("every message fragment in migrations.md's rehearsal table appears in the source of the build", () => {
+  const source = readdirSync(join(root, "src/build")).map((f) => readFileSync(join(root, "src/build", f), "utf8")).join("\n");
+  const migrations = readFileSync(join(skill, "references/migrations.md"), "utf8");
+  const table = migrations.split("## Rehearse with existing data")[1]!.split("\n## ")[0]!;
+  const fragments = [...table.matchAll(/^\| `([^`]+)`/gm)].map((m) => m[1]!);
+  assert.ok(fragments.length >= 11, `only ${fragments.length} fragments`);
+  for (const fragment of fragments) assert.ok(source.includes(fragment), `migrations.md: "${fragment}" is not in src/build`);
+});
