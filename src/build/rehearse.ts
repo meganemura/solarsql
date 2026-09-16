@@ -219,7 +219,6 @@ export function rehearseSnapshot(db: DatabaseSync, sql: string, checks: Rehearsa
     db.exec('begin');
     for (const statement of statements) db.exec(statement);
     healthy(db);
-    db.exec('commit');
     result.after = counts(db);
     stage = 'QUERY_COMPATIBILITY_FAILED';
     for (const [name, query] of Object.entries(checks.queries ?? {})) {
@@ -242,6 +241,10 @@ export function rehearseSnapshot(db: DatabaseSync, sql: string, checks: Rehearsa
       if (rows.length !== 1 || Object.keys(rows[0]!).length !== 1 || Object.values(rows[0]!)[0] !== 1) throw new Error(`Assertion ${name} must return one row and one value equal to 1`);
       result.assertions.push(name);
     }
+    // finally's rollback only undoes an open transaction, so every check
+    // must run before commit for a failed check to undo the migration.
+    stage = 'MIGRATION_FAILED';
+    db.exec('commit');
     result.ok = true;
   } catch (e) {
     result.diagnostics.push({code:stage, message:e instanceof Error ? e.message : String(e)});

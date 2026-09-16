@@ -83,6 +83,27 @@ test('a nullable column transition preserves arbitrary stored values', async () 
   });
 });
 
+test('a failing assertion leaves the stored value unchanged, not just the reported result', async () => {
+  const { test: property } = await import('@hegeldev/hegel');
+  const gs = await import('@hegeldev/hegel/generators');
+  property(tc => {
+    const n = tc.draw(gs.integers());
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec('create table values_test(n integer) strict');
+      db.prepare('insert into values_test values (?)').run(n);
+      const result = rehearseSnapshot(db, 'alter table values_test add column extra text', {assertions:{retained:`select n = ${n + 1} from values_test`}});
+      assert.equal(result.ok,false);
+      assert.equal(result.diagnostics[0]!.code, 'ASSERTION_FAILED', JSON.stringify(result));
+      assert.equal(db.prepare('select n from values_test').get()!.n,n);
+      // The n-value check above passes even without a rollback, since this
+      // migration never touches n; only the added column's absence proves
+      // the ALTER TABLE itself was undone.
+      assert.equal(db.prepare("select count(*) as n from pragma_table_info('values_test')").get()!.n,1);
+    } finally { db.close(); }
+  });
+});
+
 test('rehearsal counts include legal sqlite-prefixed tables', () => {
   const db = new DatabaseSync(':memory:');
   try {
@@ -126,7 +147,24 @@ test('a case catches a migration that keeps the result shape but breaks stored J
     });
     assert.equal(asCase.ok, false);
     assert.equal(asCase.diagnostics[0]!.code, 'CASE_COMPATIBILITY_FAILED', JSON.stringify(asCase));
+    assert.equal(db2.prepare('select payload from payloads').get()!.payload, '{"id":1}');
   } finally { db2.close(); }
+});
+
+// A failed check must undo the migration, not just report it: commit only
+// runs after every check passes, so finally's rollback still has an open
+// transaction to undo when a check fails.
+test('a compatibility failure leaves the source schema unchanged, not just the reported result', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table items(id integer primary key, value text not null) strict; insert into items values (1,'kept')");
+    const result = rehearseSnapshot(db, 'alter table items drop column value', {
+      queries: { oldRead: 'select id, value from items' },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics[0]!.code, 'QUERY_COMPATIBILITY_FAILED', JSON.stringify(result));
+    assert.equal(db.prepare('select value from items').get()!.value, 'kept');
+  } finally { db.close(); }
 });
 
 // checks.cases has only ever run against hand-written SQL above. A case must
