@@ -173,12 +173,6 @@ This distinction needs a table with exactly one primary-key column, of a declare
 On a table with an INTEGER PRIMARY KEY (a rowid alias), a composite primary key, or a WITHOUT ROWID table (its rowid is always null), `migrate()` cannot read a value back this way, so it always blames the named file, even when the violation predates it.
 Query `pragma foreign_key_check` yourself, on the same database, before generating or applying a migration, if you want to rule out a pre-existing violation ahead of time (running.md's Adapters section shows the one-line raw SQL call for each target -- D1, Durable Object, Node -- that reaches past the generated queries and commands to do this).
 
-A rebuild that adds a foreign key an existing row already violates carries `pragma defer_foreign_keys = on`, so the file's own foreign-key check waits until commit instead of failing mid-rebuild.
-Measured directly against D1's `db.batch()` (the API `src/d1.ts` sends a command's statements through, and the shape this same rebuild would take if a caller sent it through `db.batch()` itself, rather than through `wrangler d1 migrations apply`): the batch still rejects as a whole and rolls back atomically, so no partial rebuild reaches the database.
-But the rejection reaches the caller as an opaque platform message -- naming neither the table, the column, nor the failed statement -- rather than SQLite's own `FOREIGN KEY constraint failed` text.
-On Node and a Durable Object, `migrate()`'s own `pragma_foreign_key_check` scan catches this before that deferred check reaches its own commit. But the error it throws -- `Migration <file>: FOREIGN KEY constraint failed (pragma_foreign_key_check): [...]` -- is not the plain text `constraintFailure()` matches. Its `Migration <file>: ` prefix and `(pragma_foreign_key_check): [...]` suffix both survive `bareMessage()`, which strips only a `D1_ERROR:` prefix and a `SQLITE_CONSTRAINT` suffix. So `constraintFailure()` (`src/runtime/plan.ts`) returns `null` for `migrate()`'s own foreign-key error too, on both targets.
-On D1's `db.batch()` path, `constraintFailure()` cannot classify the opaque message, so it returns `null`.
-Whether `wrangler d1 migrations apply` groups a migration file's statements the same way `db.batch()` does, or sends them one at a time, is not measured; treat that as an open question rather than an assumed answer.
 For example, `migrate()` throws a plain `Error` (not the `MigrationHistoryError` below), and the word `predates` appears in its message. The message embeds the violation in the same row shape `pragma foreign_key_check` itself returns, such as `{"table":"child","rowid":1,"parent":"parent","fkid":0}` for a `child` row whose `parent_id` no longer names a row in `parent`. A repair migration file's own statements can remove the violating row directly:
 
 ```sql
@@ -188,6 +182,16 @@ delete from child where parent_id = 'missing';
 
 Passing this file to `migrate()` removes the violation before the end-of-file check runs, so it applies with no error and joins the history as `0001_repair.sql`. A later, unrelated file applies normally after it: the block does not carry forward past the repair.
 Confirm this against your own deployment with the remote test (`deploy.md`) before relying on it.
+
+A rebuild that adds a foreign key an existing row already violates carries `pragma defer_foreign_keys = on`, so the file's own foreign-key check waits until commit instead of failing mid-rebuild.
+On D1, wrangler's local apply sends one `batch()` per file (v0-measurements.md, section 4c), the same shape `src/d1.ts` uses for a command's own `db.batch()` call.
+A direct run of this rebuild against wrangler 4.127.1's local D1, on a database with the same kind of orphaned row, rejected the whole file with exit code 1: `Durable Object was reset and rolled back to its last known good state because the application left the database in a state where constraints were violated: FOREIGN KEY constraint failed: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_FOREIGNKEY)`.
+`orders`'s schema read back unchanged afterward, and `d1_migrations` recorded no entry for the rejected file: the whole migration rolled back atomically, the same property `db.batch()` on Miniflare's D1 shows.
+The message is not opaque about the constraint: SQLite's own `FOREIGN KEY constraint failed: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_FOREIGNKEY)` text is there, after the platform's own `Durable Object was reset...` prefix.
+`constraintFailure()` (`src/runtime/plan.ts`) still returns `null`: `bareMessage()` strips a `D1_ERROR:` prefix and a `: SQLITE_CONSTRAINT...` suffix, not this platform prefix, so the text left over never matches the classifier's `FOREIGN KEY constraint failed` pattern.
+A person reading the error sees the constraint kind; solarsql's own classifier does not.
+Node and a Durable Object carry the same cost, not only D1: `migrate()`'s own `pragma_foreign_key_check` scan (above) throws `Migration <file>: FOREIGN KEY constraint failed (pragma_foreign_key_check): [...]`, and `constraintFailure()` returns `null` for that message too, for the same reason -- its `Migration <file>: ` prefix and `(pragma_foreign_key_check): [...]` suffix both survive `bareMessage()` unstripped.
+This is measured for D1's local apply and for `db.batch()` directly; a remote apply's own rejection message under a real violation has not been observed the same way -- wrangler applies a rebuild file in one call there too, but the one remote run on record found empty tables and no violation to reject.
 
 On node:sqlite, `migrate(db, migrations)` from `solarsql/node` does the same, and returns the names applied now.
 

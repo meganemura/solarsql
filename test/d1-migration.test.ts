@@ -196,9 +196,12 @@ describe("D1's own end-of-batch commit turns a deferred foreign-key violation op
     assert.equal(reply.ok, false, JSON.stringify(reply));
     // Measured on Miniflare's D1 binding on 2026-09-17: reply.name is
     // "Error" (workerd's own JS Error, not a named D1 error class), and the
-    // message is the platform's reset text, not SQLite's own constraint
-    // text. Cloudflare may rename or reword this; that drift is what this
-    // assertion pins down. It is a supporting check, not the main one below.
+    // message is the platform's reset text prefixed onto SQLite's own
+    // constraint text, not SQLite's text alone. constraintFailure() still
+    // can't classify it: bareMessage() strips only a known `D1_ERROR:`
+    // prefix, not this one. Cloudflare may rename or reword this; that
+    // drift is what this assertion pins down. It is a supporting check,
+    // not the main one below.
     assert.equal((reply as WorkerError).name, "Error");
     assert.match((reply as WorkerError).message, /Durable Object was reset and rolled back/);
     // The main assertion: constraintFailure() cannot classify this message,
