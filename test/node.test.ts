@@ -838,6 +838,43 @@ test("a rebuild that adds an unrelated foreign key to the violating row's own ta
   } finally { raw.close(); }
 });
 
+// migrate() computes its before-snapshot once for the whole call, then
+// narrows it to empty after any file whose own after-check finds zero
+// violations (src/durable.ts): carrying a resolved file's now-stale before
+// forward could match a later file's new violation against a key the
+// resolved file's own statements already cleared. Two new pending files in
+// one migrate() call exercise that narrowing directly: file1 deletes the
+// call's only pre-existing violation (zero violations afterward, so before
+// narrows to empty), then file2 recreates a violation of the same shape
+// (same table, primary-key value, parent table, and referencing value). If
+// the narrowing did not happen, the stale before from the start of the call
+// would still hold that same key and file2's new violation would misread as
+// one that predates it.
+test("a file that clears the call's last pre-existing violation, followed by a file that recreates the same-shaped violation, blames the second file, not the first", () => {
+  const raw = new DatabaseSync(':memory:');
+  try {
+    raw.exec('create table parent (id text primary key not null)');
+    raw.exec('create table child (id text primary key not null, parent_id text references parent(id))');
+    // Left off for the rest of this test, the same reason as the tests
+    // above: file2's own insert below needs to reach migrate()'s own
+    // pragma_foreign_key_check, not fail immediately.
+    raw.exec('pragma foreign_keys=off');
+    raw.exec("insert into child values ('c1', 'missing')");
+
+    const file1 = { name: '0001_delete.sql', sql: "delete from child where id = 'c1';" };
+    const file2 = { name: '0002_reintroduce.sql', sql: "insert into child values ('c1', 'missing');" };
+    assert.throws(() => migrate(raw, [file1, file2]), (e: unknown) => {
+      assert.ok(!(e instanceof MigrationHistoryError), 'expected the raw engine error, not a MigrationHistoryError');
+      assert.match((e as Error).message, /pragma_foreign_key_check/);
+      assert.doesNotMatch((e as Error).message, /predates/);
+      return true;
+    });
+    // file1 committed (its own after-check found zero violations); only
+    // file2 rolled back.
+    assert.deepEqual(raw.prepare('select name from solarsql_migrations').all().map(r => ({ ...r })), [{ name: file1.name }]);
+  } finally { raw.close(); }
+});
+
 test('nested Node transactions retain exactly the successful writes', async () => {
   const {test:property}=await import('@hegeldev/hegel');
   const gs=await import('@hegeldev/hegel/generators');
