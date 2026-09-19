@@ -70,6 +70,7 @@ The package ships it; in a project, point AGENTS.md at `node_modules/solarsql/sk
 | the CLI, the build, the config, and every message with its fix | [build.md](skills/solarsql/references/build.md) |
 | what a migration holds, and how each target applies it | [migrations.md](skills/solarsql/references/migrations.md) |
 | deploy the example and run its steps on remote D1 and a Durable Object | [deploy.md](skills/solarsql/references/deploy.md) |
+| the platform limits of D1 and a Durable Object that `node:sqlite` does not enforce at build time | [limits.md](skills/solarsql/references/limits.md) |
 
 ## Requirements
 

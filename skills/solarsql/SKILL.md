@@ -1,6 +1,6 @@
 ---
 name: solarsql
-description: Use when a project uses solarsql, the typed SQL layer for SQLite on Cloudflare D1 and Durable Objects. Covers writing or changing a module.ts (tables, indexes, views, triggers, FTS5 search tables, queries, commands), the type a parameter or a column gets, the tables a query reads, a build message and its fix, a migration, a module's test on node:sqlite, wiring an adapter in a Worker, and deploying the example. Also use when the user names solarsql, `solarsql build`, `solarsql migration`, `solarsql init`, `solarsql.generated.ts`, a plan, or an assert.
+description: Use when a project uses solarsql, the typed SQL layer for SQLite on Cloudflare D1 and Durable Objects. Covers writing or changing a module.ts (tables, indexes, views, triggers, FTS5 search tables, queries, commands), the type a parameter or a column gets, the tables a query reads, a build message and its fix, a migration, a module's test on node:sqlite, wiring an adapter in a Worker, and deploying the example. Also use when the user names solarsql, `solarsql build`, `solarsql migration`, `solarsql init`, `solarsql.generated.ts`, a plan, an assert, or a platform limit.
 ---
 
 # solarsql
@@ -27,7 +27,7 @@ Load the reference of the step before you edit.
 
 1. **Start a project**: `npx solarsql init <module>`. What it writes and what it refuses: [references/build.md](references/build.md).
 2. **Change the schema**: edit `table()`, `index()`, `view()`, `trigger()`, or `search()` in `module.ts`, then follow the [build and migration workflow](references/build.md#verification-after-an-edit). Rules and types of the DDL: [references/schema.md](references/schema.md). What the migration contains, and one file for a project where every database starts empty: [references/migrations.md](references/migrations.md).
-3. **Add a query**: a key in `queries(generated, { ... })`, then `npx solarsql build`. How a parameter and a column get their types, and the recipes for lists, rows, optional filters, sorting, paging, JSON, and search: [references/queries.md](references/queries.md).
+3. **Add a query**: a key in `queries(generated, { ... })`, then `npx solarsql build`. How a parameter and a column get their types, and the recipes for lists, rows, optional filters, sorting, paging, JSON, and search: [references/queries.md](references/queries.md). D1 and a Durable Object cap bound parameters, statement length, and row size beyond what `node:sqlite` enforces at build time: [references/limits.md](references/limits.md).
 4. **Add a command**: a key in `commands(generated, { ... })` with `plan`, asserts, and `returns`, then `npx solarsql build`. Plans, asserts, results by `kind` with the rows the plan changed, and what a plan may touch: [references/commands.md](references/commands.md).
 5. **Run it**: `d1(env.DB)`, `durable(ctx.storage)`, or `node(db)`; `db.all`, `db.first`, `db.run`, `db.batch`; `Row` and `Params` outside the module; the tables a query or a command reads, in `meta.reads`; the observe hook; ids; a module's test: [references/running.md](references/running.md).
 6. **Read a build message**: the message names the fix. The table of messages: [references/build.md](references/build.md).

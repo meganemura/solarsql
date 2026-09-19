@@ -114,7 +114,7 @@ CAST the JSON branch AS TEXT to return SQL text from that output.
 ## Recipes: dynamic needs as static SQL
 
 ```sql
--- a list of any length, one bound value (D1 allows 100 bound values per statement)
+-- a list of any length, one bound value (D1 allows 100 bound values per statement; see limits.md)
 select id from orders where id in (select value from json_each(:ids))
 
 -- many rows in one statement
