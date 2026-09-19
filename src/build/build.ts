@@ -143,6 +143,11 @@ export type BuildResult = {
   // The tables each query of a readsAll module reads. Only there: another
   // module reads its own tables and the keys of its foreign keys.
   reads: { module: string; query: string; tables: string[] }[];
+  // An included command's (ADR 0127) parameter that no statement or assert
+  // of the including module's own plan items names: the pairing that ties
+  // it to the including row is the including module's job (commands.md),
+  // and this is the build's way of pointing at a plan that never does it.
+  notes: { module: string; command: string; parameter: string; included: { module: string; command: string } }[];
   // The whole build, so the module times can be compared with the rest.
   ms: number;
 };
@@ -588,6 +593,7 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
     const results: BuildResult["modules"] = [];
     const scans: BuildResult["scans"] = [];
     const reads: BuildResult["reads"] = [];
+    const notes: BuildResult["notes"] = [];
     const operations: OperationInspection[] = [];
     // Every statement failure across every module, so a rename that breaks
     // five statements is one build, not five (ADR pending). A module with a
@@ -649,7 +655,7 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
         for (const query of m.queries) reads.push({ module: m.name, query: query.name, tables: analysisBySql.get(query.sql)!.reads });
       }
       entriesByModule.set(m.name, new Map(entries.map((e) => [e.key, e.analysis])));
-      checkCommands(m, entries, entriesByModule);
+      checkCommands(m, entries, entriesByModule, notes);
       if (options.inspect) {
         for (const { key, analysis } of entries) {
           operations.push({ module: m.name, sql: key, locations: m.statementUses.get(key)!, params: analysis.params,
@@ -714,7 +720,7 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
     const migration = migrationStatus(configDir, config, modules);
     const index = await migrationsIndex(resolve(configDir, config.migrations), write);
     const inspection = options.inspect ? { sqlite: String(engine.db.prepare("select sqlite_version() as version").get()!.version), operations } : undefined;
-    return { modules: results, migration, index, scans, reads, ms: Math.round(performance.now() - buildStarted), ...(inspection ? { inspection } : {}) };
+    return { modules: results, migration, index, scans, reads, notes, ms: Math.round(performance.now() - buildStarted), ...(inspection ? { inspection } : {}) };
   } finally {
     engine.close();
   }
@@ -915,7 +921,7 @@ function isReferencingKey(engine: Engine, m: Module, owner: Map<string, Module>,
 // command runs is typically typed by its own column already, and a plan
 // that still needs cross-module refinement can give the statement its own
 // type or split it, the existing remedy this function already offers.
-function checkCommands(m: Module, entries: readonly { key: string; analysis: Analysis }[], entriesByModule: ReadonlyMap<string, ReadonlyMap<string, Analysis>>): void {
+function checkCommands(m: Module, entries: readonly { key: string; analysis: Analysis }[], entriesByModule: ReadonlyMap<string, ReadonlyMap<string, Analysis>>, notes: BuildResult["notes"]): void {
   const byKey = new Map(entries.map((e) => [e.key, e.analysis]));
   // A command whose included range's owner module itself failed to type
   // (schema or statement failure) is skipped here: that failure is already
@@ -934,6 +940,30 @@ function checkCommands(m: Module, entries: readonly { key: string; analysis: Ana
       for (const item of c.plan.slice(range.from, range.to)) {
         const key = typeof item === "string" ? item : item.predicate;
         if (!byKey.has(key)) byKey.set(key, owned.get(key)!);
+      }
+    }
+  }
+  // ADR 0127 leaves the pairing between an included command's parameter and
+  // the including row to the including plan's own asserts (commands.md);
+  // that pairing is not typed, so the build can only point at a parameter
+  // no own statement or assert names, not refuse it.
+  for (const c of m.commands) {
+    if (skipped.has(c.name)) continue;
+    const ownNames = new Set<string>();
+    for (const [i, item] of c.plan.entries()) {
+      if (c.included.some((r) => i >= r.from && i < r.to)) continue;
+      const key = typeof item === "string" ? item : item.predicate;
+      for (const p of byKey.get(key)!.params) ownNames.add(p.name);
+    }
+    if (c.returns) for (const p of byKey.get(c.returns)!.params) ownNames.add(p.name);
+    for (const range of c.included) {
+      const includedNames = new Set<string>();
+      for (const item of c.plan.slice(range.from, range.to)) {
+        const key = typeof item === "string" ? item : item.predicate;
+        for (const p of byKey.get(key)!.params) includedNames.add(p.name);
+      }
+      for (const name of includedNames) {
+        if (!ownNames.has(name)) notes.push({ module: m.name, command: c.name, parameter: name, included: { module: range.module!, command: range.name } });
       }
     }
   }

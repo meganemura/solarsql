@@ -409,6 +409,40 @@ describe("solarsql build", () => {
         rmSync(dir, { recursive: true, force: true });
       }
     });
+
+    test("an included command's parameter that the including module's own statement does not name gets one note", async () => {
+      const dir = copy();
+      try {
+        const customers = join(dir, "example/modules/customers/module.ts");
+        writeFileSync(customers, readFileSync(customers, "utf8").replace(
+          `plan: [orderCommands.deleteByCustomer, "delete from customers where id = :customer_id"],`,
+          `plan: [orderCommands.deleteByCustomer, "delete from customers where id = :id"],`,
+        ));
+        const result = await build(join(dir, "example/solarsql.config.ts"), { write: false });
+        assert.deepEqual(result.notes, [
+          { module: "customers", command: "remove", parameter: "customer_id", included: { module: "orders", command: "deleteByCustomer" } },
+        ]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("an assert of the including module naming the included command's parameter prints no note", async () => {
+      const dir = copy();
+      try {
+        const customers = join(dir, "example/modules/customers/module.ts");
+        writeFileSync(customers, readFileSync(customers, "utf8")
+          .replace(`import { commands, queries, table }`, `import { assert, commands, queries, table }`)
+          .replace(
+            `plan: [orderCommands.deleteByCustomer, "delete from customers where id = :customer_id"],`,
+            `plan: [orderCommands.deleteByCustomer, "delete from customers where id = :customer_id", assert("same_customer", ":customer_id is not null")],`,
+          ));
+        const result = await build(join(dir, "example/solarsql.config.ts"), { write: false });
+        assert.deepEqual(result.notes, []);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   test("a module imports another module through public.ts only", async () => {

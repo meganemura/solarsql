@@ -113,6 +113,25 @@ The build expands the included command in place, into its own statements and ass
 | `whose statements more than one module owns` | two modules declare the same statement text; give one of them a distinct statement |
 | `assert name ... is used twice` | rename one of the two asserts so each name is unique across the expanded plan |
 
+The included command's parameters are values the caller supplies; nothing ties them to the including module's row.
+The including plan's asserts own that pairing.
+In the example above, an assert before the include pins `:customer_id` to a customer that exists:
+
+```ts
+export const customerCommands = commands(generated, {
+  remove: {
+    plan: [
+      assert("customer_exists", "exists (select 1 from customers where id = :customer_id)"),
+      orderCommands.deleteByCustomer,
+      "delete from customers where id = :customer_id",
+    ],
+  },
+});
+```
+
+The general form: `exists (select 1 from <including table> where id = :id and <column> = :<included param>)`.
+The build prints one line for each included-command parameter that no statement or assert of the including module names: `note: parameter :x of the included command <name> is not named by any statement or assert of module <m>`. The line is a report, not a refusal.
+
 ## Bulk writes
 
 Many rows come in one array parameter and one statement: `insert ... select ... from json_each(:rows)` for inserts, `update ... where id in (select value ->> 'id' from json_each(:rows))` for updates, and `changes() = json_array_length(:rows)` as the assert that every id was known.
