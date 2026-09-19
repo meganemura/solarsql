@@ -10,10 +10,19 @@ import { spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { cpSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { node, migrate } from "../src/node.ts";
 import { fixtureDir } from "./fixture-dir.ts";
 
 const root = resolve(import.meta.dirname, "..");
+
+// A cache-busting, importable URL for `path`: `pathToFileURL` first, since a
+// bare absolute path is not a valid ESM specifier on Windows (an absolute
+// path there starts with a drive letter, which import() reads as a URL
+// scheme, e.g. "d:", and rejects with ERR_UNSUPPORTED_ESM_URL_SCHEME).
+function fresh(path: string): string {
+  return `${pathToFileURL(path).href}?t=${Date.now()}-${Math.random()}`;
+}
 
 // A child process, not the in-process build() other tests in this
 // repository use: module.ts holds a static `import { generated } from
@@ -68,12 +77,12 @@ function addOuterFailure(dir: string): void {
 // absolute path (a cache-busting query, since three copies run in one
 // process).
 async function open(dir: string): Promise<{ db: ReturnType<typeof node>; customerCommands: any; orderCommands: any }> {
-  const { migrations } = (await import(`${join(dir, "example/migrations/index.ts")}?t=${Date.now()}-${Math.random()}`)) as { migrations: never };
+  const { migrations } = (await import(fresh(join(dir, "example/migrations/index.ts")))) as { migrations: never };
   const raw = new DatabaseSync(":memory:");
   migrate(raw, migrations);
   const db = node(raw);
-  const { customerCommands } = (await import(`${join(dir, "example/modules/customers/public.ts")}?t=${Date.now()}-${Math.random()}`)) as never;
-  const { orderCommands } = (await import(`${join(dir, "example/modules/orders/public.ts")}?t=${Date.now()}-${Math.random()}`)) as never;
+  const { customerCommands } = (await import(fresh(join(dir, "example/modules/customers/public.ts")))) as never;
+  const { orderCommands } = (await import(fresh(join(dir, "example/modules/orders/public.ts")))) as never;
   return { db, customerCommands, orderCommands };
 }
 
@@ -82,8 +91,8 @@ describe("ADR 0127: customers.remove includes orders.deleteByCustomer, on node:s
     const dir = copyExample();
     t.after(() => rmSync(dir, { recursive: true, force: true }));
     const { db, customerCommands, orderCommands } = await open(dir);
-    const { customerQueries } = (await import(`${join(dir, "example/modules/customers/public.ts")}?t=${Date.now()}-${Math.random()}`)) as never as { customerQueries: any };
-    const { orderQueries } = (await import(`${join(dir, "example/modules/orders/public.ts")}?t=${Date.now()}-${Math.random()}`)) as never as { orderQueries: any };
+    const { customerQueries } = (await import(fresh(join(dir, "example/modules/customers/public.ts")))) as never as { customerQueries: any };
+    const { orderQueries } = (await import(fresh(join(dir, "example/modules/orders/public.ts")))) as never as { orderQueries: any };
     await db.run(customerCommands.create, { id: "c1", name: "Ann", email: "ann@example.com" } as never);
     await db.run(orderCommands.place, { id: "o1", customer_id: "c1", lines: [{ id: "l1", sku: "A", qty: 1, price: 1 }] } as never);
     const removed = await db.run(customerCommands.remove, { customer_id: "c1" } as never);
@@ -100,8 +109,8 @@ describe("ADR 0127: customers.remove includes orders.deleteByCustomer, on node:s
     addIncludedFailure(dir);
     buildInChildProcess(join(dir, "example/solarsql.config.ts"));
     const { db, customerCommands, orderCommands } = await open(dir);
-    const { customerQueries } = (await import(`${join(dir, "example/modules/customers/public.ts")}?t=${Date.now()}-${Math.random()}`)) as never as { customerQueries: any };
-    const { orderQueries } = (await import(`${join(dir, "example/modules/orders/public.ts")}?t=${Date.now()}-${Math.random()}`)) as never as { orderQueries: any };
+    const { customerQueries } = (await import(fresh(join(dir, "example/modules/customers/public.ts")))) as never as { customerQueries: any };
+    const { orderQueries } = (await import(fresh(join(dir, "example/modules/orders/public.ts")))) as never as { orderQueries: any };
     await db.run(customerCommands.create, { id: "c1", name: "Ann", email: "ann@example.com" } as never);
     await db.run(orderCommands.place, { id: "o1", customer_id: "c1", lines: [{ id: "l1", sku: "A", qty: 1, price: 1 }] } as never);
     await db.run(orderCommands.confirm, { id: "o1" } as never);
@@ -117,8 +126,8 @@ describe("ADR 0127: customers.remove includes orders.deleteByCustomer, on node:s
     addOuterFailure(dir);
     buildInChildProcess(join(dir, "example/solarsql.config.ts"));
     const { db, customerCommands, orderCommands } = await open(dir);
-    const { customerQueries } = (await import(`${join(dir, "example/modules/customers/public.ts")}?t=${Date.now()}-${Math.random()}`)) as never as { customerQueries: any };
-    const { orderQueries } = (await import(`${join(dir, "example/modules/orders/public.ts")}?t=${Date.now()}-${Math.random()}`)) as never as { orderQueries: any };
+    const { customerQueries } = (await import(fresh(join(dir, "example/modules/customers/public.ts")))) as never as { customerQueries: any };
+    const { orderQueries } = (await import(fresh(join(dir, "example/modules/orders/public.ts")))) as never as { orderQueries: any };
     await db.run(customerCommands.create, { id: "reserved", name: "Reserved", email: "reserved@example.com" } as never);
     await db.run(customerCommands.create, { id: "c1", name: "Ann", email: "ann@example.com" } as never);
     await db.run(orderCommands.place, { id: "o1", customer_id: "c1", lines: [{ id: "l1", sku: "A", qty: 1, price: 1 }] } as never);
