@@ -118,4 +118,4 @@ do     unique column  "UNIQUE constraint failed: t.email: SQLITE_CONSTRAINT (ext
 
 The other kinds follow the same pattern on D1 and on the Durable Object: the node:sqlite text, then `: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_<KIND>)`, and `D1_ERROR: ` in front on D1.
 
-Conclusion: one parser covers the three engines. `test/failure.test.ts` round-trips generated messages through the three formats. See ADR 0030.
+Conclusion: one parser covers the three engines. `test/failure.test.ts` (now `test/miniflare/failure.test.ts`) round-trips generated messages through the three formats. See ADR 0030.

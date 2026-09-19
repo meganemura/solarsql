@@ -20,7 +20,7 @@ A `switch` on `assert` is exhaustive, and a new assert in the plan makes `tsc` r
 
 ## Evidence (v1)
 
-On D1 and on a Durable Object, a second `confirm` of the same order returns `{ ok: false, assert: "was_draft" }` and leaves the row as it was (`test/example.test.ts`).
+On D1 and on a Durable Object, a second `confirm` of the same order returns `{ ok: false, assert: "was_draft" }` and leaves the row as it was (`test/example.test.ts`, now `test/miniflare/example.test.ts`).
 
 ## Consequences
 

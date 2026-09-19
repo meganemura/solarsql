@@ -1,6 +1,7 @@
 // The steps of the example, as one request each to the Worker in
-// example/worker.ts, with the replies they must give. test/example.test.ts
-// runs them on Miniflare, and test/remote.test.ts on a deployed Worker.
+// example/worker.ts, with the replies they must give.
+// test/miniflare/example.test.ts runs them on Miniflare, and
+// test/remote.test.ts on a deployed Worker.
 // Boundary: no transport here. The caller sends a step and returns the value
 // of the reply, and fails the test when the reply is an error.
 import { test } from "node:test";

@@ -89,7 +89,7 @@ export function applied(files: readonly string[], names?: readonly string[]): Da
         // node:sqlite can only report what node:sqlite would do, which is
         // not a sound prediction of the replay target's behavior. The
         // message below does not condition on it: replaying `label` always
-        // loses `unknown` and its data. test/dqs-fallback.test.ts pins the
+        // loses `unknown` and its data. test/miniflare/dqs-fallback.test.ts pins the
         // fallback fact this reasoning depends on, against Miniflare's D1
         // and Durable Object SQLite.
         throw new BuildError(

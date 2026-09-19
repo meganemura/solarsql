@@ -39,7 +39,7 @@ A Worker's own D1 binding takes one statement per call and is not affected.
 
 The second remote run applied a table rebuild: migration 0005 puts a CHECK on `customers.name`, and customers is referenced by orders, so the file opens with `pragma defer_foreign_keys = on`, drops the view, copies the rows, drops and renames the table, and creates the view again.
 wrangler applied the file in one call; the schema after shows the CHECK and the recreated view, no `_solarsql_*` table remained, and the CHECK arrives as a value on both targets.
-The tables were empty when it ran there, so the copy moved no row; the rows under a rebuild are checked on Miniflare's D1 in `test/d1-migration.test.ts` and by the migration property test.
+The tables were empty when it ran there, so the copy moved no row; the rows under a rebuild are checked on Miniflare's D1 in `test/d1-migration.test.ts` (now `test/miniflare/d1-migration.test.ts`) and by the migration property test.
 
 ## Consequences
 

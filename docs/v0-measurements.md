@@ -54,7 +54,7 @@ Harness: `test/d1.ts` starts one Worker with a D1 binding. The Worker calls `env
 
 The local D1 implementation runs a batch inside `this.state.storage.transactionSync(() => queries.map(...))` of a Durable Object.
 
-Command: `npm test` (`test/d1-batch-guard.test.ts`)
+Command: `npm test` (`test/d1-batch-guard.test.ts`, now `test/miniflare/d1-batch-guard.test.ts`)
 
 ```
 ▶ D1 batch with a guard table
@@ -258,7 +258,7 @@ Command: `node spike/04-migration-diff.ts`
 
 ### 4c. The generated file on the local D1 engine
 
-Command: `npm test` (`test/d1-migration.test.ts`)
+Command: `npm test` (`test/d1-migration.test.ts`, now `test/miniflare/d1-migration.test.ts`)
 
 ```
 ▶ D1 applies generated migrations
@@ -286,7 +286,7 @@ Both are now rules of the generator.
 
 ## 5. RETURNING on D1
 
-Command: `npm test` (`test/d1-returning.test.ts`)
+Command: `npm test` (`test/d1-returning.test.ts`, now `test/miniflare/d1-returning.test.ts`)
 
 ```
 all()   returning: "results":[{"id":"n1","body":"one","n":0}]

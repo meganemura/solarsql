@@ -55,7 +55,7 @@ do txn-fail: {"ok":false,"message":"UNIQUE constraint failed: t.id: SQLITE_CONST
 `transactionSync()` rolled the two inserts of the failed transaction back; the row `a` from the committed transaction stayed.
 The Durable Object refuses `sqlite_version()` the way D1 does.
 
-Conclusion: the Durable Object adapter can be tested in Miniflare. Its tests are in `test/example.test.ts`.
+Conclusion: the Durable Object adapter can be tested in Miniflare. Its tests are in `test/example.test.ts` (now `test/miniflare/example.test.ts`).
 
 ## 4. Node does not strip types under node_modules
 
@@ -70,7 +70,7 @@ Error [ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING]: Stripping types is currentl
 ```
 
 Conclusion: the package ships `src/` and `dist/`, and `exports` points at `dist/`. See ADR 0024.
-`test/pack.test.ts` packs the real package, installs it, runs the CLI from `node_modules`, and imports the adapters.
+`test/pack.test.ts` (now `test/slow/pack.test.ts`) packs the real package, installs it, runs the CLI from `node_modules`, and imports the adapters.
 
 ## 5. The phantom type on the generated value
 
@@ -94,7 +94,7 @@ Conclusion: an optional `__types?: G` member on the generated value carries the 
 
 ## 6. The example on both targets
 
-Command: `npm test` (`test/example.test.ts`)
+Command: `npm test` (`test/example.test.ts`, now `test/miniflare/example.test.ts`)
 
 Eighteen cases, nine per target, on the local D1 engine and on a SQLite Durable Object, through the same module code:
 a command with `returns`, a plan that inserts a parent and its children from JSON, a JSON aggregation as an array, an assert that passes and then fails by name, an order without lines, a nullable parameter, a failed plan with no partial writes, a report across modules, and a query without parameters.

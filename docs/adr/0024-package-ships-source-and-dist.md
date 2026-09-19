@@ -25,7 +25,7 @@ Both together cost nothing at run time.
 ## Evidence (v1)
 
 A source-only package fails at the bin and at the import from `node_modules`.
-The packed package installs into a fresh project, its CLI builds the example, and its adapters import (`test/pack.test.ts`).
+The packed package installs into a fresh project, its CLI builds the example, and its adapters import (`test/pack.test.ts`, now `test/slow/pack.test.ts`).
 See v1-measurements.md, section 4.
 
 ## Consequences
