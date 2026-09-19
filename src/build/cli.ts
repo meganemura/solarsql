@@ -174,6 +174,12 @@ function migrationAction(drops: DropIntent[] | undefined, renames: Rename[] | un
   return "Write a manual migration and run build.";
 }
 
+// The last "Run: <command>" line of a migrationAction result, when it names
+// one; a block with no such line has no single command to reuse.
+function runCommand(action: string): string | undefined {
+  return /Run: (.+)$/.exec(action)?.[1];
+}
+
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
   if (command === "analyze") {
@@ -251,18 +257,23 @@ async function main(argv: string[]): Promise<number> {
       console.error(`migration blocked: ${result.migration.reason}`);
       const action = migrationAction(result.migration.drops, result.migration.renames, result.migration.renameCandidates, configArgument);
       console.error(action === "Write a manual migration and run build." ? `Write a manual SQL migration in the configured migrations directory, then run: npx solarsql build${configArgument}` : action);
+      const command = runCommand(action);
+      console.log(check ? `next: npx solarsql build${configArgument}` : command ? `next: ${command}` : "next: fix the blocked migration above");
       return check ? 1 : 0;
     }
     if (result.migration.pending) {
       console.error(`migration pending. Write the migration: npx solarsql migration <name>${configArgument}`);
       for (const s of result.migration.statements) console.error(`  ${s.replace(/\s+/g, " ").trim()}`);
+      console.log(check ? `next: npx solarsql build${configArgument}` : `next: npx solarsql migration <name>${configArgument}`);
       return check ? 1 : 0;
     }
     if (check && (result.modules.some((m) => m.changed) || result.index.changed)) {
       console.error(`generated files are stale. Run: npx solarsql build${configArgument}`);
+      console.log(`next: npx solarsql build${configArgument}`);
       return 1;
     }
     console.log("migrations are current");
+    console.log(check ? "next: npx tsc --noEmit && npm test" : `next: npx solarsql build --check${configArgument}`);
     return 0;
   }
   if (command === "query") {

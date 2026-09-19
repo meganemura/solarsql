@@ -109,6 +109,11 @@ function fixture(t: TestContext) {
   };
 }
 
+// The build's own last stdout line, the one an agent's workflow reads.
+function lastLine(output: string): string {
+  return output.trimEnd().split("\n").at(-1) ?? "";
+}
+
 // Compare all project files so a check cannot silently update the migration index.
 function snapshot(dir: string): [string, string][] {
   return readdirSync(dir, { recursive: true, withFileTypes: true })
@@ -127,12 +132,16 @@ test("build generates changed SQL and check reports stale files without writes",
   const checked = f.run("build", "--check");
   assert.equal(checked.status, 1, checked.stderr);
   assert.ok(checked.stderr.includes(`Run: npx solarsql build ${quotedConfig}`));
+  assert.equal(lastLine(checked.stdout), `next: npx solarsql build ${quotedConfig}`);
   assert.deepEqual(snapshot(f.dir), before);
   const built = f.run("build");
   assert.equal(built.status, 0, built.stderr);
   assert.match(built.stdout, /wrote\s+.*solarsql.generated.ts/);
+  assert.equal(lastLine(built.stdout), `next: npx solarsql build --check ${quotedConfig}`);
   assert.match(readFileSync(f.generated, "utf8"), /status = 'draft'/);
-  assert.equal(f.run("build", "--check").status, 0);
+  const passed = f.run("build", "--check");
+  assert.equal(passed.status, 0);
+  assert.equal(lastLine(passed.stdout), "next: npx tsc --noEmit && npm test");
 });
 
 test("pending migration is a successful generation and a failed check", (t) => {
@@ -142,10 +151,12 @@ test("pending migration is a successful generation and a failed check", (t) => {
   const before = snapshot(f.dir);
   const checked = f.run("build", "--check");
   assert.equal(checked.status, 1, checked.stderr);
+  assert.equal(lastLine(checked.stdout), `next: npx solarsql build ${quotedConfig}`);
   assert.deepEqual(snapshot(f.dir), before);
   const built = f.run("build");
   assert.equal(built.status, 0, built.stderr);
   assert.ok(built.stderr.includes(`migration pending. Write the migration: npx solarsql migration <name> ${quotedConfig}`));
+  assert.equal(lastLine(built.stdout), `next: npx solarsql migration <name> ${quotedConfig}`);
   assert.match(readFileSync(f.generated, "utf8"), /placed_at/);
   assert.equal(f.run("build", "--check").status, 1);
   assert.equal(f.run("migration", "placed_at").status, 0);
@@ -159,14 +170,37 @@ test("blocked migration preserves generated types and fails checks without write
   const before = snapshot(f.dir);
   const checked = f.run("build", "--check");
   assert.equal(checked.status, 1, checked.stderr);
+  assert.equal(lastLine(checked.stdout), `next: npx solarsql build ${quotedConfig}`);
   assert.deepEqual(snapshot(f.dir), before);
   const built = f.run("build");
   assert.equal(built.status, 0, built.stderr);
   assert.match(built.stderr, /migration blocked: .*placed_at is NOT NULL without a default/);
   assert.ok(built.stderr.includes(`then run: npx solarsql build ${quotedConfig}`));
+  assert.equal(lastLine(built.stdout), "next: fix the blocked migration above");
   assert.match(readFileSync(f.generated, "utf8"), /placed_at/);
   assert.equal(f.run("build", "--check").status, 1);
   assert.equal(f.run("migration", "placed_at").status, 1);
+});
+
+test("build's next line carries a config path needing no shell quoting", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "solarsql-cli-default-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  cpSync(join(root, "src"), join(dir, "src"), { recursive: true });
+  cpSync(join(root, "example"), join(dir, "example"), { recursive: true });
+  const run = (...args: string[]) => {
+    const result = spawnSync(process.execPath, [join(dir, "src/build/cli.ts"), ...args, "example/solarsql.config.ts"], {
+      cwd: dir, encoding: "utf8", timeout: 30_000,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.signal, null);
+    return result;
+  };
+  const built = run("build");
+  assert.equal(built.status, 0, built.stderr);
+  assert.equal(lastLine(built.stdout), "next: npx solarsql build --check example/solarsql.config.ts");
+  const checked = run("build", "--check");
+  assert.equal(checked.status, 0, checked.stderr);
+  assert.equal(lastLine(checked.stdout), "next: npx tsc --noEmit && npm test");
 });
 
 test("a removed ordinary column needs an exact intent before migration generation", (t) => {
@@ -180,6 +214,10 @@ test("a removed ordinary column needs an exact intent before migration generatio
   assert.match(checked.stderr, /Create changes\.json:/);
   assert.match(checked.stderr, /npx solarsql migration describe_change --intent changes\.json/);
   assert.deepEqual(snapshot(f.dir), before);
+
+  const built = f.run("build");
+  assert.equal(built.status, 0, built.stderr);
+  assert.equal(lastLine(built.stdout), `next: npx solarsql migration describe_change --intent changes.json ${quotedConfig}`);
 
   const intent = join(f.dir, "changes.json");
   writeFileSync(intent, JSON.stringify({ version: 1, drops: [{ kind: "column", table: "orders", column: "obsolete_note" }], renames: [] }));

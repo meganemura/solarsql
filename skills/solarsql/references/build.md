@@ -29,7 +29,7 @@ The files are ES modules; a package.json that says `"type": "commonjs"` gets a n
 
 The build imports every module of `solarsql.config.ts`, applies the schema to an in-memory SQLite, prepares every statement on it, and writes `solarsql.generated.ts` next to each module.
 A generated file that is missing gets a stub before the import, so a fresh clone builds whatever the modules import from each other, and a configuration file that imports a module builds too.
-It prints `wrote` or `current` per module, with the time to import and type that module at the end of the line, a `+` line per statement added and a `-` line per statement removed, `scan` lines for full scans, a `reads` line per query of a `readsAll` module with the tables that query reads, a `time` line for the whole build, and `migrations are current`, or the statements a migration would hold.
+It prints `wrote` or `current` per module, with the time to import and type that module at the end of the line, a `+` line per statement added and a `-` line per statement removed, `scan` lines for full scans, a `reads` line per query of a `readsAll` module with the tables that query reads, a `time` line for the whole build, and `migrations are current`, or the statements a migration would hold. Its last line, `next: <command>`, names the next command to run.
 The generated file is keyed by the SQL text: a statement whose text changed has no entry, and `tsc` fails at the call site until the build runs again. Commit the generated file.
 If only the DDL changes, unchanged statements can retain stale types that pass `tsc`; `build --check` detects stale generated files.
 
@@ -59,8 +59,7 @@ Every other error, including a missing `--database`, exits 2 with one line on st
 ## Verification after an edit
 
 1. Run `npx solarsql build` after a schema or SQL edit.
-2. Read the migration status, even when the build exits 0.
-   When it says `migration pending. Write the migration`, run `npx solarsql migration <name>`.
+2. Run the command the last line names, until it names `build --check`.
    When it reports an ordinary removal, copy its JSON and run the command it prints.
    For other errors, apply the fix in the message and run the build again.
 3. Run `npx solarsql build --check` to verify generated files and migrations against the source.
