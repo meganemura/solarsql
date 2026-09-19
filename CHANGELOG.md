@@ -4,6 +4,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Added: rehearsal now reports each table's columns (`columns.before`/`columns.after`) and fails with `SCHEMA_SHAPE_CHANGED` on an unexpected dropped table, dropped column, or changed column type; a new `checks.json` field, `expected`, names an intentional one (ADR 0119).
 - Added: a created search table whose target schema has exactly one `INSERT` trigger in the documented shape (schema.md, "Search tables") now gets a repopulation insert, generated from that trigger and placed right after its `create virtual table` statement; any other shape leaves a comment on the create statement instead of a silent gap (ADR 0118).
 - Changed: `options.observe`'s `meta` now arrives on a Durable Object too, with `rows_read` and `rows_written`, the same names D1 already reports. `EngineMeta.duration` is now optional: a Durable Object has no server-side timing to report, so its meta omits `duration` instead of reporting a false zero. A caller that read `meta.duration` as a plain `number` needs to handle the missing case now.
 - Fixed: `migrate()`'s pre-existing-violation check now tells a pre-existing violation apart from a new one on a table whose primary key is a single INTEGER column declared with AUTOINCREMENT, instead of always blaming the named file; a plain `integer primary key`, a composite primary key, and WITHOUT ROWID still always blame the named file.

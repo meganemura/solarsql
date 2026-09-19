@@ -237,7 +237,9 @@ npx solarsql rehearse local.sqlite proposed.sql checks.json
 The command opens the source read-only and uses SQLite backup to create a disposable snapshot, including committed WAL data.
 It applies the proposed SQL to the snapshot in one transaction and checks database integrity and foreign keys.
 It blocks database attachments. It deletes the snapshot on completion or failure.
-The versioned JSON result includes before/after row counts, completed checks, and failure diagnostics. Exit 1 indicates failure.
+The versioned JSON result includes before/after row counts, before/after column lists, completed checks, and failure diagnostics. Exit 1 indicates failure.
+
+`result.columns.before` and `result.columns.after` list, per table, each column's `name`, declared `type`, `notnull`, and `pk`, read from `pragma_table_xinfo`. After the migration runs and the database passes its integrity and foreign-key checks, the command compares the two lists. A table present before and missing after, a column present before and missing after (matched by name, case-insensitive), or a column whose type differs (case-insensitive) is a finding. An added table or an added column is never a finding. The comparison does not detect a rename: a rename shows up as one dropped column and one added column.
 
 The optional `checks.json` has two maps of names to SQL:
 
@@ -253,6 +255,19 @@ This detects structural incompatibility, not every semantic or nullability chang
 Assertions execute after migration and must each return one row with one value equal to 1. They take no parameters: a named or anonymous parameter in an assertion is refused, instead of running with the unbound value SQLite would otherwise silently use (ADR 0106).
 Use assertions for application-specific data requirements. Row counts alone do not prove value preservation.
 The command rehearses proposed SQL, not migration history adoption or a remote deployment.
+
+A finding fails the rehearsal unless `checks.json` names it as expected:
+
+```json
+{
+  "expected": {
+    "dropped": [{ "table": "retired" }, { "table": "orders", "column": "obsolete_note" }],
+    "retyped": [{ "table": "orders", "column": "qty" }]
+  }
+}
+```
+
+A dropped table names only `table`. A dropped column, or a retyped column, names both `table` and `column`. An `expected` entry the migration does not actually produce is also a failure, so a `checks.json` written for an earlier migration cannot excuse a later, unrelated loss. The failure message lists every unexpected finding, `table.column` per item, in one message.
 
 A query check compares result columns only; it does not execute the query.
 A migration can keep the same columns and still break stored data, for example when it turns a JSON column into plain text.
@@ -296,6 +311,8 @@ A successful case does not prove that the returned values are equal before and a
 | `has unexpected parameter` | remove a param key the SQL does not use |
 | `is a boolean` | bind 0 or 1 instead |
 | `Result columns changed for case` | the case's result shape changed across the migration; treat this the same as a query check's shape mismatch |
+| `Schema shape changed unexpectedly` | a table or column vanished, or a column's declared type changed; name it in `expected.dropped` or `expected.retyped` if intended |
+| `did not happen` | an `expected` entry names a drop or a retype the migration did not perform; remove the stale entry |
 
 For a slow local snapshot, run `node spike/11-backup-lifecycle.ts` from a source checkout.
 It measures each backup phase, checks WAL rows and implicit row identities, and stops after 20 seconds (ADR 0063).

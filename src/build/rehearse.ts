@@ -21,13 +21,18 @@ function phase(name: string): () => void {
 
 export type RehearsalCaseValue = string | number | boolean | null | RehearsalCaseValue[] | { [key: string]: RehearsalCaseValue };
 export type RehearsalCase = { sql: string; params: Record<string, RehearsalCaseValue> };
-export type RehearsalChecks = { queries?: Record<string, string>; assertions?: Record<string, string>; cases?: Record<string, RehearsalCase> };
+export type ExpectedDrop = { table: string; column?: string };
+export type ExpectedRetype = { table: string; column: string };
+export type RehearsalExpected = { dropped?: ExpectedDrop[]; retyped?: ExpectedRetype[] };
+export type RehearsalChecks = { queries?: Record<string, string>; assertions?: Record<string, string>; cases?: Record<string, RehearsalCase>; expected?: RehearsalExpected };
+export type RehearsalColumn = { name: string; type: string; notnull: 0 | 1; pk: number };
 export type RehearsalResult = {
   version: 1;
   ok: boolean;
   sql: string;
   before: Record<string, number>;
   after: Record<string, number>;
+  columns: { before: Record<string, RehearsalColumn[]>; after: Record<string, RehearsalColumn[]> };
   queries: string[];
   assertions: string[];
   cases: string[];
@@ -37,12 +42,34 @@ export type RehearsalResult = {
 function validateChecks(checks: unknown): asserts checks is RehearsalChecks {
   if (!checks || typeof checks !== 'object' || Array.isArray(checks)) throw new Error('Checks must be an object with queries, assertions, and/or cases');
   for (const [key, value] of Object.entries(checks)) {
-    if (!['queries', 'assertions', 'cases'].includes(key)) throw new Error(`Unknown checks field ${key}; use queries, assertions, or cases`);
+    if (!['queries', 'assertions', 'cases', 'expected'].includes(key)) throw new Error(`Unknown checks field ${key}; use queries, assertions, cases, or expected`);
     if (key === 'cases') { validateCases(value); continue; }
+    if (key === 'expected') { validateExpected(value); continue; }
     if (!value || typeof value !== 'object' || Array.isArray(value) || Object.values(value).some(sql => typeof sql !== 'string')) {
       throw new Error(`${key} must be an object of names and SQL strings`);
     }
     if (key === 'assertions') validateAssertionParams(value as Record<string, string>);
+  }
+}
+
+// expected names a schema-shape change the caller already reviewed, so a
+// malformed entry must fail loudly rather than silently match nothing.
+function validateExpected(expected: unknown): asserts expected is RehearsalExpected {
+  if (!expected || typeof expected !== 'object' || Array.isArray(expected)) throw new Error('expected must be an object with dropped and/or retyped');
+  for (const [key, entries] of Object.entries(expected)) {
+    if (key !== 'dropped' && key !== 'retyped') throw new Error(`Unknown expected field ${key}; use dropped or retyped`);
+    if (!Array.isArray(entries)) throw new Error(`expected.${key} must be an array`);
+    for (const entry of entries) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error(`expected.${key} entries must be objects with table and column`);
+      const fields = Object.keys(entry);
+      const allowed = ['table', 'column'];
+      const unexpected = fields.filter(f => !allowed.includes(f));
+      if (unexpected.length > 0) throw new Error(`expected.${key} entry has unknown field${unexpected.length > 1 ? 's' : ''}: ${unexpected.join(', ')}`);
+      if (typeof (entry as Record<string, unknown>).table !== 'string') throw new Error(`expected.${key} entry needs a table string`);
+      const column = (entry as Record<string, unknown>).column;
+      if (key === 'retyped' && typeof column !== 'string') throw new Error('expected.retyped entry needs a column string');
+      if (key === 'dropped' && column !== undefined && typeof column !== 'string') throw new Error('expected.dropped entry\'s column must be a string');
+    }
   }
 }
 
@@ -132,6 +159,60 @@ function counts(db: DatabaseSync): Record<string, number> {
   return Object.fromEntries(names.map(r => [String(r.name), Number(db.prepare(`select count(*) as n from ${quoteIdent(String(r.name))}`).get()!.n)]));
 }
 
+// hidden 0 is an ordinary column; 2 and 3 are generated columns (VIRTUAL and
+// STORED), which a rebuild can lose the same as any other; 1, a virtual
+// table's own hidden column, is left out -- the same selection migrate() in
+// src/durable.ts already reads.
+function columnsOf(db: DatabaseSync, table: string): RehearsalColumn[] {
+  return db.prepare('select name, type, "notnull", pk from pragma_table_xinfo(?) where hidden in (0, 2, 3) order by cid')
+    .all(table)
+    .map(r => ({ name: String(r.name), type: String(r.type), notnull: (r.notnull ? 1 : 0) as 0 | 1, pk: Number(r.pk) }));
+}
+
+function columns(db: DatabaseSync, tables: string[]): Record<string, RehearsalColumn[]> {
+  return Object.fromEntries(tables.map(table => [table, columnsOf(db, table)]));
+}
+
+type SchemaShapeFinding = { table: string; column?: string; kind: 'dropped' | 'retyped' };
+
+// Only what before names and after lacks, or what changed type, are
+// findings; an added table or an added column is never one (an addition
+// cannot lose data a caller relied on).
+function schemaShapeFindings(before: Record<string, RehearsalColumn[]>, after: Record<string, RehearsalColumn[]>): SchemaShapeFinding[] {
+  const findings: SchemaShapeFinding[] = [];
+  for (const [table, beforeColumns] of Object.entries(before)) {
+    const afterColumns = after[table];
+    if (!afterColumns) { findings.push({ table, kind: 'dropped' }); continue; }
+    const afterByName = new Map(afterColumns.map(c => [c.name.toLowerCase(), c]));
+    for (const column of beforeColumns) {
+      const match = afterByName.get(column.name.toLowerCase());
+      if (!match) { findings.push({ table, column: column.name, kind: 'dropped' }); continue; }
+      if (match.type.toLowerCase() !== column.type.toLowerCase()) findings.push({ table, column: column.name, kind: 'retyped' });
+    }
+  }
+  return findings;
+}
+
+function findingKey(f: { table: string; column?: string }): string {
+  return f.column ? `${f.table}.${f.column}` : f.table;
+}
+
+// A stale expected entry -- naming a loss this migration did not actually
+// perform -- is refused too, so an old checks.json cannot pre-authorize a
+// future, unrelated loss it was never reviewed against.
+function unmatchedSchemaShape(findings: SchemaShapeFinding[], expected: RehearsalExpected | undefined): { unexpected: SchemaShapeFinding[]; stale: string[] } {
+  const droppedKeys = new Set((expected?.dropped ?? []).map(findingKey));
+  const retypedKeys = new Set((expected?.retyped ?? []).map(findingKey));
+  const unexpected = findings.filter(f => !(f.kind === 'dropped' ? droppedKeys : retypedKeys).has(findingKey(f)));
+  const foundDropped = new Set(findings.filter(f => f.kind === 'dropped').map(findingKey));
+  const foundRetyped = new Set(findings.filter(f => f.kind === 'retyped').map(findingKey));
+  const stale = [
+    ...[...droppedKeys].filter(k => !foundDropped.has(k)).map(k => `dropped ${k}`),
+    ...[...retypedKeys].filter(k => !foundRetyped.has(k)).map(k => `retyped ${k}`),
+  ];
+  return { unexpected, stale };
+}
+
 function healthy(db: DatabaseSync): void {
   const integrity = db.prepare('pragma integrity_check').all();
   if (integrity.length !== 1 || Object.values(integrity[0]!)[0] !== 'ok') throw new Error('SQLite integrity_check failed');
@@ -143,7 +224,7 @@ export async function rehearse(database: string, sql: string, checks: RehearsalC
   let source: DatabaseSync | undefined;
   let copy: DatabaseSync | undefined;
   const stage = 'SNAPSHOT_FAILED';
-  const result: RehearsalResult = { version: 1, ok: false, sql, before: {}, after: {}, queries: [], assertions: [], cases: [], diagnostics: [] };
+  const result: RehearsalResult = { version: 1, ok: false, sql, before: {}, after: {}, columns: { before: {}, after: {} }, queries: [], assertions: [], cases: [], diagnostics: [] };
   try {
     let end = phase('open-source');
     source = new DatabaseSync(database, { readOnly: true });
@@ -183,7 +264,7 @@ export async function rehearse(database: string, sql: string, checks: RehearsalC
 // synchronous and allows property tests without filesystem scheduling.
 export function rehearseSnapshot(db: DatabaseSync, sql: string, checks: RehearsalChecks = {}): RehearsalResult {
   let stage = 'CHECKS_INVALID';
-  const result: RehearsalResult = { version: 1, ok: false, sql, before: {}, after: {}, queries: [], assertions: [], cases: [], diagnostics: [] };
+  const result: RehearsalResult = { version: 1, ok: false, sql, before: {}, after: {}, columns: { before: {}, after: {} }, queries: [], assertions: [], cases: [], diagnostics: [] };
   try {
     // A misspelled check must fail, rather than silently approve less evidence.
     validateChecks(checks);
@@ -197,6 +278,7 @@ export function rehearseSnapshot(db: DatabaseSync, sql: string, checks: Rehearsa
     stage = 'BASELINE_FAILED';
     healthy(db);
     result.before = counts(db);
+    result.columns.before = columns(db, Object.keys(result.before));
     const old = new Map<string, string>();
     for (const [name, query] of Object.entries(checks.queries ?? {})) {
       const statement = db.prepare(catalogStatement(query, 'read'));
@@ -220,6 +302,17 @@ export function rehearseSnapshot(db: DatabaseSync, sql: string, checks: Rehearsa
     for (const statement of statements) db.exec(statement);
     healthy(db);
     result.after = counts(db);
+    result.columns.after = columns(db, Object.keys(result.after));
+    stage = 'SCHEMA_SHAPE_CHANGED';
+    {
+      const findings = schemaShapeFindings(result.columns.before, result.columns.after);
+      const { unexpected, stale } = unmatchedSchemaShape(findings, checks.expected);
+      const messages = [
+        ...unexpected.map(f => `${f.kind === 'dropped' ? 'dropped' : 'retyped'} ${findingKey(f)}`),
+        ...stale.map(s => `expected ${s} did not happen`),
+      ];
+      if (messages.length > 0) throw new Error(`Schema shape changed unexpectedly: ${messages.join(', ')}`);
+    }
     stage = 'QUERY_COMPATIBILITY_FAILED';
     for (const [name, query] of Object.entries(checks.queries ?? {})) {
       const columns = db.prepare(catalogStatement(query, 'read')).columns().map(c => ({name:c.name, type:c.type}));

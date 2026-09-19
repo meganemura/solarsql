@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { rehearse, rehearseSnapshot } from '../src/build/rehearse.ts';
 import { diff, introspect, open } from '../src/build/migration.ts';
+import { quoteIdent } from '../src/build/scan.ts';
 
 test('rehearsal checks data and old queries without changing the source', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'solarsql-rehearsal-test-'));
@@ -29,7 +30,7 @@ test('rehearsal checks data and old queries without changing the source', async 
   assert.deepEqual(report.assertions, ['preserved']);
   assert.deepEqual(readFileSync(path), original);
   for (const [sql, checks, code] of [
-    ['alter table items drop column value', {queries:{old:'select id, value from items'}}, 'QUERY_COMPATIBILITY_FAILED'],
+    ['alter table items drop column value', {queries:{old:'select id, value from items'}}, 'SCHEMA_SHAPE_CHANGED'],
     ['delete from items', {assertions:{retained:'select count(*) = 1 from items'}}, 'ASSERTION_FAILED'],
     ["insert into items values (2, null)", {}, 'MIGRATION_FAILED'],
     [`attach database '${path.replaceAll("'", "''")}' as source; delete from source.items`, {}, 'MIGRATION_FAILED'],
@@ -162,7 +163,7 @@ test('a compatibility failure leaves the source schema unchanged, not just the r
       queries: { oldRead: 'select id, value from items' },
     });
     assert.equal(result.ok, false);
-    assert.equal(result.diagnostics[0]!.code, 'QUERY_COMPATIBILITY_FAILED', JSON.stringify(result));
+    assert.equal(result.diagnostics[0]!.code, 'SCHEMA_SHAPE_CHANGED', JSON.stringify(result));
     assert.equal(db.prepare('select value from items').get()!.value, 'kept');
   } finally { db.close(); }
 });
@@ -186,6 +187,9 @@ test('a case naming a pre-rename column fails after a generated column rename', 
   try {
     db.exec("create table items (id integer primary key, name text not null) strict; insert into items values (1, 'alice')");
     const result = rehearseSnapshot(db, plan.statements.join(';\n'), {
+      // A rename shows up as one drop and one add; name it under dropped,
+      // the same repair migrations.md documents, to reach the case check.
+      expected: { dropped: [{ table: 'items', column: 'name' }] },
       cases: { byName: { sql: 'select name from items where id = :id', params: { ':id': 1 } } },
     });
     assert.equal(result.ok, false);
@@ -258,14 +262,15 @@ test('a case binds a boolean nested inside an array or object, only rejecting on
 });
 
 test('a case is rejected when the migration changes its result columns or breaks its execution', () => {
-  for (const [sql, message] of [
-    ['alter table t drop column note', 'Result columns changed for case reader'],
-    ['alter table t rename to t2', 'no such table: t'],
+  for (const [sql, expected, message] of [
+    ['alter table t drop column note', { dropped: [{ table: 't', column: 'note' }] }, 'Result columns changed for case reader'],
+    ['alter table t rename to t2', { dropped: [{ table: 't' }] }, 'no such table: t'],
   ] as const) {
     const db = new DatabaseSync(':memory:');
     try {
       db.exec('create table t(id integer primary key, note text)');
       const result = rehearseSnapshot(db, sql, {
+        expected: { dropped: expected.dropped.map(d => ({ ...d })) },
         cases: { reader: { sql: 'select * from t where id = :id', params: { ':id': 1 } } },
       });
       assert.equal(result.ok, false);
@@ -358,6 +363,126 @@ test('a case round-trips an array parameter through JSON text for any JSON-safe 
       });
       assert.equal(result.ok, true, JSON.stringify(result));
       assert.equal(db.prepare('select json_array_length(?) as n').get(JSON.stringify(values))!.n, values.length);
+    } finally { db.close(); }
+  });
+});
+
+test('a rebuild that drops a column fails with the new stage and names table.column', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table items(id integer primary key, note text) strict');
+    const result = rehearseSnapshot(db, 'alter table items drop column note');
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics[0]!.code, 'SCHEMA_SHAPE_CHANGED', JSON.stringify(result));
+    assert.equal(result.diagnostics[0]!.message, 'Schema shape changed unexpectedly: dropped items.note');
+  } finally { db.close(); }
+});
+
+test('expected.dropped names a lost column, and the report keeps it out of columns.after', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table items(id integer primary key, note text) strict');
+    const result = rehearseSnapshot(db, 'alter table items drop column note', {
+      expected: { dropped: [{ table: 'items', column: 'note' }] },
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.columns.after.items!.map(c => c.name), ['id']);
+  } finally { db.close(); }
+});
+
+test('a dropped table fails with the new stage and passes when expected names it', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table retired(id integer primary key) strict');
+    const dropped = rehearseSnapshot(db, 'drop table retired');
+    assert.equal(dropped.ok, false);
+    assert.equal(dropped.diagnostics[0]!.code, 'SCHEMA_SHAPE_CHANGED', JSON.stringify(dropped));
+    assert.equal(dropped.diagnostics[0]!.message, 'Schema shape changed unexpectedly: dropped retired');
+  } finally { db.close(); }
+  const db2 = new DatabaseSync(':memory:');
+  try {
+    db2.exec('create table retired(id integer primary key) strict');
+    const allowed = rehearseSnapshot(db2, 'drop table retired', { expected: { dropped: [{ table: 'retired' }] } });
+    assert.equal(allowed.ok, true, JSON.stringify(allowed));
+    assert.equal(allowed.columns.after.retired, undefined);
+  } finally { db2.close(); }
+});
+
+test('a changed column type fails with the new stage and passes when expected names it as retyped', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table items(id integer primary key, qty integer) strict');
+    const rebuild = 'create table "_new_items"(id integer primary key, qty text) strict; insert into "_new_items" select id, qty from items; drop table items; alter table "_new_items" rename to items';
+    const result = rehearseSnapshot(db, rebuild);
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics[0]!.code, 'SCHEMA_SHAPE_CHANGED', JSON.stringify(result));
+    assert.equal(result.diagnostics[0]!.message, 'Schema shape changed unexpectedly: retyped items.qty');
+  } finally { db.close(); }
+  const db2 = new DatabaseSync(':memory:');
+  try {
+    db2.exec('create table items(id integer primary key, qty integer) strict');
+    const rebuild = 'create table "_new_items"(id integer primary key, qty text) strict; insert into "_new_items" select id, qty from items; drop table items; alter table "_new_items" rename to items';
+    const result = rehearseSnapshot(db2, rebuild, { expected: { retyped: [{ table: 'items', column: 'qty' }] } });
+    assert.equal(result.ok, true, JSON.stringify(result));
+  } finally { db2.close(); }
+});
+
+test('an expected entry the migration did not perform is a failure', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table items(id integer primary key, note text) strict');
+    const result = rehearseSnapshot(db, 'select 1', { expected: { dropped: [{ table: 'items', column: 'note' }] } });
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics[0]!.code, 'SCHEMA_SHAPE_CHANGED', JSON.stringify(result));
+    assert.equal(result.diagnostics[0]!.message, 'Schema shape changed unexpectedly: expected dropped items.note did not happen');
+  } finally { db.close(); }
+});
+
+test('two unexpected findings appear together in one message', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table items(id integer primary key, note text) strict; create table retired(id integer primary key) strict');
+    const result = rehearseSnapshot(db, 'alter table items drop column note; drop table retired');
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics[0]!.code, 'SCHEMA_SHAPE_CHANGED', JSON.stringify(result));
+    assert.equal(result.diagnostics[0]!.message, 'Schema shape changed unexpectedly: dropped items.note, dropped retired');
+  } finally { db.close(); }
+});
+
+test('malformed expected is rejected with a message naming the field', () => {
+  const db = new DatabaseSync(':memory:');
+  const malformed: [unknown, RegExp][] = [
+    [{ expected: { dropped: 'oops' } }, /expected\.dropped must be an array/],
+    [{ expected: { dropped: [{ column: 'x' }] } }, /needs a table string/],
+    [{ expected: { retyped: [{ table: 'x' }] } }, /needs a column string/],
+    [{ expected: { dropped: [{ table: 'x', extra: 1 }] } }, /unknown field/],
+    [{ expected: { moved: [] } }, /Unknown expected field/],
+  ];
+  try {
+    for (const [checks, message] of malformed) {
+      const result = rehearseSnapshot(db, 'select 1', checks as Parameters<typeof rehearseSnapshot>[2]);
+      assert.equal(result.ok, false);
+      assert.equal(result.diagnostics[0]!.code, 'CHECKS_INVALID', JSON.stringify(result));
+      assert.match(result.diagnostics[0]!.message, message);
+    }
+  } finally { db.close(); }
+});
+
+// House style: a random set of column names, kept as-is, must round-trip
+// through columns.before and columns.after unchanged.
+test('a rebuild that keeps every column reports ok and equal before/after column lists', async () => {
+  const { test: property } = await import('@hegeldev/hegel');
+  const gs = await import('@hegeldev/hegel/generators');
+  property(tc => {
+    const names = [...tc.draw(gs.sets(gs.fromRegex('[a-z][a-z0-9_]{0,6}'), { minSize: 1, maxSize: 5 }))].filter(n => n !== 'id');
+    const db = new DatabaseSync(':memory:');
+    try {
+      const columnsSql = names.map(n => `, ${quoteIdent(n)} text`).join('');
+      db.exec(`create table cols(id integer primary key${columnsSql}) strict`);
+      const result = rehearseSnapshot(db, 'select 1');
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.deepEqual(result.columns.before, result.columns.after);
+      assert.deepEqual(result.columns.before.cols!.map(c => c.name).slice(1).sort(), names.slice().sort());
     } finally { db.close(); }
   });
 });
