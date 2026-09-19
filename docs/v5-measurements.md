@@ -65,6 +65,10 @@ The rename scenario re-run three times, with streams and diffs saved:
 |---|---|---|---|---|---|---|---|
 | rename-needs-intent | 3 | 3/3 | 29 | 11 | 1 | 133.6 | 0.7750914 |
 
+Spend for both runs: 6.56 USD from `total_cost_usd`, plus two preflight runs of about 0.2 USD.
+
+The files-read medians (3 versus 11) differ because the first run's agents located the column mostly through Bash `grep`, which the count excludes, and the re-run's agents used the Grep tool, which it counts; the tool-call medians (23 versus 29) are the comparable pair.
+
 ### 2.3 Where the rename's tool calls go
 
 `summarize.ts` on the three saved streams (`rename-needs-intent-{1,2,3}.stream.jsonl`).
@@ -77,7 +81,7 @@ Failed commands: run 1 had none counted (`is_error: true`), but its `npm test` f
 
 ### 2.4 What this changes
 
-(a) After a DDL edit the build already lists every statement that still names the old column, in one run, so `skills/solarsql/SKILL.md` now tells the agent to run the build before searching.
+(a) After a DDL edit, the build names the trigger, view, or search table that still uses the old name first; once those match, one run lists every query and plan statement that still names it, each with its `at:` line, so `skills/solarsql/SKILL.md` now tells the agent to run the build before searching (measured: a DDL-only rename stops at the first trigger error; collecting schema-construction failures in the same run is open work).
 (b) The starter's `package.json` (written by `test/copy-example.ts`) gets a `test` script, so `npm test` from the build's `next:` line does not fail.
 (c) The invalid-sql and stale-generated scenarios sit at 6 to 9 tool calls, the floor for read task, edit, build, verify.
 (d) The earlier 1.5x tool-call figure against a query builder is not reproduced here, because this battery has no comparison arm; a comparison arm is a separate decision.
