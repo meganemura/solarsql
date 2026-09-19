@@ -23,17 +23,17 @@ The migration files are `migrations/NNNN_<name>.sql` and `migrations/index.ts`.
 
 ## Workflow
 
-Load the reference of the step before you edit.
+Run the command the last line names. Open a reference when a message names one, or when the rule you need is not in this file.
 
 1. **Start a project**: `npx solarsql init <module>`. What it writes and what it refuses: [references/build.md](references/build.md).
-2. **Change the schema**: edit `table()`, `index()`, `view()`, `trigger()`, or `search()` in `module.ts`, then follow the [build and migration workflow](references/build.md#verification-after-an-edit). Rules and types of the DDL: [references/schema.md](references/schema.md). What the migration contains, and one file for a project where every database starts empty: [references/migrations.md](references/migrations.md); rehearse it against a snapshot of real data first: [references/rehearse.md](references/rehearse.md).
+2. **Change the schema**: edit `table()`, `index()`, `view()`, `trigger()`, or `search()` in `module.ts`, then follow the [build and migration workflow](references/build.md#verification-after-an-edit). Rules and types of the DDL: [references/schema.md](references/schema.md). The build prints every failing statement with its `at:` line, and the columns of the table on `no such column`. Fix them from the message. What the migration contains, and one file for a project where every database starts empty: [references/migrations.md](references/migrations.md); rehearse it against a snapshot of real data first: [references/rehearse.md](references/rehearse.md). The build prints the statements the migration will hold. When it prints `changes.json`, copy that JSON into the file and run the printed command.
 3. **Add a query**: a key in `queries(generated, { ... })`, then `npx solarsql build`. How a parameter and a column get their types, and the recipes for lists, rows, optional filters, sorting, paging, JSON, and search: [references/queries.md](references/queries.md). D1 and a Durable Object cap bound parameters, statement length, and row size beyond what `node:sqlite` enforces at build time: [references/limits.md](references/limits.md).
-4. **Add a command**: a key in `commands(generated, { ... })` with `plan`, asserts, and `returns`, then `npx solarsql build`. Plans, asserts, results by `kind` with the rows the plan changed, and what a plan may touch: [references/commands.md](references/commands.md).
+4. **Add a command**: a key in `commands(generated, { ... })` with `plan`, asserts, and `returns`, then `npx solarsql build`. Plans, asserts, results by `kind` with the rows the plan changed, and what a plan may touch: [references/commands.md](references/commands.md). A write into another module's table moves into a command of the module that owns the table. Copy the shape of a command already in that module's module.ts and export it from public.ts.
 5. **Run it**: `d1(env.DB)`, `durable(ctx.storage)`, or `node(db)`; `db.all`, `db.first`, `db.run`, `db.batch`; `Row` and `Params` outside the module; the tables a query or a command reads, in `meta.reads`; the observe hook; ids; a module's test; on a Durable Object: [references/running.md](references/running.md).
 6. **Read a build message**: the message names the fix. The table of messages: [references/build.md](references/build.md).
 7. **Develop locally** with wrangler and a Miniflare test, then **deploy the example** and run its steps on remote D1 and a Durable Object: [references/deploy.md](references/deploy.md).
 
-After an edit, complete the [verification workflow](references/build.md#verification-after-an-edit).
+After an edit, complete the [verification workflow](references/build.md#verification-after-an-edit). A tsc error on a SQL string literal means the generated file is stale: run `npx solarsql build`.
 
 ## The rules the build enforces
 

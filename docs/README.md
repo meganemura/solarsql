@@ -137,6 +137,7 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0122](adr/0122-inspect-carries-the-query-plan.md) | Inspect carries the query plan |
 | [0123](adr/0123-migrate-names-the-file-that-introduced-a-foreign-key-violation.md) | `migrate()` names the file that introduced a foreign-key violation |
 | [0124](adr/0124-a-catalog-query-runs-from-the-shell.md) | A catalog query runs from the shell |
+| [0125](adr/0125-the-cli-prints-the-rule-instead-of-naming-the-reference.md) | The CLI prints the rule instead of naming the reference |
 
 ## Measurements
 
