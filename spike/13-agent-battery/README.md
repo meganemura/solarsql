@@ -34,6 +34,14 @@ node spike/13-agent-battery/run.ts --agent "<command>" [--scenario <name>] [--ru
 
 `--out` gets `metrics.jsonl` (one JSON line per run, with `costUsd` and `turns` alongside the other fields) and, on stdout, a markdown table of scenario, runs, success, median files read, median failed commands, median duration, and median cost (USD). The command exits 1 when any run failed.
 
+Each run also gets two files, named on its `metrics.jsonl` line as `streamPath` and `diffPath`: `<scenario>-<run>.stream.jsonl` is the agent's raw stdout, saved before it is parsed, and `<scenario>-<run>.diff` is a `git diff --no-index` of the agent's finished `example/` directory against a second starter built with the same `scenario.setup` (not the repository's own `example/`, since `setup` already differs from it -- diffing straight against the repository would mix the scenario's own break into what the agent changed). Together they answer why one scenario cost more tool calls than another, which the four counted numbers alone cannot.
+
+```
+node spike/13-agent-battery/summarize.ts <out>/<scenario>-<run>.stream.jsonl
+```
+
+Prints one line per tool call, in the order the agent made it: the tool name, its main argument (`file_path`, `command`, or `pattern`, truncated to 120 characters), and `FAILED` when the matching `tool_result` reported an error -- then the agent's own final result text.
+
 ## Results
 
 `docs/v5-measurements.md` gets the first real run's table, appended to the numbers `spike/12-build-scale.ts` already put there. This spike does not write that file.

@@ -2,12 +2,14 @@
 // Responsibility: the battery's command. For each scenario and run, build a
 // fresh starter, break it, spawn the agent command with the task on stdin,
 // parse its event stream, check the repair, and append one metrics line.
+// Also writes the run's raw stream and a diff of what the agent changed, so
+// a reader can see where the turns went instead of only the four numbers.
 // Prints a markdown table at the end and exits 1 when any run failed.
 // Boundary: this file owns process orchestration and reporting; scenarios.ts
 // owns what breaks and what passes, metrics.ts owns the stream shape.
 //
 // node spike/13-agent-battery/run.ts --agent "<command>" [--scenario <name>] [--runs <n>] [--out <dir>]
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -57,8 +59,21 @@ type RunRecord = {
   durationMs: number;
   costUsd: number | null;
   turns: number | null;
+  streamPath: string;
+  diffPath: string;
   checkFailure?: string;
 };
+
+// A diff of the agent's own dir against a second starter that had the same
+// scenario.setup applied (not the repository's own example/ directly),
+// since setup already differs from the repository copy and diffing straight
+// against it would mix the scenario's own break into what the agent
+// changed. git diff --no-index works on two plain directories outside a
+// repository and exits 1 (not an error) when they differ.
+function diffAgainstPristine(pristineDir: string, dir: string): string {
+  const result = spawnSync("git", ["diff", "--no-index", "--", join(pristineDir, "example"), join(dir, "example")], { encoding: "utf8" });
+  return (result.stdout ?? "") + (result.stderr ?? "");
+}
 
 // A relative path token (such as the stub's own "spike/13-agent-battery/
 // stub-agent.ts", written the way a developer running from the repository
@@ -115,22 +130,30 @@ export async function runBattery(argv: string[]): Promise<{ records: RunRecord[]
   for (const scenario of selected) {
     for (let run = 1; run <= runs; run++) {
       const dir = buildStarter(repoRoot);
+      const pristineDir = buildStarter(repoRoot);
       try {
         scenario.setup(dir);
+        scenario.setup(pristineDir);
         const { stdout, wallMs } = await spawnAgent(agent, dir, scenario.task, scenario.name);
+        const streamPath = join(out, `${scenario.name}-${run}.stream.jsonl`);
+        writeFileSync(streamPath, stdout);
         const metrics = parseStream(stdout, wallMs);
         const result = await scenario.check(dir);
+        const diffPath = join(out, `${scenario.name}-${run}.diff`);
+        writeFileSync(diffPath, diffAgainstPristine(pristineDir, dir));
         const record: RunRecord = {
           scenario: scenario.name, run, success: result.ok,
           filesRead: metrics.filesRead, failedCommands: metrics.failedCommands,
           toolCalls: metrics.toolCalls, durationMs: metrics.durationMs,
           costUsd: metrics.costUsd, turns: metrics.turns,
+          streamPath, diffPath,
           ...(result.ok ? {} : { checkFailure: result.reason }),
         };
         records.push(record);
         appendFileSync(metricsPath, `${JSON.stringify(record)}\n`);
       } finally {
         rmSync(dir, { recursive: true, force: true });
+        rmSync(pristineDir, { recursive: true, force: true });
       }
     }
   }

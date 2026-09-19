@@ -6,13 +6,15 @@
 // (npx solarsql, npx tsc), so it lives in test/slow/, not test/.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fixtureDir } from "../fixture-dir.ts";
 import { runBattery } from "../../spike/13-agent-battery/run.ts";
 
 const root = resolve(import.meta.dirname, "../..");
 const stubAgent = `node ${JSON.stringify(join(root, "spike/13-agent-battery/stub-agent.ts"))}`;
+const summarizePath = join(root, "spike/13-agent-battery/summarize.ts");
 
 const expected: Record<string, { filesRead: number; failedCommands: number }> = {
   "invalid-sql": { filesRead: 1, failedCommands: 1 },
@@ -34,7 +36,14 @@ test("the stub repairs all five scenarios, with the pinned reads and failed comm
     assert.ok(want, `no expected counts for ${record.scenario}`);
     assert.equal(record.filesRead, want.filesRead, `${record.scenario} filesRead`);
     assert.equal(record.failedCommands, want.failedCommands, `${record.scenario} failedCommands`);
+    assert.ok(existsSync(record.streamPath), `${record.scenario} missing ${record.streamPath}`);
+    assert.ok(existsSync(record.diffPath), `${record.scenario} missing ${record.diffPath}`);
   }
+
+  const invalidSql = records.find(r => r.scenario === "invalid-sql")!;
+  const summarized = execFileSync(process.execPath, [summarizePath, invalidSql.streamPath], { encoding: "utf8" });
+  const toolLines = summarized.split("\n---\n")[0]!.split("\n").filter(line => line.length > 0);
+  assert.equal(toolLines.length, invalidSql.toolCalls);
 
   const lines = readFileSync(join(out, "metrics.jsonl"), "utf8").trim().split("\n");
   assert.equal(lines.length, 5);
