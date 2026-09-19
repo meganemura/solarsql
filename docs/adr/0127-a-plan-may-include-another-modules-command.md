@@ -36,3 +36,6 @@ It also moves the checks the build does on a plan (parameter types, asserts, own
 - `inspect` and `--json` show each expanded item's source module, so a plan's provenance is visible without reading both modules.
 - `commands.md` and `SKILL.md` step 4 gain the rule that a plan item may be another module's command.
 - A Miniflare test is the claim: a failure in the included command's statement rolls back the including command's own statement on D1 and on a Durable Object, and the mirror case.
+- A nested include is refused: a command that includes another command that itself includes a command names both and stops the build with "which itself includes a command; include the inner commands directly"; an agent includes the inner commands directly instead.
+- A mutual include is impossible: the build-order rule ("must come before module ... in modules") can hold in only one direction, so module A including module B's command and module B including module A's command cannot both build.
+- A SqlValue column of an included statement that the including plan could refine stays SqlValue: the owner's generated file is already written by the time the including module types, so the refinement can only be detected, not written back. This is a real gap, open work.

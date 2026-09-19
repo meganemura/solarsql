@@ -110,6 +110,7 @@ The first pass used a check whose lookup took the first delete command on a tabl
 | first pass, owned | 3 | 1/3 | 29 | 14 | 2 | 0 | 0 | 234.8 | 0.7964404 |
 | first pass, flat | 3 | 3/3 | 29 | 11 | 1 | 1 | 0 | 161.4 | 0.9663130 |
 | re-run, owned | 3 | 2/3 | 30 | 14 | 2 | 1 | 0 | 176.4 | 0.6852102 |
+| after ADR 0127, owned | 3 | 2/3 | 41 | 13 | 4 | 0 | 1 | 300.5 | 0.9835794 |
 
 The six owned runs, by diff:
 
@@ -137,7 +138,9 @@ The library has no atomic shape for a write that spans two modules.
 ADR 0027 refuses a cross-module write, so the caller runs two commands, one per module, and the second can fail after the first already committed.
 The docs do not describe that two-command sequence either.
 Four of six owned agents found the two-command shape on their own; two read the `deleted_at` column named in the task as an instruction to soft-delete instead of hard-delete.
-ADR 0127 closes the atomic gap: a plan item may name another module's public command, expanded at build time into one plan.
+ADR 0127 closes the atomic gap and is implemented: a plan item may be another module's exported command, expanded at build time into one plan.
+After the implementation, three of three agents used the include shape on their own.
+Two of three passed; the third kept a soft delete, the same reading of `deleted_at` as before.
 
 ### 3.5 Limits
 
@@ -145,4 +148,4 @@ One model, three runs per pass, task wording that names a `deleted_at` column an
 
 ### 3.6 Spend
 
-Every `metrics.jsonl` under `.scratch/battery-2026-09-19*` (30 runs: section 2's first pass and rename re-run, an unreported ddl-only re-run, and section 3's owned, flat, and owned re-run) sums to 15.65 USD in `costUsd`, plus about 0.2 USD of preflights: about 15.85 USD for the day's total across every battery run. Section 3's own three runs (owned, flat, owned re-run) sum to 8.03 USD of that total. Section 2's own spend figures stay unchanged.
+The 30 earlier runs (section 2's first pass and rename re-run, an unreported ddl-only re-run, and section 3's owned, flat, and owned re-run) summed to 15.65 USD in `costUsd`, recorded earlier today before their `.scratch` directories were deleted; the after-ADR-0127 owned re-run's three runs sum to 3.24 USD, from `.scratch/battery-2026-09-19-owned3/metrics.jsonl`. Together with about 0.2 USD of preflights, the day's total across every battery run is about 19.1 USD. Section 3's own three passes (owned, flat, owned re-run) are 8.03 USD of that total; section 2's own spend figures stay unchanged.
