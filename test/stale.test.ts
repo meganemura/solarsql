@@ -4,42 +4,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tscArgs } from "./fixture-dir.ts";
+import { copyExample } from "./copy-example.ts";
 
 const root = resolve(import.meta.dirname, "..");
-
-// A copy of src/ and example/ that keeps their relative layout.
-export function copyExample(): string {
-  const dir = mkdtempSync(join(tmpdir(), "solarsql-"));
-  cpSync(join(root, "src"), join(dir, "src"), { recursive: true });
-  cpSync(join(root, "example"), join(dir, "example"), { recursive: true });
-  // The copy is an ES module project, like the repository.
-  writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "solarsql-copy", private: true, type: "module" }));
-  writeFileSync(
-    join(dir, "tsconfig.json"),
-    JSON.stringify({
-      compilerOptions: {
-        target: "esnext",
-        module: "nodenext",
-        strict: true,
-        exactOptionalPropertyTypes: true,
-        noUncheckedIndexedAccess: true,
-        noEmit: true,
-        allowImportingTsExtensions: true,
-        erasableSyntaxOnly: true,
-        verbatimModuleSyntax: true,
-        skipLibCheck: true,
-        types: ["node"],
-        typeRoots: [join(root, "node_modules", "@types")],
-      },
-      include: ["src", "example"],
-    }),
-  );
-  return dir;
-}
 
 function tsc(dir: string): { status: number; output: string } {
   // dir is a copy of src/ and example/ only, with no node_modules/typescript
