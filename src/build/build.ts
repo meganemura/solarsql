@@ -399,12 +399,118 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
     }
   }
 
-  let engine: Engine;
+  // A module's schema objects, applied to the engine one at a time instead
+  // of all at once (declaredDdl's old flat list): a rename that breaks a
+  // module's two triggers and its search table used to stop the build at
+  // the first of the three, so a fix cost three builds instead of one (ADR
+  // pending). Each object's failure is recorded, in the same
+  // { message, sql, at } shape as a statement failure, and construction
+  // continues with the next object. A table's own failure is the one
+  // exception: every later object of that module (its other tables, its
+  // indexes, its search tables, its views, its triggers) would fail only
+  // because the table under them is missing, so those are skipped and
+  // counted in one line instead of reported one by one.
+  const schemaFailuresByModule = new Map<string, { message: string; sql: string; at: string[]; kind: "schema" | "statement" }[]>();
+  // A module whose table failed: its later objects are skipped, not applied.
+  const tableCascadeFailed = new Set<string>();
+  // The statements that applied so far, so a failed statement's connection
+  // (the Engine constructor closes whatever `database` it is given, on its
+  // own failure, since it owns the connection) can be rebuilt without it.
+  const applied: string[] = [];
+  let engine = new Engine([]);
+
+  const moduleSource = (m: Module): string => join(m.dir, "module.ts");
+
+  const recordSchemaFailure = (m: Module, at: string, message: string, sql: string): void => {
+    const location = `${moduleSource(m)}: ${at}`;
+    const list = schemaFailuresByModule.get(m.name) ?? [];
+    list.push({ message: `${columnsHint(engine, sql, message)}\n  at: ${location}`, sql, at: [location], kind: "schema" });
+    schemaFailuresByModule.set(m.name, list);
+  };
+
+  const applyDdl = (m: Module, sql: string, at: string): boolean => {
+    try {
+      engine = new Engine([sql], engine.db);
+      applied.push(sql);
+      return true;
+    } catch (e) {
+      engine = new Engine(applied);
+      recordSchemaFailure(m, at, `module ${m.name}: ${at}: ${(e as Error).message}`, sql);
+      return false;
+    }
+  };
+
+  // Tables first, across every module: a foreign key may name a table a
+  // later module declares, and SQLite does not validate a REFERENCES
+  // target at CREATE TABLE, so table order across modules does not matter.
+  for (const m of modules) {
+    let failedTable: string | null = null;
+    let skippedTables = 0;
+    for (const sql of m.tables) {
+      const name = created(sql)!.name;
+      if (failedTable) { skippedTables++; continue; }
+      if (!applyDdl(m, sql, `table ${name}`)) failedTable = name;
+    }
+    if (failedTable) {
+      tableCascadeFailed.add(m.name);
+      const skipped = skippedTables + m.indexes.length + m.searches.length + m.views.length + m.triggers.length;
+      if (skipped > 0) {
+        const list = schemaFailuresByModule.get(m.name)!;
+        list[list.length - 1]!.message += `\n  skipped: ${skipped} objects of module ${m.name} after table ${failedTable} failed`;
+      }
+    }
+  }
+  // Then indexes, search tables, views, and triggers, in the order
+  // declaredDdl always used: an index or a trigger sits on a table of its
+  // own module (checked above), and a view may read a table of any module,
+  // so every module's tables apply before any module's view does.
+  for (const m of modules) {
+    if (tableCascadeFailed.has(m.name)) continue;
+    for (const sql of m.indexes) applyDdl(m, sql, `index ${created(sql)!.name}`);
+  }
+  for (const m of modules) {
+    if (tableCascadeFailed.has(m.name)) continue;
+    for (const sql of m.searches) applyDdl(m, sql, `search ${created(sql)!.name}`);
+  }
+  for (const m of modules) {
+    if (tableCascadeFailed.has(m.name)) continue;
+    for (const sql of m.views) {
+      const name = created(sql)!.name;
+      if (!applyDdl(m, sql, `view ${name}`)) continue;
+      // A CREATE VIEW is not compiled at CREATE, so a function call or a
+      // stale column in its body is only ever checked here, by preparing a
+      // select against it -- the same statement checkBoundary below
+      // inspects for table accesses.
+      const select = `select * from ${quoteIdent(name)}`;
+      try {
+        try { engine.prepare(select); }
+        catch (e) { throw new BuildError(`module ${m.name}: view ${name}: ${(e as Error).message}`, sql); }
+        checkBoundary(engine, m, owner, configDir, select, `view ${name}`);
+      } catch (e) {
+        const diagnostic = e as BuildError;
+        recordSchemaFailure(m, `view ${name}`, diagnostic.message, diagnostic.sql ?? sql);
+      }
+    }
+  }
+  for (const m of modules) {
+    if (tableCascadeFailed.has(m.name)) continue;
+    for (const sql of m.triggers) {
+      const name = created(sql)!.name;
+      if (!applyDdl(m, sql, `trigger ${name}`)) continue;
+      try {
+        checkTriggerBoundary(engine, m, owner, configDir, sql);
+      } catch (e) {
+        const diagnostic = e as BuildError;
+        recordSchemaFailure(m, `trigger ${name}`, diagnostic.message, diagnostic.sql ?? sql);
+      }
+    }
+  }
   try {
-    engine = new Engine(declaredDdl(modules));
+    engine = new Engine(GUARD_DDL, engine.db);
   } catch (e) {
     throw new BuildError(`schema: ${(e as Error).message}`);
   }
+
   try {
     const brands = new Map<string, Brand>();
     const tables = engine.tables();
@@ -456,24 +562,6 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
       // Id is a string contract. Other primary keys retain their storage type.
       if (pk.length === 1 && pk[0]!.type.toUpperCase() === "TEXT") brands.set(t.name, { table: t.name, column: pk[0]!.name, typeName: brandName(t.name), module: m.name });
     }
-    for (const m of modules) {
-      // A view's own CREATE VIEW is not compiled at CREATE, so a function
-      // call in its body is only ever checked here, by preparing a select
-      // against it -- the same statement checkBoundary below inspects for
-      // table accesses. An orphan view (no query in this module selects it)
-      // would otherwise never be prepared at all (ADR 0114).
-      for (const sql of m.views) {
-        const name = created(sql)!.name;
-        const select = `select * from ${quoteIdent(name)}`;
-        try {
-          engine.prepare(select);
-        } catch (e) {
-          throw new BuildError(`module ${m.name}: view ${name}: ${(e as Error).message}`, sql);
-        }
-        checkBoundary(engine, m, owner, configDir, select, `view ${name}`);
-      }
-      for (const sql of m.triggers) checkTriggerBoundary(engine, m, owner, configDir, sql);
-    }
     const typer = new Typer(engine, brands);
     const brandModule = new Map([...brands.values()].map((b) => [b.typeName, b.module]));
     const results: BuildResult["modules"] = [];
@@ -484,9 +572,18 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
     // five statements is one build, not five (ADR pending). A module with a
     // failure skips its own tail below (checkCommands, the readsAll reads,
     // and the generated write): those all assume every statement typed.
-    const failures: { message: string; sql: string; at: string[] }[] = [];
+    const failures: { message: string; sql: string; at: string[]; kind: "schema" | "statement" }[] = [];
 
     for (const m of modules) {
+      // A module whose schema failed to build is not typed at all: every
+      // statement would fail against a table, view, or search table that is
+      // not there, and that failure would say nothing the schema failure
+      // above did not already say.
+      const schemaFailed = schemaFailuresByModule.get(m.name);
+      if (schemaFailed) {
+        schemaFailed[schemaFailed.length - 1]!.message += `\n  statements of module ${m.name} not checked until its schema builds`;
+        continue;
+      }
       const entries: { key: string; analysis: Analysis }[] = [];
       const used = new Set<string>();
       const typeStarted = performance.now();
@@ -510,7 +607,7 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
         } catch (error) {
           const diagnostic = withLocations(error, m.statementUses.get(key)!, sql);
           const failedSql = diagnostic.sql ?? sql;
-          failures.push({ message: columnsHint(engine, failedSql, diagnostic.message), sql: failedSql, at: [...diagnostic.locations] });
+          failures.push({ message: columnsHint(engine, failedSql, diagnostic.message), sql: failedSql, at: [...diagnostic.locations], kind: "statement" });
           moduleFailed = true;
           continue;
         }
@@ -558,7 +655,11 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
       results.push({ name: m.name, generatedPath, entries: entries.length, changed, added, removed, ms: Math.round(m.importMs + typeMs) });
     }
 
-    if (failures.length > 0) throw new StatementFailures(failures);
+    // Schema failures first, in module order, then statement failures: a
+    // module's schema always builds before its statements are typed, so its
+    // failures read the same way.
+    const allFailures = [...modules.flatMap((m) => schemaFailuresByModule.get(m.name) ?? []), ...failures];
+    if (allFailures.length > 0) throw new StatementFailures(allFailures);
 
     const migration = migrationStatus(configDir, config, modules);
     const index = await migrationsIndex(resolve(configDir, config.migrations), write);
@@ -756,7 +857,11 @@ function withLocations(error: unknown, locations: readonly string[], sql?: strin
 // harmless line.
 function columnsHint(engine: Engine, sql: string, message: string): string {
   const firstLine = message.split("\n", 1)[0] ?? "";
-  if (!firstLine.startsWith("no such column:")) return message;
+  // A statement failure's own message starts with the engine's raw text
+  // ("no such column: x"); a schema failure's is prefixed with "module m:
+  // trigger t: " first (recordSchemaFailure, above), so this looks for the
+  // fragment anywhere on the first line, not only at its start.
+  if (!firstLine.includes("no such column:")) return message;
   const words = new Set((sql.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []).map((w) => w.toLowerCase()));
   const lines = engine.tables()
     .filter((t) => !t.virtual && words.has(t.name.toLowerCase()))
@@ -774,8 +879,8 @@ function columnsHint(engine: Engine, sql: string, message: string): string {
 // carries, so this calls super() with no sql and sets the field itself --
 // `sql` is only readonly at compile time.
 export class StatementFailures extends BuildError {
-  readonly failures: { message: string; sql: string; at: string[] }[];
-  constructor(failures: readonly { message: string; sql: string; at: string[] }[]) {
+  readonly failures: { message: string; sql: string; at: string[]; kind: "schema" | "statement" }[];
+  constructor(failures: readonly { message: string; sql: string; at: string[]; kind: "schema" | "statement" }[]) {
     super(failures.map((f) => f.message).join("\n\n"));
     this.name = "StatementFailures";
     (this as { sql?: string }).sql = failures[0]!.sql;

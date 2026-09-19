@@ -4,7 +4,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { build, migration, StatementFailures } from "../src/build/build.ts";
@@ -715,6 +715,85 @@ export const referrals = table(\`
         // (see "an expression column without a cast..." above, pinned with
         // assert.equal against the un-joined text).
         assert.equal(error.message, `${error.failures[0]!.message}\n\n${error.failures[1]!.message}`);
+        return true;
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a DDL-only rename collects every trigger and search-table failure of the module in one run", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/orders/module.ts");
+      writeFileSync(schema, readFileSync(schema, "utf8").replace("note text,", "memo text,"));
+      await assert.rejects(build(join(dir, "example/solarsql.config.ts")), (error: unknown) => {
+        assert.ok(error instanceof StatementFailures, String(error));
+        // The search table itself declares its own column "note" (fts5 is
+        // independent of the orders table), so only the two triggers fail.
+        assert.equal(error.failures.length, 2);
+        assert.deepEqual(error.failures.map((f) => f.kind), ["schema", "schema"]);
+        assert.match(error.failures[0]!.message, /module orders: trigger order_search_insert: no such column: new\.note/);
+        assert.match(error.failures[0]!.message, new RegExp(`at: .*modules[\\\\/]orders[\\\\/]module\\.ts: trigger order_search_insert`));
+        assert.match(error.failures[1]!.message, /module orders: trigger order_search_update:/);
+        assert.match(error.failures[1]!.message, /statements of module orders not checked until its schema builds/);
+        // The note belongs to the module's last schema failure only.
+        assert.equal(/statements of module/.test(error.failures[0]!.message), false);
+        return true;
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a broken table skips the rest of its module's objects, counted in one line, and other modules build normally", async () => {
+    const dir = copy();
+    try {
+      const widgetsDir = join(dir, "example/modules/widgets");
+      mkdirSync(widgetsDir, { recursive: true });
+      writeFileSync(
+        join(widgetsDir, "module.ts"),
+        `import { index, table } from "../../../src/index.ts";\n\n` +
+          "export const widgets = table(`create table widgets (id text primary key not null,) strict`);\n" +
+          `export const widgetsId = index("create index widgets_id on widgets(id)");\n`,
+      );
+      const configPath = join(dir, "example/solarsql.config.ts");
+      writeFileSync(configPath, readFileSync(configPath, "utf8").replace('"./modules/customers"', '"./modules/customers", "./modules/widgets"'));
+      await assert.rejects(build(configPath), (error: unknown) => {
+        assert.ok(error instanceof StatementFailures, String(error));
+        // Only widgets fails: customers, orders, and reports have nothing to
+        // do with it, and none of them contribute a failure of their own.
+        assert.equal(error.failures.length, 1);
+        assert.equal(error.failures[0]!.kind, "schema");
+        assert.match(error.failures[0]!.message, /module widgets: table widgets:/);
+        assert.match(error.failures[0]!.message, /skipped: 1 objects of module widgets after table widgets failed/);
+        assert.match(error.failures[0]!.message, /statements of module widgets not checked until its schema builds/);
+        return true;
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the single-failure message for a trigger keeps today's text, with columns, at:, and the schema note appended", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/orders/module.ts");
+      writeFileSync(schema, readFileSync(schema, "utf8").replace("after update on orders", "after delete on orders"));
+      await assert.rejects(build(join(dir, "example/solarsql.config.ts")), (error: unknown) => {
+        assert.ok(error instanceof StatementFailures, String(error));
+        assert.equal(error.failures.length, 1);
+        // The text through "in:" is byte-identical to what a lone trigger
+        // failure printed before this change (pinned here); columns of,
+        // at:, and the schema note are new, appended after it.
+        assert.equal(
+          error.message,
+          `module orders: trigger orders_touch: no such column: new.id\n` +
+            `  in: create trigger orders_touch after delete on orders begin update orders set updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') where id = new.id; end\n` +
+            `  columns of orders: id, customer_id, status, note, updated_at\n` +
+            `  at: ${schema}: trigger orders_touch\n` +
+            `  statements of module orders not checked until its schema builds`,
+        );
         return true;
       });
     } finally {

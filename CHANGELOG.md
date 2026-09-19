@@ -10,6 +10,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 - Changed: `build`'s and `migration`'s `next:` line now covers three cases (`npx tsc --noEmit && npm test` after a clean build with migrations current, the migration command when one is pending, or a fix line for a blocked migration); `migration <name>` prints `wrote <relative path>` and the statements it wrote before that line.
 - Changed: `SKILL.md`'s workflow now sends an agent to run the command the CLI's last line names, and states the build, migration, command, and type-check rules the CLI's own messages already carry, instead of sending the agent to a reference before every edit.
 - Fixed: the cross-module write error now names the owner's `module.ts` and its commands catalog, instead of only the owner module's name.
+- Changed: `npx solarsql build` now collects every schema-construction failure of a module (a failing table, index, view, trigger, or search table) in one run instead of stopping at the first; after a failed table, the module's remaining objects are skipped and counted in one line, and its statements are not typed until its schema builds.
+- Changed: a stale query literal's tsc error now names the remedy (`run npx solarsql build`) as its expected type, not another query's SQL (ADR 0126).
 
 ## 0.5.0 (2026-09-19)
 

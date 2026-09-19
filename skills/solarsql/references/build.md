@@ -32,7 +32,7 @@ The files are ES modules; a package.json that says `"type": "commonjs"` gets a n
 The build imports every module of `solarsql.config.ts`, applies the schema to an in-memory SQLite, prepares every statement on it, and writes `solarsql.generated.ts` next to each module.
 A generated file that is missing gets a stub before the import, so a fresh clone builds whatever the modules import from each other, and a configuration file that imports a module builds too.
 It prints `wrote` or `current` per module, with the time to import and type that module at the end of the line, a `+` line per statement added and a `-` line per statement removed, `scan` lines for full scans, a `reads` line per query of a `readsAll` module with the tables that query reads, a `time` line for the whole build, and `migrations are current`, or the statements a migration would hold. Its last line, `next: <command>`, names the next command to run: `npx tsc --noEmit && npm test` after a clean build with migrations current, the migration command when one is pending, or the fix for a blocked migration.
-The generated file is keyed by the SQL text: a statement whose text changed has no entry, and `tsc` fails at the call site until the build runs again, and the error's expected type says `run npx solarsql build`. Commit the generated file.
+The generated file is keyed by the SQL text: a statement whose text changed has no entry, and `tsc` fails at the call site until the build runs again. The error's expected type says `run npx solarsql build`. Commit the generated file.
 If only the DDL changes, unchanged statements can retain stale types that pass `tsc`; `build --check` detects stale generated files.
 
 `build --check` writes nothing and exits 1 when a generated file, `migrations/index.ts`, or a migration is behind the source. It is for CI, for a test hook, and for `prepublishOnly` in a package that ships its generated files.
@@ -89,7 +89,7 @@ export default config({
 
 ## Messages
 
-Each message names the fix. The build reports every failing statement in one run, each under `in:` with its `at:` line.
+Each message names the fix. The build reports every failing statement in one run, each under `in:` with its `at:` line; it also reports every failing table, index, view, trigger, and search table of a module in the same run, before it types that module's statements.
 Statement errors also name the `module.ts` path, exported catalog, and entry.
 Command locations include the plan position, counted from 1, and assert name when applicable, or `returns`.
 Shared SQL reports all its catalog locations.
@@ -97,6 +97,8 @@ Shared SQL reports all its catalog locations.
 | The message contains | Fix |
 |---|---|
 | `in:` | one failing statement of the run; the build reports every one before it stops, so fix them all from their own `in:` and `at:` lines |
+| `skipped:` | a table failed to create, so the rest of its module's objects (indexes, search tables, views, triggers) were never applied; fix the table first, then rebuild |
+| `not checked until its schema builds` | a module's schema failed, so its statements were not typed; fix every schema failure of the module first |
 | `columns of` | `no such column` lists `columns of <table>: ...`; pick the intended column from that list |
 | `Use exactly one SQL statement` | split SQL into separate plan items; a query entry contains one SELECT or VALUES statement |
 | `A query or returns must be SELECT` | move the write into a command plan and read its result in `returns` |

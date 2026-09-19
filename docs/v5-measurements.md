@@ -81,7 +81,7 @@ Failed commands: run 1 had none counted (`is_error: true`), but its `npm test` f
 
 ### 2.4 What this changes
 
-(a) After a DDL edit, the build names the trigger, view, or search table that still uses the old name first; once those match, one run lists every query and plan statement that still names it, each with its `at:` line, so `skills/solarsql/SKILL.md` now tells the agent to run the build before searching (measured: a DDL-only rename stops at the first trigger error; collecting schema-construction failures in the same run is open work).
+(a) After a DDL edit, the build lists every trigger, view, and search table that still uses the old name in one run; once those match, the same run then lists every query and plan statement that still names it, each with its `at:` line, so `skills/solarsql/SKILL.md` now tells the agent to run the build before searching.
 (b) The starter's `package.json` (written by `test/copy-example.ts`) gets a `test` script, so `npm test` from the build's `next:` line does not fail.
 (c) The invalid-sql and stale-generated scenarios sit at 6 to 9 tool calls, the floor for read task, edit, build, verify.
 (d) The earlier 1.5x tool-call figure against a query builder is not reproduced here, because this battery has no comparison arm; a comparison arm is a separate decision.
