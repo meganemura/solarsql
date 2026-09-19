@@ -4,7 +4,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
-- Added: an agent-outcome battery (spike/13-agent-battery) with a stub agent in the slow test set; docs/v5-measurements.md records the first real run.
+- Added: an agent-outcome battery (spike/13-agent-battery) with a stub agent in the slow test set; docs/v5-measurements.md records the first real run, and section 3 records the module-ownership study.
 - Changed: `SKILL.md`'s schema step now tells the agent to run `npx solarsql build` before it searches for a renamed column: it names the first blocking trigger, view, or search table, then every query and plan statement.
 - Changed: `npx solarsql build` now reports every failing statement in one run, each with its own `in:` and `at:` lines, instead of stopping at the first; `no such column` also lists `columns of <table>: ...`.
 - Changed: `build`'s and `migration`'s `next:` line now covers three cases (`npx tsc --noEmit && npm test` after a clean build with migrations current, the migration command when one is pending, or a fix line for a blocked migration); `migration <name>` prints `wrote <relative path>` and the statements it wrote before that line.

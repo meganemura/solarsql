@@ -90,3 +90,59 @@ Failed commands: run 1 had none counted (`is_error: true`), but its `npm test` f
 
 One model (`sonnet`), three runs per scenario, a five-scenario example project.
 Cost figures are Claude Code's own `total_cost_usd`.
+
+## 3. Module ownership on a 12-module project
+
+### 3.1 Question and method
+
+Does module ownership -- a module owns its tables; another module writes to them only through the owner's commands -- reduce harmful edits as a project grows?
+`owned-cross-module` and `flat-cross-module` (`spike/13-agent-battery/README.md`, "The two arms") run the same task on the same generated 12-module project, once with one module per table (owned) and once with every table in one module (flat, so no module-boundary check applies).
+The task: give the customer table (`t10`) a `deleted_at` column, and make deleting a customer also remove its rows in the table that references it (`t11`, via `parent_id`).
+`check` replays the migrations, finds the delete command by structure, runs it, and asserts both rows are gone (see the README for the exact procedure).
+Agent command, model, and flags match section 2.
+Dates: first pass and re-run both 2026-09-19.
+The first pass used a check whose lookup took the first delete command on a table in declaration order, so the same fix shape passed or failed by where the agent placed it. Commit 44dbb58 fixed the lookup, and the re-run used the fixed check.
+
+### 3.2 Results
+
+| pass and condition | runs | success | median tool calls | median files read | median files edited | median failed commands | median hunks outside task | median duration (s) | median cost (USD) |
+|---|---|---|---|---|---|---|---|---|---|
+| first pass, owned | 3 | 1/3 | 29 | 14 | 2 | 0 | 0 | 234.8 | 0.7964404 |
+| first pass, flat | 3 | 3/3 | 29 | 11 | 1 | 1 | 0 | 161.4 | 0.9663130 |
+| re-run, owned | 3 | 2/3 | 30 | 14 | 2 | 1 | 0 | 176.4 | 0.6852102 |
+
+The six owned runs, by diff:
+
+- First pass run 1: the two-command shape, but the old check's declaration-order lookup failed it.
+- First pass run 2: a soft delete (`update ... set deleted_at`) on `t10`.
+- First pass run 3: the two-command shape, check passed.
+- Re-run run 1: a soft delete on `t10`, and a test file in module `t10` that imports `../t9/module.ts`, which the build refuses.
+- Re-run run 2: the two-command shape, check passed.
+- Re-run run 3: the two-command shape, check passed.
+
+Four of six found the two-command shape; two chose a soft delete, and one of those two also left the build broken.
+Flat: 3/3; each run gave every `t10` delete command a two-statement plan, `delete from t11 where parent_id = :parent_id` followed by `delete from t10 where id = :id`.
+
+### 3.3 What the harmful-edit metric says
+
+`hunksOutsideTask` was 0 in four of the six owned runs and in all three flat runs.
+First-pass run 2 (the soft delete) had 1: a hunk in `solarsql.generated.ts` whose removed lines name `t9`, from the old delete-from-`t10` plan's join-derived `reads` list, not a hand edit past `t10` and `t11`.
+Re-run run 1 had 2: that same generated-file artifact, plus the stray test file's import of `t9`'s module.
+At N=12, with this task, no run named a third table by hand, so module ownership made no measurable difference to harmful edits.
+A task that put a same-named column on a neighbor table would discriminate better; that is a follow-up scenario, not run here.
+
+### 3.4 What the study found instead
+
+The library has no atomic shape for a write that spans two modules.
+ADR 0027 refuses a cross-module write, so the caller runs two commands, one per module, and the second can fail after the first already committed.
+The docs do not describe that two-command sequence either.
+Four of six owned agents found the two-command shape on their own; two read the `deleted_at` column named in the task as an instruction to soft-delete instead of hard-delete.
+ADR 0127 closes the atomic gap: a plan item may name another module's public command, expanded at build time into one plan.
+
+### 3.5 Limits
+
+One model, three runs per pass, task wording that names a `deleted_at` column and so invites a soft delete, and a check that accepts only a hard delete.
+
+### 3.6 Spend
+
+Every `metrics.jsonl` under `.scratch/battery-2026-09-19*` (30 runs: section 2's first pass and rename re-run, an unreported ddl-only re-run, and section 3's owned, flat, and owned re-run) sums to 15.65 USD in `costUsd`, plus about 0.2 USD of preflights: about 15.85 USD for the day's total across every battery run. Section 3's own three runs (owned, flat, owned re-run) sum to 8.03 USD of that total. Section 2's own spend figures stay unchanged.
