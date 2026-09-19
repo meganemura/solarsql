@@ -6,9 +6,9 @@ import { resolve, join, relative } from 'node:path';
 import { mkdtempSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { analyzeSchema } from '../src/build/analyze.ts';
-import { workerMiniflare } from './worker.ts';
-import { parseJson } from '../src/runtime/plan.ts';
+import { analyzeSchema } from '../../src/build/analyze.ts';
+import { workerMiniflare } from '../worker.ts';
+import { parseJson } from '../../src/runtime/plan.ts';
 import { test as property } from '@hegeldev/hegel';
 import * as gs from '@hegeldev/hegel/generators';
 
@@ -24,7 +24,7 @@ test('BLOB conversion preserves bytes and JSON arrays', () => {
 });
 
 test('local D1 and Durable Objects return Uint8Array and decoded JSON', async t => {
-  const root = resolve(import.meta.dirname, '..');
+  const root = resolve(import.meta.dirname, '../..');
   const mf = workerMiniflare(resolve(root, 'test/value-worker.ts'), root, { durableObjects: { VALUES: 'Values' } });
   t.after(() => mf.dispose());
   for (const path of ['/', '/do']) {
@@ -34,7 +34,7 @@ test('local D1 and Durable Objects return Uint8Array and decoded JSON', async t 
 });
 
 test('generated named-slot contracts compile and execute on Node, D1, and Durable Objects', async t => {
-  const root=resolve(import.meta.dirname,'..');
+  const root=resolve(import.meta.dirname,'../..');
   const dir=realpathSync(mkdtempSync(join(tmpdir(),'solarsql-slots-')));
   let mf:ReturnType<typeof workerMiniflare>|undefined;
   t.after(async()=>{await mf?.dispose();rmSync(dir,{recursive:true,force:true});});
@@ -82,7 +82,7 @@ export default {async fetch(request,env){if(new URL(request.url).pathname==='/do
 });
 
 test('generated JSONB contracts compile and execute on Node, D1, and Durable Objects', async t => {
-  const root=resolve(import.meta.dirname,'..');
+  const root=resolve(import.meta.dirname,'../..');
   const dir=realpathSync(mkdtempSync(join(tmpdir(),'solarsql-jsonb-')));
   let mf:ReturnType<typeof workerMiniflare>|undefined;
   t.after(async()=>{await mf?.dispose();rmSync(dir,{recursive:true,force:true});});
@@ -130,7 +130,7 @@ export default {async fetch(request,env){if(new URL(request.url).pathname==='/do
 });
 
 test('generated binary, scalar, and ordered JSON contracts compile and execute on Node, D1, and Durable Objects', async t => {
-  const root=resolve(import.meta.dirname,'..');
+  const root=resolve(import.meta.dirname,'../..');
   const dir=realpathSync(mkdtempSync(join(tmpdir(),'solarsql-literals-')));
   let mf:ReturnType<typeof workerMiniflare>|undefined;
   t.after(async()=>{await mf?.dispose();rmSync(dir,{recursive:true,force:true});});

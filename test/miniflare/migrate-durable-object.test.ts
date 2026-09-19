@@ -6,10 +6,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { diff, introspect, open, render } from "../src/build/migration.ts";
-import { workerMiniflare } from "./worker.ts";
+import { diff, introspect, open, render } from "../../src/build/migration.ts";
+import { workerMiniflare } from "../worker.ts";
 
-const root = resolve(import.meta.dirname, "..");
+const root = resolve(import.meta.dirname, "../..");
 
 // Same shape test/node.test.ts's "a rebuild that violates a new foreign
 // key..." test uses: f1 creates parent/child and an orphaned child row, f2

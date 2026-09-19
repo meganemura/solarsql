@@ -1,6 +1,6 @@
 // Responsibility: prove that a real Durable Object's SQL cursor reports
 // rowsRead/rowsWritten through durable()'s observe hook (src/durable.ts),
-// under Miniflare, not only Node's storageOf() shim. test/example.test.ts's
+// under Miniflare, not only Node's storageOf() shim. test/miniflare/example.test.ts's
 // shared exampleSteps() checks the same claim across the full example
 // Worker; this fixture isolates it to one command and one batch, in the
 // migrate-durable-object.test.ts style.
@@ -9,9 +9,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { workerMiniflare } from "./worker.ts";
+import { workerMiniflare } from "../worker.ts";
 
-const root = resolve(import.meta.dirname, "..");
+const root = resolve(import.meta.dirname, "../..");
 
 type EventBody = { kind: string; name: string; outcome: string; meta: { rows_read: number; rows_written: number; duration?: number } | null };
 

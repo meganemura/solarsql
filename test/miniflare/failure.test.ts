@@ -7,7 +7,7 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
-import { assertFailure, constraintFailure } from "../src/runtime/plan.ts";
+import { assertFailure, constraintFailure } from "../../src/runtime/plan.ts";
 
 const ident = gs.fromRegex("[a-z_][a-z0-9_]{0,8}");
 const wrap = gs.sampledFrom<(m: string, code: string) => string>([
@@ -82,9 +82,9 @@ test('unknown thrown values are not replaced by classification errors', () => {
 });
 
 test('public command adapters rethrow unrecognized values unchanged', async () => {
-  const {d1}=await import('../src/d1.ts');
-  const {durable}=await import('../src/durable.ts');
-  const {customerCommands}=await import('../example/modules/customers/public.ts');
+  const {d1}=await import('../../src/d1.ts');
+  const {durable}=await import('../../src/durable.ts');
+  const {customerCommands}=await import('../../example/modules/customers/public.ts');
   for(const value of [null,undefined,7,'transport failed',{message:42},{get cause(){throw Error('unreadable');}}]) {
     const statement={bind(){return this;},async all(){throw value;}};
     const binding={prepare(){return statement;},async batch(){throw value;}};
@@ -119,13 +119,13 @@ test('unique expression-index failures retain their actual index names', async (
 
 test('generated command callers receive index targets on Node, D1, and Durable Objects', async t => {
   const {DatabaseSync}=await import('node:sqlite');
-  const {node}=await import('../src/node.ts');
-  const {ddl,conflict}=await import('./index-failure-fixture.ts');
-  const {ddl:collisionDdl,collisions}=await import('./assert-collision-fixture.ts');
-  const {ddl:nullPredicateDdl,nullPredicateResults}=await import('./assert-null-predicate-fixture.ts');
-  const {ddl:ambiguousDdl,ambiguousFailures}=await import('./ambiguous-constraint-fixture.ts');
-  const {ddl:parameterDdl,parameterContracts}=await import('./parameter-contract-fixture.ts');
-  const {workerMiniflare}=await import('./worker.ts');
+  const {node}=await import('../../src/node.ts');
+  const {ddl,conflict}=await import('../index-failure-fixture.ts');
+  const {ddl:collisionDdl,collisions}=await import('../assert-collision-fixture.ts');
+  const {ddl:nullPredicateDdl,nullPredicateResults}=await import('../assert-null-predicate-fixture.ts');
+  const {ddl:ambiguousDdl,ambiguousFailures}=await import('../ambiguous-constraint-fixture.ts');
+  const {ddl:parameterDdl,parameterContracts}=await import('../parameter-contract-fixture.ts');
+  const {workerMiniflare}=await import('../worker.ts');
   const {resolve}=await import('node:path');
   const expected={result:{ok:false,kind:'unique_index',index:"lower'email"},index:"lower'email"};
   const raw=new DatabaseSync(':memory:');
@@ -171,7 +171,7 @@ test('generated command callers receive index targets on Node, D1, and Durable O
     parameterRaw.exec(parameterDdl);
     assertParameterContracts(await parameterContracts(node(parameterRaw)));
   }finally{parameterRaw.close();}
-  const root=resolve(import.meta.dirname,'..');
+  const root=resolve(import.meta.dirname,'../..');
   const mf=workerMiniflare(resolve(root,'test/index-failure-worker.ts'),root,{durableObjects:{INDEX:'IndexFailure',COLLISION:'AssertCollision',NULLPREDICATE:'NullPredicateAssert',AMBIGUOUS:'AmbiguousConstraint',PARAMETERS:'ParameterContract'}});
   t.after(()=>mf.dispose());
   for(const path of ['/','/do']) assert.deepEqual(await (await mf.dispatchFetch('http://localhost'+path)).json(),expected);

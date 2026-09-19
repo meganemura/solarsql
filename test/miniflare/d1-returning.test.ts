@@ -4,7 +4,7 @@
 // the engine refuses.
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { D1Harness, type WorkerOk } from "./d1.ts";
+import { D1Harness, type WorkerOk } from "../d1.ts";
 
 function rows(reply: WorkerOk): Record<string, unknown>[] {
   return (reply.results as { results: Record<string, unknown>[] }).results;

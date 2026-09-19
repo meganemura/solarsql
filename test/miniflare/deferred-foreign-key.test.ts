@@ -14,10 +14,10 @@ import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
-import { constraintFailure } from "../src/runtime/plan.ts";
-import { workerMiniflare } from "./worker.ts";
+import { constraintFailure } from "../../src/runtime/plan.ts";
+import { workerMiniflare } from "../worker.ts";
 
-const root = resolve(import.meta.dirname, "..");
+const root = resolve(import.meta.dirname, "../..");
 
 type ProbeReply = { threw: boolean; result?: { ok: boolean; kind?: string }; name?: string; message?: string };
 

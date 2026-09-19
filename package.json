@@ -59,7 +59,8 @@
     "build": "tsc -p tsconfig.build.json",
     "prepack": "npm run build",
     "prepublishOnly": "npm run build",
-    "test": "node --test \"test/**/*.test.ts\"",
+    "test": "node --test \"test/*.test.ts\"",
+    "test:all": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

@@ -16,7 +16,7 @@ import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
-import { D1Harness, type WorkerOk } from "./d1.ts";
+import { D1Harness, type WorkerOk } from "../d1.ts";
 
 test("node:sqlite ships the double-quoted-string fallback off: a quoted name that is not a real column throws", () => {
   const db = new DatabaseSync(":memory:");

@@ -4,7 +4,7 @@
 // table with one BEFORE INSERT trigger that calls raise(abort, name).
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { D1Harness, type WorkerOk } from "./d1.ts";
+import { D1Harness, type WorkerOk } from "../d1.ts";
 
 // D1 exec() splits its input on newlines, so a multi-line CREATE cannot go
 // through it. The schema goes through batch() as one statement per entry.

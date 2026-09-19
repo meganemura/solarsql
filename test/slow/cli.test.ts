@@ -7,9 +7,9 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { migration } from "../src/build/build.ts";
+import { migration } from "../../src/build/build.ts";
 
-const root = resolve(import.meta.dirname, "..");
+const root = resolve(import.meta.dirname, "../..");
 const config = "example/team's $config.ts";
 const quotedConfig = `'example/team'"'"'s $config.ts'`;
 

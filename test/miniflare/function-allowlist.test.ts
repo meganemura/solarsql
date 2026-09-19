@@ -12,7 +12,7 @@
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
-import { D1Harness, type WorkerOk, type WorkerError } from "./d1.ts";
+import { D1Harness, type WorkerOk, type WorkerError } from "../d1.ts";
 
 describe("D1 SQLite refuses a function outside workerd's own allowlist, and allows one on it", () => {
   const d1 = new D1Harness();

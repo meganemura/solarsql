@@ -7,9 +7,9 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { checkDiscovery } from "./cli-discovery.ts";
+import { checkDiscovery } from "../cli-discovery.ts";
 
-const root = resolve(import.meta.dirname, "..");
+const root = resolve(import.meta.dirname, "../..");
 
 // The example, with its relative imports of ../src turned into the package.
 function writeConsumer(dir: string): void {

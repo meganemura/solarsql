@@ -6,11 +6,11 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { splitStatements } from "../src/build/scan.ts";
-import { workerMiniflare } from "./worker.ts";
-import { exampleSteps, type Reply } from "./example-steps.ts";
+import { splitStatements } from "../../src/build/scan.ts";
+import { workerMiniflare } from "../worker.ts";
+import { exampleSteps, type Reply } from "../example-steps.ts";
 
-const root = resolve(import.meta.dirname, "..");
+const root = resolve(import.meta.dirname, "../..");
 const migrationsDir = resolve(root, "example/migrations");
 const migrations = readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).sort().map((f) => readFileSync(join(migrationsDir, f), "utf8"));
 
