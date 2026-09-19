@@ -302,6 +302,96 @@ export function triggerTarget(sql: string): { name: string; event: "insert" | "u
   return { name: c.name, event, columns, table: unquote(table.text) };
 }
 
+// A trigger's ON <base> ... BEGIN INSERT INTO <search> prefix, read once and
+// shared by triggerInsertTarget (a loose "does this trigger write here" fact,
+// used only to count candidates) and searchFill (the strict shape check
+// below it): an INSTEAD OF trigger, a non-INSERT event, and anything between
+// ON <base> and BEGIN besides FOR EACH ROW (a WHEN clause included) reach
+// neither caller.
+function triggerInsertPrefix(triggerSql: string): { t: Token[]; base: string; search: string; afterSearchIdent: number } | null {
+  const t = significant(tokenize(triggerSql));
+  const c = created(triggerSql);
+  if (!c || c.kind !== "trigger") return null;
+  let i = t.findIndex((tok) => tok.type === "ident" && unquote(tok.text) === c.name && tok.depth === 0) + 1;
+  if (i === 0) return null;
+  if (isKeyword(t[i], "before") || isKeyword(t[i], "after")) i++;
+  else if (isKeyword(t[i], "instead")) return null;
+  if (!isKeyword(t[i], "insert")) return null;
+  i++;
+  if (!isKeyword(t[i], "on")) return null;
+  const baseTok = t[i + 1];
+  if (!baseTok || baseTok.type !== "ident") return null;
+  const base = unquote(baseTok.text);
+  i += 2;
+  if (isKeyword(t[i], "for") && isKeyword(t[i + 1], "each") && isKeyword(t[i + 2], "row")) i += 3;
+  if (!isKeyword(t[i], "begin")) return null;
+  i++;
+  if (!isKeyword(t[i], "insert") || !isKeyword(t[i + 1], "into")) return null;
+  const searchTok = t[i + 2];
+  if (!searchTok || searchTok.type !== "ident") return null;
+  return { t, base, search: unquote(searchTok.text), afterSearchIdent: i + 3 };
+}
+
+// The search table an INSERT trigger's body writes into, and its base table,
+// without judging the body's shape -- diff() (migration.ts) uses this to
+// count how many of the target schema's triggers write into a given search
+// table, before it asks searchFill whether the one candidate, if there is
+// exactly one, also has the shape it can generate a repopulation insert from.
+export function triggerInsertTarget(triggerSql: string): { search: string; base: string } | null {
+  const prefix = triggerInsertPrefix(triggerSql);
+  return prefix ? { search: prefix.search, base: prefix.base } : null;
+}
+
+// A range that matches the fixed shape a search table's own maintenance
+// trigger keeps to (schema.md, "Search tables"): ON <base> [FOR EACH ROW],
+// no WHEN, one statement `insert into <search> (<c1>, ...) values (<e1>,
+// ...)` with the same count on both sides, where every <ei> is exactly
+// `new.<column>`. From that shape, `insert into <search> (<c1>, ...) select
+// <e1's column>, ... from <base>` repopulates the search table (ADR 0118).
+// Anything else -- a WHEN clause, more than one statement, an expression
+// other than a bare new.<column>, a mismatched column count -- gives null:
+// migration.ts falls back to a comment there, not a guess.
+export function searchFill(triggerSql: string): { search: string; columns: string[]; sources: string[]; base: string } | null {
+  const prefix = triggerInsertPrefix(triggerSql);
+  if (!prefix) return null;
+  const { t, base, search, afterSearchIdent } = prefix;
+  if (t[afterSearchIdent]?.text !== "(") return null;
+  const colsOpen = afterSearchIdent;
+  const colsClose = matchParen(t, colsOpen);
+  if (colsClose === -1) return null;
+  const columns = splitAtCommas(triggerSql, t, colsOpen + 1, colsClose).map((item) => {
+    const toks = significant(tokenize(item.text));
+    return toks.length === 1 && toks[0]!.type === "ident" ? unquote(toks[0]!.text) : null;
+  });
+  if (columns.length === 0 || columns.some((column) => column === null)) return null;
+  let j = colsClose + 1;
+  if (!isKeyword(t[j], "values")) return null;
+  j++;
+  if (t[j]?.text !== "(") return null;
+  const valsClose = matchParen(t, j);
+  if (valsClose === -1) return null;
+  const sources = splitAtCommas(triggerSql, t, j + 1, valsClose).map((item) => {
+    const toks = significant(tokenize(item.text));
+    return toks.length === 3 && isKeyword(toks[0], "new") && toks[1]!.text === "." && toks[2]!.type === "ident" ? unquote(toks[2]!.text) : null;
+  });
+  if (sources.length !== columns.length || sources.some((source) => source === null)) return null;
+  let k = valsClose + 1;
+  if (t[k]?.text !== ";") return null;
+  k++;
+  if (!isKeyword(t[k], "end")) return null;
+  let m = k + 1;
+  if (t[m]?.text === ";") m++;
+  if (m !== t.length) return null;
+  return { search, columns: columns as string[], sources: sources as string[], base };
+}
+
+// The index of the "(" at open's matching ")", at the same depth, else -1.
+function matchParen(t: readonly Token[], open: number): number {
+  const depth = t[open]!.depth;
+  for (let i = open + 1; i < t.length; i++) if (t[i]!.text === ")" && t[i]!.depth === depth) return i;
+  return -1;
+}
+
 // Split a token range at top-level commas (depth equal to the depth of the
 // first token). Returns the text of each item with its span.
 export function splitAtCommas(sql: string, tokens: Token[], from: number, to: number): { text: string; start: number; end: number }[] {

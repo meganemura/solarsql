@@ -129,6 +129,8 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0114](adr/0114-the-build-also-refuses-a-denied-function-inside-ddl.md) | The build also refuses a denied function inside DDL |
 | [0115](adr/0115-diffs-own-shape-comparison-ignores-column-and-foreign-key-order.md) | `diff()`'s own shape comparison ignores column and foreign key order |
 | [0116](adr/0116-a-rebuild-refuses-to-revive-a-sibling-migrations-drop.md) | A rebuild refuses to revive a sibling migration's drop |
+| [0117](adr/0117-the-build-refuses-a-deferred-foreign-key.md) | The build refuses a deferred foreign key |
+| [0118](adr/0118-a-created-search-table-is-repopulated-from-its-insert-trigger.md) | A created search table is repopulated from its insert trigger |
 
 ## Measurements
 

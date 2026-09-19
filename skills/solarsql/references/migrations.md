@@ -118,7 +118,7 @@ explicit migration that preserves the required rows and foreign keys.
 | a rebuild referenced through ON DELETE CASCADE, SET NULL, SET DEFAULT, or RESTRICT | blocked; write an explicit migration that preserves related rows and foreign keys |
 | a changed view or trigger | `drop` then `create` |
 | any rebuild | every view is dropped first and created last, because a rename under a view fails |
-| a changed search table | `drop table` then `create virtual table`; the search rows start empty, and only a later write brings a row back through the triggers (ADR 0034). A row already in the indexed table stays out of search until the migration also inserts it, for example `insert into order_search (order_id, note) select id, note from orders` |
+| a changed search table | `drop table` then `create virtual table`; the search rows start empty, and only a later write brings a row back through the triggers (ADR 0034). When exactly one `INSERT` trigger on the search table's base keeps to the documented shape (schema.md, "Search tables"), the generator also emits `insert into order_search (order_id, note) select id, note from orders`, right after the create statement; otherwise the create statement carries a comment, and the caller writes that insert (ADR 0118) |
 | a removed ordinary table or column | blocked until an exact destructive intent names it |
 | a removed ordinary table with a surviving child that has a non-`NO ACTION` delete action | blocked; write an explicit migration that preserves the child rows and foreign keys |
 | a removed or changed search table | `drop table` then `create virtual table` when needed |

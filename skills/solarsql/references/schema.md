@@ -40,7 +40,7 @@ export const orderSearch = search(`create virtual table order_search using fts5(
 - An index is on a table of its module.
 - A trigger sits on a table or a view of its module, and its body touches the tables of that module only (an INSTEAD OF trigger sits on a view of the module).
 - A view is read by the queries of its module like a table. A view over another module's table needs `readsAll` on the module.
-- A search table is `create virtual table ... using fts5(...)`. The module owns it like a table. It has no ALTER: a change drops it and creates it again. Rows already in the indexed table at that point do not come back through the triggers, which fire only on a later write; the migration needs an explicit statement to repopulate them (ADR 0034).
+- A search table is `create virtual table ... using fts5(...)`. The module owns it like a table. It has no ALTER: a change drops it and creates it again. Rows already in the indexed table at that point do not come back through the triggers, which fire only on a later write; when the module's insert trigger keeps to the shape below, the migration's own generator writes that repopulation statement; otherwise the caller does (ADR 0034, ADR 0118).
 - A foreign key is immediate (SQLite's own default). The build refuses one declared `deferrable initially deferred`, column-level or as a table constraint: a Durable Object cannot catch a violation of a deferred foreign key at all, and a schema shared across all three targets must stay safe on the one that cannot, even though D1's own classifier now recognizes this violation the same as an immediate one's (ADR 0117). Order a command's plan to insert a referenced row first instead.
 - The leading `--` lines of a statement are its documentation, and the build keeps them in the generated file.
 
@@ -86,6 +86,8 @@ export const orderSearchUpdate = trigger(`
 A query joins the hits back to the table: `from order_search join orders o on o.id = order_search.order_id where order_search match :query order by rank`. `bm25(order_search)` is an expression and takes a cast.
 The engine keeps five shadow tables next to a search table (`_config`, `_content`, `_data`, `_docsize`, `_idx`); the build and the migration never name them.
 No trigger follows a delete into the search table; a command that deletes rows deletes their search rows too.
+
+`orderSearchInsert` above is the shape a migration reads back to repopulate a created search table: one `INSERT` trigger, `BEFORE` or `AFTER`, no `WHEN` clause, and a body of exactly one `insert into <search> (<cols>) values (new.<col>, ...)`. From that shape, the migration generates `insert into order_search (order_id, note) select id, note from orders` next to the create statement (ADR 0118). `orderSearchUpdate`'s delete-then-insert body is outside that shape; a search table kept only by an update trigger still needs a hand-written repopulation insert.
 
 ## Adding a module by hand
 

@@ -10,7 +10,7 @@
 // again, and its shadow tables are the engine's own.
 import { DatabaseSync } from "node:sqlite";
 import { withDeniedFunctions } from "./facts.ts";
-import { created, definitions, isKeyword, normalize, parseRebuildRecords, quoteIdent, redeclaredByFile, REBUILD_HEADER, renamedColumn, revivedDeclaration, splitStatements, tokenize, type RebuildRecord, type Token, unknownDeclaration } from "./scan.ts";
+import { created, definitions, isKeyword, normalize, parseRebuildRecords, quoteIdent, redeclaredByFile, REBUILD_HEADER, renamedColumn, revivedDeclaration, searchFill, splitStatements, tokenize, triggerInsertTarget, type RebuildRecord, type Token, unknownDeclaration } from "./scan.ts";
 import { BuildError } from "./typegen.ts";
 
 export type Column = { name: string; type: string; notnull: boolean; dflt: string | null; pk: number; def: string; generated: boolean };
@@ -651,14 +651,39 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
   }
   // A search table has no ALTER. A changed or removed one is dropped, and
   // a changed or new one is created after the tables, before the triggers
-  // that write it.
+  // that write it. When the target schema names exactly one insert trigger
+  // that writes into a created search table, and that trigger keeps to the
+  // documented shape (schema.md, "Search tables": one `insert into <search>
+  // (<cols>) values (new.<col>, ...)`, on a real table, no WHEN clause), the
+  // rows already in that table can be read back through the same columns:
+  // ADR 0118 emits that repopulation insert right after the search table's
+  // own create statement. More than one candidate trigger, a WHEN clause, an
+  // expression other than a bare new.<column>, or a base that is a view (not
+  // a table) instead gets a comment on the create statement: the gap stays
+  // visible in the migration file instead of becoming a silent one.
   const virtualSame = (name: string) => {
     const c = current.virtuals.get(name);
     const t = target.virtuals.get(name);
     return c !== undefined && t !== undefined && normalize(c.sql) === normalize(t.sql);
   };
   for (const name of current.virtuals.keys()) if (!virtualSame(name)) dropTables.push(`drop table ${quoteIdent(name)}`);
-  const createVirtuals = [...target.virtuals.values()].filter((v) => !virtualSame(v.name)).map((v) => v.sql);
+  const targetTriggerSqls = [...target.triggers.values()].map((trigger) => trigger.sql);
+  const createVirtuals: string[] = [];
+  for (const v of target.virtuals.values()) {
+    if (virtualSame(v.name)) continue;
+    const candidates = targetTriggerSqls.filter((sql) => triggerInsertTarget(sql)?.search === v.name);
+    const fill = candidates.length === 1 ? searchFill(candidates[0]!) : null;
+    if (fill && target.tables.has(fill.base)) {
+      createVirtuals.push(v.sql);
+      createVirtuals.push(
+        `insert into ${quoteIdent(v.name)} (${fill.columns.map(quoteIdent).join(", ")}) select ${fill.sources.map(quoteIdent).join(", ")} from ${quoteIdent(fill.base)}`,
+      );
+    } else {
+      createVirtuals.push(
+        `-- ${v.name} starts empty. No single INSERT trigger with only new.<column> values names how to fill it. Add an insert that repopulates it from its base table.\n${v.sql}`,
+      );
+    }
+  }
   for (const [name, target_] of target.tables) {
     const current_ = current.tables.get(name);
     if (!current_) {
