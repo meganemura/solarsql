@@ -76,7 +76,7 @@ The table holds no rows between commands.
 
 ## What a plan may touch
 
-A plan writes the tables of its module. A write into another module's table is refused by the build, with or without `readsAll`.
+A plan writes the tables of its module. A write into another module's table is refused by the build, with or without `readsAll`, naming the owner's `module.ts` and its commands catalog: `inserts into <table>. Module <owner> owns <table> in modules/<owner>/module.ts; write it through a command of <owner>'s commands catalog.`
 So a transaction is a module: tables that change together live in one module.
 An assert may read the tables of its module and the primary keys its foreign keys reference; a rule that reads more of another module lives in a module with `readsAll`, which still writes only its own tables.
 A delete from a parent table reads the foreign key columns of its children, in any module, and the build allows that read.

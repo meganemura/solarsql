@@ -4,6 +4,11 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Changed: `npx solarsql build` now reports every failing statement in one run, each with its own `in:` and `at:` lines, instead of stopping at the first; `no such column` also lists `columns of <table>: ...`.
+- Changed: `build`'s and `migration`'s `next:` line now covers three cases (`npx tsc --noEmit && npm test` after a clean build with migrations current, the migration command when one is pending, or a fix line for a blocked migration); `migration <name>` prints `wrote <relative path>` and the statements it wrote before that line.
+- Changed: `SKILL.md`'s workflow now sends an agent to run the command the CLI's last line names, and states the build, migration, command, and type-check rules the CLI's own messages already carry, instead of sending the agent to a reference before every edit.
+- Fixed: the cross-module write error now names the owner's `module.ts` and its commands catalog, instead of only the owner module's name.
+
 ## 0.5.0 (2026-09-19)
 
 This release can break a caller in two ways. `EngineMeta.duration` is now optional, so a caller that reads `meta.duration` as a plain `number` needs to handle the missing case. Rehearsal now fails on a dropped table, column, or changed column type unless `checks.json`'s `expected` lists it.

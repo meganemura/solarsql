@@ -7,7 +7,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { build, migration } from "../src/build/build.ts";
+import { build, migration, StatementFailures } from "../src/build/build.ts";
 import { BuildError } from "../src/build/typegen.ts";
 import { nextMigrationFile, withMigrationLock, writeNewMigration } from "../src/build/migration-files.ts";
 
@@ -266,10 +266,27 @@ describe("solarsql build", () => {
       const before = readdirSync(join(dir, "example/migrations"));
       await assert.rejects(migration(join(dir, "example/solarsql.config.ts"), "placed_at"), (e: unknown) => {
         assert.ok(e instanceof BuildError, String(e));
-        assert.match(e.message, /module orders updates customers\. Module customers owns customers/);
+        assert.match(e.message, /module orders updates customers\. Module customers owns customers: add a command to \.\/modules\/customers\/module\.ts \(catalog customerCommands\) and export it from its public\.ts\./);
         return true;
       });
       assert.deepEqual(readdirSync(join(dir, "example/migrations")), before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a command plan that inserts into another module's table names where to add a command instead", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/customers/module.ts");
+      writeFileSync(schema, readFileSync(schema, "utf8")
+        .replace(`plan: ["insert into customers (id, name, email) values (:id, :name, :email)"],`,
+                 `plan: ["insert into orders (id, customer_id, status) values (:id, :customer_id, 'draft')"],`));
+      // The order table's own owner is orders, and its commands catalog is
+      // orderCommands (the export name commands(generated, {...}) is bound
+      // to in the example) -- this pins that the message names the real
+      // catalog, not a placeholder.
+      await expectBuildError(dir, /module customers inserts into orders\. Module orders owns orders: add a command to \.\/modules\/orders\/module\.ts \(catalog orderCommands\) and export it from its public\.ts\./);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -665,6 +682,39 @@ export const referrals = table(\`
         assert.equal(error.message, `column "orders" is an expression with no type. Wrap it in cast(... as integer), cast(... as real), cast(... as text), or cast(... as blob).
   in: select c.id as customer_id, c.name, cast(sum(l.qty * l.price) as real) as revenue, count(distinct o.id) as orders from customers c join orders o on o.customer_id = c.id and o.status = 'confirmed' join order_lines l on l.order_id = o.id group by c.id order by revenue desc
   at: ${queries}: query reportQueries.revenueByCustomer`);
+        return true;
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("every broken statement of one build is reported together, in scan order, with the table's declared columns", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/orders/module.ts");
+      writeFileSync(schema, readFileSync(schema, "utf8")
+        .replace("select id, customer_id, status, note from orders where id = :id", "select id, customer_id, status, notez from orders where id = :id")
+        .replace(`plan: ["update orders set note = :note where id = :id"],`, `plan: ["update orders set notez = :note where id = :id"],`));
+      await assert.rejects(build(join(dir, "example/solarsql.config.ts")), (error: unknown) => {
+        assert.ok(error instanceof StatementFailures, String(error));
+        assert.equal(error.failures.length, 2);
+        // A module namespace object enumerates its exports in sorted, not
+        // declared, order (ECMA-262's module namespace exotic object), so
+        // orderCommands scans before orderQueries here.
+        assert.match(error.failures[0]!.sql, /update orders set notez = :note where id = :id/);
+        assert.match(error.failures[0]!.message, /no such column: notez/);
+        assert.match(error.failures[0]!.message, /at: .*command orderCommands\.annotate, plan item 1/);
+        assert.match(error.failures[0]!.message, /columns of orders: id, customer_id, status, note, updated_at/);
+        assert.match(error.failures[1]!.sql, /select id, customer_id, status, notez from orders where id = :id/);
+        assert.match(error.failures[1]!.message, /no such column: notez/);
+        assert.match(error.failures[1]!.message, /at: .*query orderQueries\.byId/);
+        assert.match(error.failures[1]!.message, /columns of orders: id, customer_id, status, note, updated_at/);
+        // The two failures land in the same order in the combined message,
+        // separated by a blank line -- the join a single failure never adds
+        // (see "an expression column without a cast..." above, pinned with
+        // assert.equal against the un-joined text).
+        assert.equal(error.message, `${error.failures[0]!.message}\n\n${error.failures[1]!.message}`);
         return true;
       });
     } finally {

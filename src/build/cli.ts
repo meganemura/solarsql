@@ -6,9 +6,10 @@
 //   solarsql init <module> [dir]        a first module, built, with its migration
 // Boundary: printing and exit codes only. build.ts and init.ts do the work.
 import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { relative } from "node:path";
 import { analyzeDatabase, analyzeSchema } from "./analyze.ts";
 import { rehearse } from "./rehearse.ts";
-import { build, migration } from "./build.ts";
+import { build, migration, StatementFailures } from "./build.ts";
 import { init } from "./init.ts";
 import { readMigrationIntent, type MigrationIntent } from "./migration-intent.ts";
 import type { DropIntent, Rename, RenameRepair } from "./migration.ts";
@@ -165,19 +166,21 @@ function queryArguments(args: string[]): { target: string; database: string; par
 
 function intentAction(drops: readonly DropIntent[], renames: readonly Rename[], configArgument: string): string {
   const intent = JSON.stringify({ version: 1, drops, renames }, null, 2);
-  return `Create changes.json:\n${intent}\nRun: npx solarsql migration describe_change --intent changes.json${configArgument}`;
+  return `Create changes.json:\n${intent}\nRun: npx solarsql migration <name> --intent changes.json${configArgument}\n(a name matches [a-z0-9_]+)`;
 }
 
 function migrationAction(drops: DropIntent[] | undefined, renames: Rename[] | undefined, renameCandidates: RenameRepair[] | undefined, configArgument: string): string {
   if (drops || renames) return intentAction(drops ?? [], renames ?? [], configArgument);
-  if (renameCandidates) return `Choose a one-to-one rename map from:\n${JSON.stringify(renameCandidates, null, 2)}\nRun: npx solarsql migration describe_change --intent changes.json${configArgument}`;
+  if (renameCandidates) return `Choose a one-to-one rename map from:\n${JSON.stringify(renameCandidates, null, 2)}\nRun: npx solarsql migration <name> --intent changes.json${configArgument}\n(a name matches [a-z0-9_]+)`;
   return "Write a manual migration and run build.";
 }
 
 // The last "Run: <command>" line of a migrationAction result, when it names
-// one; a block with no such line has no single command to reuse.
+// one; a block with no such line has no single command to reuse. The `m`
+// flag stops at that line's own end, so a note appended on the next line (a
+// name matches [a-z0-9_]+) does not leak into the command this extracts.
 function runCommand(action: string): string | undefined {
-  return /Run: (.+)$/.exec(action)?.[1];
+  return /^Run: (.+)$/m.exec(action)?.[1];
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -253,6 +256,7 @@ async function main(argv: string[]): Promise<number> {
     }
     console.log(`time    ${result.ms}ms`);
     if (result.index.path !== null && result.index.changed) console.log(`${check ? "stale  " : "wrote  "} ${result.index.path} (the migration files, for a Durable Object)`);
+    const stale = result.modules.some((m) => m.changed) || result.index.changed;
     if (result.migration.reason) {
       console.error(`migration blocked: ${result.migration.reason}`);
       const action = migrationAction(result.migration.drops, result.migration.renames, result.migration.renameCandidates, configArgument);
@@ -264,16 +268,22 @@ async function main(argv: string[]): Promise<number> {
     if (result.migration.pending) {
       console.error(`migration pending. Write the migration: npx solarsql migration <name>${configArgument}`);
       for (const s of result.migration.statements) console.error(`  ${s.replace(/\s+/g, " ").trim()}`);
-      console.log(check ? `next: npx solarsql build${configArgument}` : `next: npx solarsql migration <name>${configArgument}`);
+      // build --check with the generated files already current has nothing
+      // left to fix but the migration itself; ADR 0043 still keeps build
+      // and check separate commands, so a stale check names build first.
+      console.log(check ? (stale ? `next: npx solarsql build${configArgument}` : `next: npx solarsql migration <name>${configArgument}`) : `next: npx solarsql migration <name>${configArgument}`);
       return check ? 1 : 0;
     }
-    if (check && (result.modules.some((m) => m.changed) || result.index.changed)) {
+    if (check && stale) {
       console.error(`generated files are stale. Run: npx solarsql build${configArgument}`);
       console.log(`next: npx solarsql build${configArgument}`);
       return 1;
     }
     console.log("migrations are current");
-    console.log(check ? "next: npx tsc --noEmit && npm test" : `next: npx solarsql build --check${configArgument}`);
+    // The build already wrote the files a check would verify (ADR 0043
+    // still keeps the two commands separate); the next step after either
+    // one is the typecheck and the test suite, not another build.
+    console.log("next: npx tsc --noEmit && npm test");
     return 0;
   }
   if (command === "query") {
@@ -296,7 +306,13 @@ async function main(argv: string[]): Promise<number> {
       if (action !== "Write a manual migration and run build.") console.error(action);
       return 1;
     }
-    console.log(result.filename ? `wrote ${result.filename}` : "nothing to migrate");
+    if (result.filename) {
+      console.log(`wrote ${relative(process.cwd(), result.path!).split("\\").join("/")}`);
+      for (const s of result.statements) console.log(`  ${s.replace(/\s+/g, " ").trim()}`);
+    } else {
+      console.log("nothing to migrate");
+    }
+    console.log("next: npx tsc --noEmit && npm test");
     return 0;
   }
   if (command === "init") {
@@ -361,9 +377,35 @@ try {
   process.exit(code);
 } catch (e) {
   if (args.includes("--json") || ["inspect", "rehearse", "analyze"].includes(args[0] ?? "")) {
-    await printReport({ version: 1, ok: false, diagnostics: [{ code: "BUILD_FAILED", message: e instanceof Error ? e.message : String(e), sql: e instanceof BuildError ? e.sql : undefined, locations: e instanceof BuildError ? e.locations : [], action: e instanceof BuildError ? e.action : undefined }] });
-  } else if (e instanceof BuildError) console.error(`error: ${e.message}`);
-  else console.error(e);
+    await printReport({ version: 1, ok: false, diagnostics: [{ code: "BUILD_FAILED", message: e instanceof Error ? e.message : String(e), sql: e instanceof BuildError ? e.sql : undefined, locations: e instanceof BuildError ? e.locations : [], action: e instanceof BuildError ? e.action : undefined, failures: e instanceof StatementFailures ? e.failures : undefined }] });
+  } else if (e instanceof BuildError) {
+    console.error(`error: ${e.message}`);
+    // build and migration are the only human-output commands that reach
+    // this catch (inspect, rehearse, analyze, --json, and query all take
+    // their own path above); their own recovery is "fix the error above",
+    // then repeat the command that failed, with the configuration path (and,
+    // for migration, the name) the user already gave.
+    if (args[0] === "build" || args[0] === "migration") {
+      let configArgument = "";
+      let name = "<name>";
+      try {
+        const worker = deadlineArguments(args);
+        if (args[0] === "build") {
+          const parsed = buildArguments(worker.args.slice(1));
+          configArgument = parsed.configPath === "solarsql.config.ts" ? "" : ` ${shellArgument(parsed.configPath)}`;
+        } else {
+          const parsed = migrationArguments(worker.args.slice(1));
+          name = parsed.name;
+          configArgument = parsed.configPath === "solarsql.config.ts" ? "" : ` ${shellArgument(parsed.configPath)}`;
+        }
+        console.log(args[0] === "build" ? `next: fix the error above, then npx solarsql build${configArgument}` : `next: fix the error above, then npx solarsql migration ${name}${configArgument}`);
+      } catch {
+        // The error above may be this same argument parsing failing; there
+        // is then no valid configuration path or name to repeat, so no
+        // next: line is printed.
+      }
+    }
+  } else console.error(e);
   if (isCliWorker()) await announceWorkerDone(1);
   process.exit(1);
 }

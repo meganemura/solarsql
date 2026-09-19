@@ -31,7 +31,7 @@ The files are ES modules; a package.json that says `"type": "commonjs"` gets a n
 
 The build imports every module of `solarsql.config.ts`, applies the schema to an in-memory SQLite, prepares every statement on it, and writes `solarsql.generated.ts` next to each module.
 A generated file that is missing gets a stub before the import, so a fresh clone builds whatever the modules import from each other, and a configuration file that imports a module builds too.
-It prints `wrote` or `current` per module, with the time to import and type that module at the end of the line, a `+` line per statement added and a `-` line per statement removed, `scan` lines for full scans, a `reads` line per query of a `readsAll` module with the tables that query reads, a `time` line for the whole build, and `migrations are current`, or the statements a migration would hold. Its last line, `next: <command>`, names the next command to run.
+It prints `wrote` or `current` per module, with the time to import and type that module at the end of the line, a `+` line per statement added and a `-` line per statement removed, `scan` lines for full scans, a `reads` line per query of a `readsAll` module with the tables that query reads, a `time` line for the whole build, and `migrations are current`, or the statements a migration would hold. Its last line, `next: <command>`, names the next command to run: `npx tsc --noEmit && npm test` after a clean build with migrations current, the migration command when one is pending, or the fix for a blocked migration.
 The generated file is keyed by the SQL text: a statement whose text changed has no entry, and `tsc` fails at the call site until the build runs again. Commit the generated file.
 If only the DDL changes, unchanged statements can retain stale types that pass `tsc`; `build --check` detects stale generated files.
 
@@ -49,6 +49,12 @@ The command does not make claims about application-owned child processes.
 Generated files and `migrations/index.ts` replace their old contents atomically.
 Review a timed-out migration directory before you remove a retained `.solarsql-generation.lock`.
 
+## migration
+
+`migration <name> [--intent changes.json] [--timeout-ms 30000] [solarsql.config.ts]` runs every `build` check, then writes the pending migration file (full contract: [migrations.md](migrations.md)).
+It prints `wrote <relative path>`, the statements the file holds, and `next: npx tsc --noEmit && npm test`.
+An error ends with `next: fix the error above, then npx solarsql build`.
+
 ## query
 
 `query <module>.<catalog>.<name> --database <file.sqlite>` runs one catalog query and prints its rows as one JSON array on stdout, exit 0.
@@ -61,11 +67,10 @@ Every other error, including a missing `--database`, exits 2 with one line on st
 ## Verification after an edit
 
 1. Run `npx solarsql build` after a schema or SQL edit.
-2. Run the command the last line names, until it names `build --check`.
+2. Run the command the last line names, until it names the project's type check and tests.
    When it reports an ordinary removal, copy its JSON and run the command it prints.
    For other errors, apply the fix in the message and run the build again.
-3. Run `npx solarsql build --check` to verify generated files and migrations against the source.
-4. Run the project's TypeScript check (`npx tsc --noEmit` by default) and tests.
+3. Run the project's TypeScript check (`npx tsc --noEmit` by default) and tests.
 
 Use the same configuration path for each command if the project uses a custom path.
 
@@ -84,13 +89,15 @@ export default config({
 
 ## Messages
 
-Each message names the fix. The build stops at the first, and prints the statement under `in:`.
+Each message names the fix. The build reports every failing statement in one run, each under `in:` with its `at:` line.
 Statement errors also name the `module.ts` path, exported catalog, and entry.
 Command locations include the plan position, counted from 1, and assert name when applicable, or `returns`.
 Shared SQL reports all its catalog locations.
 
 | The message contains | Fix |
 |---|---|
+| `in:` | one failing statement of the run; the build reports every one before it stops, so fix them all from their own `in:` and `at:` lines |
+| `columns of` | `no such column` lists `columns of <table>: ...`; pick the intended column from that list |
 | `Use exactly one SQL statement` | split SQL into separate plan items; a query entry contains one SELECT or VALUES statement |
 | `A query or returns must be SELECT` | move the write into a command plan and read its result in `returns` |
 | `A plan item must be SELECT` | use a data statement; let the adapter manage the transaction and use migrations for schema changes |

@@ -470,9 +470,9 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
         } catch (e) {
           throw new BuildError(`module ${m.name}: view ${name}: ${(e as Error).message}`, sql);
         }
-        checkBoundary(engine, m, owner, select, `view ${name}`);
+        checkBoundary(engine, m, owner, configDir, select, `view ${name}`);
       }
-      for (const sql of m.triggers) checkTriggerBoundary(engine, m, owner, sql);
+      for (const sql of m.triggers) checkTriggerBoundary(engine, m, owner, configDir, sql);
     }
     const typer = new Typer(engine, brands);
     const brandModule = new Map([...brands.values()].map((b) => [b.typeName, b.module]));
@@ -480,11 +480,17 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
     const scans: BuildResult["scans"] = [];
     const reads: BuildResult["reads"] = [];
     const operations: OperationInspection[] = [];
+    // Every statement failure across every module, so a rename that breaks
+    // five statements is one build, not five (ADR pending). A module with a
+    // failure skips its own tail below (checkCommands, the readsAll reads,
+    // and the generated write): those all assume every statement typed.
+    const failures: { message: string; sql: string; at: string[] }[] = [];
 
     for (const m of modules) {
       const entries: { key: string; analysis: Analysis }[] = [];
       const used = new Set<string>();
       const typeStarted = performance.now();
+      let moduleFailed = false;
       for (const [key, sql] of m.statements) {
         let analysis: Analysis;
         try {
@@ -500,14 +506,19 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
           if (!m.readStatements.has(key) && !isSelect(sql) && analysis.returnsRows) {
             throw new BuildError("A plan item's RETURNING clause is discarded at run time. Move the read into the command's `returns` field instead.", sql);
           }
-          checkBoundary(engine, m, owner, sql);
+          checkBoundary(engine, m, owner, configDir, sql);
         } catch (error) {
-          throw withLocations(error, m.statementUses.get(key)!, sql);
+          const diagnostic = withLocations(error, m.statementUses.get(key)!, sql);
+          const failedSql = diagnostic.sql ?? sql;
+          failures.push({ message: columnsHint(engine, failedSql, diagnostic.message), sql: failedSql, at: [...diagnostic.locations] });
+          moduleFailed = true;
+          continue;
         }
         for (const b of analysis.brands) used.add(b);
         if (analysis.scans.length > 0) scans.push({ module: m.name, sql: key, tables: analysis.scans });
         entries.push({ key, analysis });
       }
+      if (moduleFailed) continue;
       const typeMs = performance.now() - typeStarted;
       if (m.readsAll) {
         const analysisBySql = new Map(entries.map((entry) => [entry.key, entry.analysis]));
@@ -547,6 +558,8 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
       results.push({ name: m.name, generatedPath, entries: entries.length, changed, added, removed, ms: Math.round(m.importMs + typeMs) });
     }
 
+    if (failures.length > 0) throw new StatementFailures(failures);
+
     const migration = migrationStatus(configDir, config, modules);
     const index = await migrationsIndex(resolve(configDir, config.migrations), write);
     const inspection = options.inspect ? { sqlite: String(engine.db.prepare("select sqlite_version() as version").get()!.version), operations } : undefined;
@@ -585,7 +598,7 @@ function checkImports(modules: readonly Module[]): void {
 // `subject` names what is checked when it is not the statement itself: a
 // view, read whole, or a trigger body, seen through a statement that fires
 // it. `via` keeps the accesses of one trigger only.
-function checkBoundary(engine: Engine, m: Module, owner: Map<string, Module>, sql: string, subject?: string, via?: string): void {
+function checkBoundary(engine: Engine, m: Module, owner: Map<string, Module>, configDir: string, sql: string, subject?: string, via?: string): void {
   for (const a of engine.accesses(sql)) {
     if (a.action === "function" || a.action === "other" || !a.table) continue;
     if (via !== undefined && a.via !== via) continue;
@@ -596,7 +609,15 @@ function checkBoundary(engine: Engine, m: Module, owner: Map<string, Module>, sq
     if (a.action === "read" && a.column && (isReferencedKey(engine, m, table, a.column) || isReferencingKey(engine, m, owner, table, a.column))) continue;
     const what = a.action === "read" ? `reads ${table}.${a.column}` : a.action === "insert" ? `inserts into ${table}` : a.action === "update" ? `updates ${table}` : `deletes from ${table}`;
     const who = subject ? `module ${m.name}: ${subject}` : `module ${m.name}`;
-    throw new BuildError(`${who} ${what}. Module ${o.name} owns ${table}. Use its public.ts, or declare readsAll for a report module.`, subject ? undefined : sql);
+    if (a.action === "read") {
+      throw new BuildError(`${who} ${what}. Module ${o.name} owns ${table}. Use its public.ts, or declare readsAll for a report module.`, subject ? undefined : sql);
+    }
+    const catalog = o.commands[0]?.catalog ?? "its commands catalog";
+    const ownerDir = `./${relative(configDir, o.dir).split("\\").join("/")}`;
+    throw new BuildError(
+      `${who} ${what}. Module ${o.name} owns ${table}: add a command to ${ownerDir}/module.ts (catalog ${catalog}) and export it from its public.ts.`,
+      subject ? undefined : sql,
+    );
   }
 }
 
@@ -606,7 +627,7 @@ function checkBoundary(engine: Engine, m: Module, owner: Map<string, Module>, sq
 // reports through the trigger are checked. An `update of c1, c2` trigger
 // is compiled only when the statement sets one of those columns, so the
 // statement sets the first of them.
-function checkTriggerBoundary(engine: Engine, m: Module, owner: Map<string, Module>, sql: string): void {
+function checkTriggerBoundary(engine: Engine, m: Module, owner: Map<string, Module>, configDir: string, sql: string): void {
   const t = triggerTarget(sql)!;
   const table = quoteIdent(t.table);
   const column = t.columns[0] ?? engine.firstSettableColumn(t.table);
@@ -623,7 +644,7 @@ function checkTriggerBoundary(engine: Engine, m: Module, owner: Map<string, Modu
   // deny authorizer at all (ADR 0114).
   try {
     engine.prepare(firing);
-    checkBoundary(engine, m, owner, firing, `trigger ${t.name}`, t.name);
+    checkBoundary(engine, m, owner, configDir, firing, `trigger ${t.name}`, t.name);
   } catch (e) {
     if (e instanceof BuildError) throw e;
     throw new BuildError(`module ${m.name}: trigger ${t.name}: ${(e as Error).message}`, sql);
@@ -724,6 +745,45 @@ function withLocations(error: unknown, locations: readonly string[], sql?: strin
   return diagnostic;
 }
 
+// A dropped or misspelled column breaks every statement that used it; the
+// engine's own "no such column" carries no list of what is there instead, so
+// this appends one for a table the failing statement's own text names. A
+// query's own table set (its own module's tables plus what a public import
+// exposes) is not recoverable from the parsed SQL alone without re-parsing
+// every module's public.ts, so this checks every declared table instead --
+// a table named in the SQL that the schema does not own is already refused
+// elsewhere, and a coincidental word match only ever adds an extra, mostly
+// harmless line.
+function columnsHint(engine: Engine, sql: string, message: string): string {
+  const firstLine = message.split("\n", 1)[0] ?? "";
+  if (!firstLine.startsWith("no such column:")) return message;
+  const words = new Set((sql.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []).map((w) => w.toLowerCase()));
+  const lines = engine.tables()
+    .filter((t) => !t.virtual && words.has(t.name.toLowerCase()))
+    .map((t) => `  columns of ${t.name}: ${t.columns.map((c) => c.name).join(", ")}`);
+  return lines.length > 0 ? `${message}\n${lines.join("\n")}` : message;
+}
+
+// Every statement failure of one build, in one run: a rename that breaks
+// five statements costs one build instead of five. Each failure's message
+// is the text withLocations() has always produced for one failure (plus,
+// for a "no such column" failure, columnsHint()'s lines); this class joins
+// them with a blank line so the human report and --json see every failure
+// together. BuildError's own constructor appends "\n  in: <sql>" whenever
+// `sql` is given, which would duplicate the line each failure already
+// carries, so this calls super() with no sql and sets the field itself --
+// `sql` is only readonly at compile time.
+export class StatementFailures extends BuildError {
+  readonly failures: { message: string; sql: string; at: string[] }[];
+  constructor(failures: readonly { message: string; sql: string; at: string[] }[]) {
+    super(failures.map((f) => f.message).join("\n\n"));
+    this.name = "StatementFailures";
+    (this as { sql?: string }).sql = failures[0]!.sql;
+    this.locations.push(...failures[0]!.at);
+    this.failures = [...failures];
+  }
+}
+
 function migrationFiles(dir: string): { name: string; sql: string }[] {
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
@@ -775,7 +835,7 @@ function migrationStatus(configDir: string, config: Config, modules: readonly Mo
 }
 
 // Write the next migration file, and the bundle a Durable Object imports.
-export async function migration(configPath: string, name: string, intent: MigrationIntent = emptyIntent): Promise<{ filename: string | null; reason: string | null; drops?: DropIntent[]; renames?: Rename[]; renameCandidates?: RenameRepair[] }> {
+export async function migration(configPath: string, name: string, intent: MigrationIntent = emptyIntent): Promise<{ filename: string | null; path: string | null; statements: string[]; reason: string | null; drops?: DropIntent[]; renames?: Rename[]; renameCandidates?: RenameRepair[] }> {
   if (!/^[a-z0-9_]+$/.test(name)) throw new BuildError(`migration name must match [a-z0-9_]+: ${name}`);
   // build() enforces the module boundary, STRICT/primary-key, foreign-key
   // target, and command-plan rules before this function ever touches the
@@ -794,7 +854,7 @@ export async function migration(configPath: string, name: string, intent: Migrat
     const files = migrationFiles(dir);
     migrationSequence(files.map(file => file.name));
     const status = migrationStatus(configDir, config, modules, intent);
-    if (status.reason) return { filename: null, reason: status.reason, ...(status.drops ? { drops: status.drops } : {}), ...(status.renames ? { renames: status.renames } : {}), ...(status.renameCandidates ? { renameCandidates: status.renameCandidates } : {}) };
+    if (status.reason) return { filename: null, path: null, statements: [], reason: status.reason, ...(status.drops ? { drops: status.drops } : {}), ...(status.renames ? { renames: status.renames } : {}), ...(status.renameCandidates ? { renameCandidates: status.renameCandidates } : {}) };
     let filename: string | null = null;
     if (status.pending) {
       const file = nextMigrationFile(files.map(file => file.name), name, status.statements, status.rebuilds ?? []);
@@ -802,6 +862,6 @@ export async function migration(configPath: string, name: string, intent: Migrat
       filename = file.filename;
     }
     writeGeneratedFile(join(dir, "index.ts"), emitMigrationsIndex(migrationFiles(dir)));
-    return { filename, reason: null };
+    return { filename, path: filename ? join(dir, filename) : null, statements: filename ? status.statements : [], reason: null };
   });
 }
