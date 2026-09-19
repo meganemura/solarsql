@@ -65,11 +65,17 @@ A caller that picks a data source by table, or drops a cache by table, reads it 
 | `durable(ctx.storage, options?)` from `solarsql/durable` | a Durable Object's SQLite storage | one `transactionSync` |
 | `node(db, options?)` from `solarsql/node` | a `DatabaseSync` of node:sqlite | one savepoint; an enclosing transaction remains owned by its caller |
 
+A caller that keeps its own reference to a session made with `withSession(...)` can call `.getBookmark()` on that reference directly, after passing the same object into `d1()` -- `d1()` never takes ownership of it. That bookmark is how a caller builds read-your-writes consistency across two requests: read it after the first request's call, and pass it into the next request's own `withSession(bookmark)`. solarsql does not wrap `getBookmark()` on `D1Like` or `Database`, since the caller already holds what it needs.
+
 A caller can also reach past the generated queries and commands and run raw SQL directly against the underlying binding, one line per target:
 
 - D1: `const rows = (await env.DB.prepare(sql).all()).results;` -- D1's `.all()` resolves to `{ success, meta, results }`, not a plain array; take `.results` for the rows. Cloudflare also ships a CLI that runs a raw statement with no application code at all: `npx wrangler d1 execute <database> --command "..."`.
 - Durable Object: `const rows = ctx.storage.sql.exec(sql).toArray();` -- `.exec()` returns a cursor, so `.toArray()` reads it into a plain array (`src/durable.ts` uses this same pattern throughout). A Durable Object has no REPL and no external client, so run this line temporarily inside code where `ctx.storage` is already in scope -- typically the constructor's `blockConcurrencyWhile` block -- log the rows, then delete the line once you have confirmed what you needed.
 - Node: `const rows = raw.prepare(sql).all();` -- `raw`, the underlying `node:sqlite` `DatabaseSync` a test or script constructs and passes to `node()`, returns rows as a plain array too.
+
+The same `ctx.storage` reference also exposes `sql.databaseSize` (the current database size in bytes) directly, reachable the same way as the raw SQL line above. solarsql does not surface `databaseSize` through `observe()`, because it is a whole-database snapshot rather than a per-statement value.
+
+`ctx.storage` also exposes three Point-In-Time Recovery methods -- `getCurrentBookmark()`, `getBookmarkForTime(timestamp)`, and `onNextSessionRestoreBookmark(bookmark)` -- directly, reachable the same way. solarsql does not wrap them, because they act on the whole storage rather than on a typed query or command.
 
 `options.observe` is a hook for a logger or a tracer, called once per call:
 
