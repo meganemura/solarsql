@@ -13,6 +13,10 @@ dist/
 # Hegel failure database
 .hegel/
 
+# Fixture scratch directories (test/fixture-dir.ts), same drive as src/ so a
+# fixture's relative import specifier resolves for both Node and tsc.
+.scratch/
+
 # wrangler and miniflare local state
 .wrangler/
 

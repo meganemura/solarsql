@@ -8,21 +8,25 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { build, migration } from "../src/build/build.ts";
 import { stockSchema } from "../spike/10-sql-scopes.ts";
+import { fixtureDir, librarySpecifier, specifier } from "./fixture-dir.ts";
 
 const root = resolve(import.meta.dirname, "..");
 
 test("original SQL crosses CTEs, FULL JOIN, UNION and scalar JSON with precise caller types", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "solarsql-scopes-"));
+  const dir = fixtureDir("solarsql-scopes-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, "stock"));
   symlinkSync(join(root, "node_modules"), join(dir, "node_modules"), "dir");
   writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
+  // The config's `library` is only ever written into a type-only import (see
+  // src/build/emit.ts), which Node never resolves at runtime and tsc rejects
+  // as a file:// URL, so it stays a plain absolute path.
   const library = join(root, "src/index.ts");
   const fixture = join(root, "spike/10-sql-scopes.ts");
   writeFileSync(join(dir, "config.ts"), `export default { modules: ["./stock"], migrations: "./migrations", library: ${JSON.stringify(library)} };`);
   writeFileSync(join(dir, "stock/module.ts"), [
-    `import { table, queries } from ${JSON.stringify(library)};`,
-    `import { stockSql } from ${JSON.stringify(fixture)};`,
+    `import { table, queries } from ${JSON.stringify(librarySpecifier(join(dir, "stock")))};`,
+    `import { stockSql } from ${JSON.stringify(specifier(join(dir, "stock"), fixture))};`,
     `import { generated } from "./solarsql.generated.ts";`,
     ...Object.entries(stockSchema).map(([name, sql]) => `export const ${name} = table(${JSON.stringify(sql)});`),
     "export const stockQueries = queries(generated, stockSql);",
@@ -60,8 +64,8 @@ export type Detail = Assert<Equal<Row<typeof stockQueries.details>, { sku: Id<"e
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import { node, migrate } from ${JSON.stringify(join(root, "src/node.ts"))};
-import { stockSql, populateStock } from ${JSON.stringify(fixture)};
+import { node, migrate } from ${JSON.stringify(specifier(dir, join(root, "src/node.ts")))};
+import { stockSql, populateStock } from ${JSON.stringify(specifier(dir, fixture))};
 import { stockQueries } from './stock/module.ts';
 const db = new DatabaseSync(':memory:');
 try {
@@ -94,7 +98,7 @@ try {
 });
 
 test("integer and blob keys retain runtime types while text references retain brands", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "solarsql-key-types-"));
+  const dir = fixtureDir("solarsql-key-types-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, "keys"));
   symlinkSync(join(root, "node_modules"), join(dir, "node_modules"), "dir");
@@ -108,7 +112,7 @@ test("integer and blob keys retain runtime types while text references retain br
   ];
   writeFileSync(join(dir, "config.ts"), `export default { modules: ["keys"], migrations: "migrations", library: ${JSON.stringify(library)} };`);
   writeFileSync(join(dir, "keys/module.ts"), `
-import { table, queries } from ${JSON.stringify(library)};
+import { table, queries } from ${JSON.stringify(librarySpecifier(join(dir, "keys")))};
 import { generated } from './solarsql.generated.ts';
 ${ddl.map((sql, i) => `export const t${i} = table(${JSON.stringify(sql)});`).join('\n')}
 export const q = queries(generated, { counters: 'select id from counters where id = :id', chunks: 'select id from chunks', refs: 'select numeric_ref, text_ref from refs' });
@@ -132,7 +136,7 @@ newId<Id<'names'>>();
   writeFileSync(join(dir, 'execute.mjs'), `
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { node } from ${JSON.stringify(join(root, 'src/node.ts'))};
+import { node } from ${JSON.stringify(specifier(dir, join(root, 'src/node.ts')))};
 import { q } from './keys/module.ts';
 const db = new DatabaseSync(':memory:');
 db.exec(${JSON.stringify(ddl.join(';'))});

@@ -11,6 +11,7 @@ import { pathToFileURL } from 'node:url';
 import { analyzeSchema } from '../src/build/analyze.ts';
 import { queries } from '../src/index.ts';
 import { node } from '../src/node.ts';
+import { fixtureDir, librarySpecifier, specifier } from './fixture-dir.ts';
 
 const root = resolve(import.meta.dirname, '..');
 const schema = `create table accounts(name text not null) strict;
@@ -25,7 +26,7 @@ from accounts a left join totals t on t.account = a.name
 order by a.name`;
 
 test('SQL changes retain caller types, expose repair steps, and rehearse against stored rows', t => {
-  const dir = mkdtempSync(join(tmpdir(), 'solarsql-workflow-'));
+  const dir = fixtureDir('solarsql-workflow-');
   t.after(()=>rmSync(dir,{recursive:true,force:true}));
   symlinkSync(join(root,'node_modules'),join(dir,'node_modules'),'dir');
   writeFileSync(join(dir,'package.json'),'{"type":"module"}');
@@ -38,6 +39,8 @@ test('SQL changes retain caller types, expose repair steps, and rehearse against
     assert.ifError(child.error);
     return {status:child.status, report:JSON.parse(child.stdout)};
   };
+  // --library only ever lands in a type-only import (src/build/emit.ts), which
+  // tsc needs as a plain path (see test/fixture-dir.ts); it stays absolute.
   const analyze = (...args:string[]) => cli('analyze',ddl,catalog,'--out',out,'--library',join(root,'src/index.ts'),...args);
   assert.equal(analyze().status,0);
   writeFileSync(catalog,JSON.stringify({report:report.replace('sum(amount)','sum(missing)')}));
@@ -52,7 +55,7 @@ test('SQL changes retain caller types, expose repair steps, and rehearse against
   assert.deepEqual(repaired.report.operations[0].reads,['accounts','invoices']);
   assert.equal(analyze('--check').status,0);
   writeFileSync(join(dir,'consumer.ts'), `
-import { queries, type Row } from ${JSON.stringify(join(root,'src/index.ts'))};
+import { queries, type Row } from ${JSON.stringify(librarySpecifier(dir))};
 import { generated, statements } from './generated.ts';
 export const q = queries(generated, statements);
 type Equal<A,B> = (<T>()=>T extends A?1:2) extends (<T>()=>T extends B?1:2) ? true : false;
@@ -83,7 +86,7 @@ export type Report = Assert<Equal<Row<typeof q.report>, {name:string;total:numbe
   writeFileSync(join(dir,'execute.mjs'), `
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { node } from ${JSON.stringify(join(root,'src/node.ts'))};
+import { node } from ${JSON.stringify(specifier(dir, join(root,'src/node.ts')))};
 import { q } from './consumer.ts';
 const db = new DatabaseSync(${JSON.stringify(database)});
 try {

@@ -10,14 +10,19 @@ import { join, resolve } from "node:path";
 import { Engine } from '../src/build/facts.ts';
 import { Typer } from '../src/build/typegen.ts';
 import { analyzeDatabase, analyzeSchema } from "../src/build/analyze.ts";
+import { fixtureDir, librarySpecifier, specifier } from "./fixture-dir.ts";
 
 const root = resolve(import.meta.dirname, "..");
+// analyzeSchema/analyzeDatabase's `library` argument only ever lands in a
+// type-only import (src/build/emit.ts), which tsc needs as a plain path
+// (see test/fixture-dir.ts for why it can't be a file:// URL); it stays
+// absolute here.
 const library = join(root, "src/index.ts");
 const schema = 'create table legacy(n integer, label); create table items(n integer not null, label text) strict;';
 const catalog = { legacy: 'select n, label from legacy', items: '-- Original SQL\nselect n, label from items where n = :n;' };
 
 test('schema-only generation preserves SQL and coexists with a direct SQLite driver', t => {
-  const dir = mkdtempSync(join(tmpdir(), 'solarsql-analyze-'));
+  const dir = fixtureDir('solarsql-analyze-');
   t.after(() => rmSync(dir, {recursive:true,force:true}));
   symlinkSync(join(root, 'node_modules'), join(dir, 'node_modules'), 'dir');
   writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
@@ -27,7 +32,7 @@ test('schema-only generation preserves SQL and coexists with a direct SQLite dri
   assert.deepEqual(report.operations[1]!.params, [{name:'n',type:'number',encode:false}]);
   writeFileSync(join(dir, 'generated.ts'), report.generated);
   writeFileSync(join(dir, 'consumer.ts'), `
-import { queries, type Row, type Params, type SqlValue } from ${JSON.stringify(library)};
+import { queries, type Row, type Params, type SqlValue } from ${JSON.stringify(librarySpecifier(dir))};
 import { generated, statements } from './generated.ts';
 export const q = queries(generated, statements);
 type Equal<A,B> = (<T>()=>T extends A?1:2) extends (<T>()=>T extends B?1:2) ? true : false;
@@ -41,7 +46,7 @@ export type Parameter = Assert<Equal<Params<typeof q.items>, {n:number}>>;
   writeFileSync(join(dir, 'execute.mjs'), `
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { node } from ${JSON.stringify(join(root,'src/node.ts'))};
+import { node } from ${JSON.stringify(specifier(dir, join(root,'src/node.ts')))};
 import { q } from './consumer.ts';
 const db = new DatabaseSync(':memory:');
 try {
@@ -95,7 +100,7 @@ test('schema-only analysis rejects invalid inputs and shares duplicate SQL metad
 });
 
 test('database analysis uses existing WAL schema and compiles a caller without copying DDL', t => {
-  const dir = mkdtempSync(join(tmpdir(), 'solarsql-existing-'));
+  const dir = fixtureDir('solarsql-existing-');
   const source = join(dir, 'source.sqlite');
   const db = new DatabaseSync(source);
   t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -124,7 +129,7 @@ test('database analysis uses existing WAL schema and compiles a caller without c
   writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
   writeFileSync(join(dir, 'generated.ts'), report.generated);
   writeFileSync(join(dir, 'consumer.ts'), `
-import { queries, type Row, type SqlValue } from ${JSON.stringify(library)};
+import { queries, type Row, type SqlValue } from ${JSON.stringify(librarySpecifier(dir))};
 import { generated, statements } from './generated.ts';
 export const q = queries(generated, statements);
 type Equal<A,B> = (<T>()=>T extends A?1:2) extends (<T>()=>T extends B?1:2) ? true : false;
@@ -138,7 +143,7 @@ export type Legacy = Assert<Equal<Row<typeof q.legacy>, {value:SqlValue}>>;
   writeFileSync(join(dir, 'execute.mjs'), `
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { node } from ${JSON.stringify(join(root, 'src/node.ts'))};
+import { node } from ${JSON.stringify(specifier(dir, join(root, 'src/node.ts')))};
 import { q } from './consumer.ts';
 const db = new DatabaseSync(${JSON.stringify(source)});
 try {

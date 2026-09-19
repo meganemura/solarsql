@@ -3,12 +3,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { resolve, join, relative } from 'node:path';
-import { mkdtempSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync, rmSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { analyzeSchema } from '../../src/build/analyze.ts';
 import { workerMiniflare } from '../worker.ts';
 import { parseJson } from '../../src/runtime/plan.ts';
+import { fixtureDir, librarySpecifier } from '../fixture-dir.ts';
 import { test as property } from '@hegeldev/hegel';
 import * as gs from '@hegeldev/hegel/generators';
 
@@ -35,10 +35,12 @@ test('local D1 and Durable Objects return Uint8Array and decoded JSON', async t 
 
 test('generated named-slot contracts compile and execute on Node, D1, and Durable Objects', async t => {
   const root=resolve(import.meta.dirname,'../..');
-  const dir=realpathSync(mkdtempSync(join(tmpdir(),'solarsql-slots-')));
+  const dir=realpathSync(fixtureDir('solarsql-slots-'));
   let mf:ReturnType<typeof workerMiniflare>|undefined;
   t.after(async()=>{await mf?.dispose();rmSync(dir,{recursive:true,force:true});});
-  const library=relative(dir,join(root,'src/index.ts'));
+  // A relative specifier resolves for both Node and tsc only when the
+  // fixture and src/ sit on the same drive; see test/fixture-dir.ts.
+  const library=librarySpecifier(dir);
   const sql=`with data as (select cast(1 as integer) as id,cast('one' as text) as value
     union all select cast(2 as integer),cast('two' as text)
     union all select cast(3 as integer),cast('three' as text))
@@ -83,10 +85,10 @@ export default {async fetch(request,env){if(new URL(request.url).pathname==='/do
 
 test('generated JSONB contracts compile and execute on Node, D1, and Durable Objects', async t => {
   const root=resolve(import.meta.dirname,'../..');
-  const dir=realpathSync(mkdtempSync(join(tmpdir(),'solarsql-jsonb-')));
+  const dir=realpathSync(fixtureDir('solarsql-jsonb-'));
   let mf:ReturnType<typeof workerMiniflare>|undefined;
   t.after(async()=>{await mf?.dispose();rmSync(dir,{recursive:true,force:true});});
-  const library=relative(dir,join(root,'src/index.ts'));
+  const library=librarySpecifier(dir);
   const sql="with payload as (select cast /* JSONB storage */ (jsonb(:input) as blob) as value) select json_object('data',1,/* decoded value */ ('data'),value) as result from payload";
   const report=analyzeSchema('',{query:sql},library);
   assert.equal(report.operations[0]!.columns[0]!.type,'{ "data": JsonValue }');
@@ -131,10 +133,10 @@ export default {async fetch(request,env){if(new URL(request.url).pathname==='/do
 
 test('generated binary, scalar, and ordered JSON contracts compile and execute on Node, D1, and Durable Objects', async t => {
   const root=resolve(import.meta.dirname,'../..');
-  const dir=realpathSync(mkdtempSync(join(tmpdir(),'solarsql-literals-')));
+  const dir=realpathSync(fixtureDir('solarsql-literals-'));
   let mf:ReturnType<typeof workerMiniflare>|undefined;
   t.after(async()=>{await mf?.dispose();rmSync(dir,{recursive:true,force:true});});
-  const library=relative(dir,join(root,'src/index.ts'));
+  const library=librarySpecifier(dir);
   const bytes=Uint8Array.from({length:256},(_,i)=>i);
   const sql=`select x'${Buffer.from(bytes).toString('hex')}' as value, cast(length(json_object('a',1)) as integer) as n, cast(json_object('a',1) || 'suffix' as text) as text, (select json_group_array(distinct json_object('n',value) order by value desc) from (select 0X1 as value union all select 2.e0 union all select 0_1)) as ordered union all select x'',null,null,null`;
   const report=analyzeSchema('',{query:sql},library);

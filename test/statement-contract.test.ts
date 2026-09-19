@@ -1,17 +1,17 @@
 // Responsibility: build-time statement roles and transaction containment.
 // Boundary: runtime behavior of valid plans is covered by adapter tests.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 import { build } from "../src/build/build.ts";
+import { fixtureDir, librarySpecifier } from "./fixture-dir.ts";
 
 async function project(body: string, rejects: boolean | RegExp): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "solarsql-role-"));
+  const dir = fixtureDir("solarsql-role-");
   try {
     mkdirSync(join(dir, "items"));
-    writeFileSync(join(dir, "items/module.ts"), `import { table, queries, commands, assert } from ${JSON.stringify(resolve("src/index.ts"))};
+    writeFileSync(join(dir, "items/module.ts"), `import { table, queries, commands, assert } from ${JSON.stringify(librarySpecifier(join(dir, "items")))};
 import { generated } from "./solarsql.generated.ts";
 export const items = table("create table items(id text primary key not null, value text not null) strict");
 ${body}`);

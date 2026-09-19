@@ -1,27 +1,31 @@
 // Responsibility: verify source context through the public build entry point.
 // Boundary: exact diagnostic examples; SQL typing rules have their own tests.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { build } from "../src/build/build.ts";
 import { BuildError } from "../src/build/typegen.ts";
+import { fixtureDir, librarySpecifier } from "./fixture-dir.ts";
 
+// The config's `library` is only ever written into a type-only import (see
+// src/build/emit.ts), which Node never resolves at runtime, so it stays a
+// plain absolute path (see test/fixture-dir.ts for the module.ts imports,
+// which Node does resolve).
 const library = resolve(import.meta.dirname, "../src/index.ts");
 
 async function diagnostic(body: string, check: (error: BuildError, source: string) => void, other?: string): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "solarsql-diagnostic-"));
+  const dir = fixtureDir("solarsql-diagnostic-");
   const source = join(dir, "items/module.ts");
   try {
     mkdirSync(join(dir, "items"));
-    writeFileSync(source, `import { table, queries, commands, assert } from ${JSON.stringify(library)};
+    writeFileSync(source, `import { table, queries, commands, assert } from ${JSON.stringify(librarySpecifier(join(dir, "items")))};
 import { generated } from "./solarsql.generated.ts";
 export const items = table("create table items (id text primary key not null, count integer not null) strict");
 ${body}`);
     if (other) {
       mkdirSync(join(dir, "other"));
-      writeFileSync(join(dir, "other/module.ts"), `import { table } from ${JSON.stringify(library)};\n${other}`);
+      writeFileSync(join(dir, "other/module.ts"), `import { table } from ${JSON.stringify(librarySpecifier(join(dir, "other")))};\n${other}`);
     }
     const config = join(dir, "solarsql.config.ts");
     writeFileSync(config, `export default { modules: ["./items"${other ? ', "./other"' : ""}], migrations: "./migrations", library: ${JSON.stringify(library)} };`);
