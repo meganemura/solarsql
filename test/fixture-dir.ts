@@ -8,8 +8,8 @@
 // file:// URL is not a valid tsc module specifier, and a relative path is
 // valid for both only when the fixture directory and src/ sit on the same
 // drive -- which os.tmpdir() does not guarantee on CI.
-import { mkdirSync, mkdtempSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
 const scratchRoot = join(root, ".scratch");
@@ -35,4 +35,18 @@ export function librarySpecifier(dir: string): string {
 // platform.
 export function tscArgs(projectRoot: string, args: string[]): [string, string[]] {
   return [process.execPath, [join(projectRoot, "node_modules/typescript/bin/tsc"), ...args]];
+}
+
+// `npm` is `npm.cmd` on Windows, which spawnSync/execFileSync can't run
+// without shell: true -- and shell: true would change how Windows quotes the
+// arguments and hide a real ENOENT, the same reason tscArgs above runs tsc's
+// entry point through node instead of the .bin shim. npm_execpath (set when
+// tests run under `npm run`/`npm test`) already names npm-cli.js; the two
+// fallbacks below cover a direct `node --test` invocation on Windows and on
+// POSIX installs, respectively.
+export function npmArgs(args: string[]): [string, string[]] {
+  const bundled = join(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js");
+  const lib = join(dirname(process.execPath), "../lib/node_modules/npm/bin/npm-cli.js");
+  const cli = process.env.npm_execpath ?? (existsSync(bundled) ? bundled : lib);
+  return [process.execPath, [cli, ...args]];
 }

@@ -53,7 +53,9 @@ function fixture(t: TestContext) {
         "};",
         "syncBuiltinESMExports();",
       ].join("\n"));
-      const result = spawnSync(process.execPath, ["--import", preload, join(dir, "src/build/cli.ts"), ...args, config], {
+      // Node's --import takes a specifier, not a path; an absolute Windows
+      // path parses as a "c:" URL scheme and the loader rejects it.
+      const result = spawnSync(process.execPath, ["--import", pathToFileURL(preload).href, join(dir, "src/build/cli.ts"), ...args, config], {
         cwd: dir, encoding: "utf8", timeout: 30_000,
         env: { ...process.env, SOLARSQL_TEST_BLOCK_TARGET: target },
       });
@@ -80,7 +82,7 @@ function fixture(t: TestContext) {
         "};",
         "syncBuiltinESMExports();",
       ].join("\n"));
-      return spawn(process.execPath, ["--import", preload, join(dir, "src/build/cli.ts"), ...args, config], {
+      return spawn(process.execPath, ["--import", pathToFileURL(preload).href, join(dir, "src/build/cli.ts"), ...args, config], {
         cwd: dir,
         env: { ...process.env, SOLARSQL_TEST_LOCK_TARGET: ".solarsql-generation.lock", SOLARSQL_TEST_RELEASE_FLAG: releaseFlag },
       });
@@ -98,7 +100,7 @@ function fixture(t: TestContext) {
         "  return originalExit(code);",
         "};",
       ].join("\n"));
-      const result = spawnSync(process.execPath, ["--import", preload, join(dir, "src/build/cli.ts"), ...args, config], {
+      const result = spawnSync(process.execPath, ["--import", pathToFileURL(preload).href, join(dir, "src/build/cli.ts"), ...args, config], {
         cwd: dir, encoding: "utf8", timeout: 30_000,
         env: { ...process.env, SOLARSQL_TEST_EXIT_DELAY_MS: String(delayMs) },
       });
@@ -682,7 +684,7 @@ test('rehearsal deadlines stop native SQL and remove snapshots while preserving 
   writeFileSync(observe, `import { subscribe } from 'node:diagnostics_channel'; subscribe('solarsql.rehearse', event => { if (event.phase === 'validate' && event.event === 'start') console.error('validation started'); });`);
   const run = (sql: string, ...options: string[]) => {
     writeFileSync(change, sql);
-    const result = spawnSync(process.execPath, ['--import', observe, join(root, 'src/build/cli.ts'), 'rehearse', source, change, checks, ...options], {
+    const result = spawnSync(process.execPath, ['--import', pathToFileURL(observe).href, join(root, 'src/build/cli.ts'), 'rehearse', source, change, checks, ...options], {
       encoding: 'utf8', timeout: 10_000, env: { ...process.env, TMPDIR: temporary, TMP: temporary, TEMP: temporary },
     });
     assert.ifError(result.error);

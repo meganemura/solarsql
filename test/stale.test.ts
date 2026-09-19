@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { tscArgs } from "./fixture-dir.ts";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -41,8 +42,14 @@ export function copyExample(): string {
 }
 
 function tsc(dir: string): { status: number; output: string } {
-  const result = spawnSync(join(root, "node_modules", ".bin", "tsc"), ["-p", join(dir, "tsconfig.json")], { encoding: "utf8" });
-  return { status: result.status ?? -1, output: result.stdout + result.stderr };
+  // dir is a copy of src/ and example/ only, with no node_modules/typescript
+  // of its own, so this repository's root supplies tsc's own entry point.
+  const [cmd, args] = tscArgs(root, ["-p", join(dir, "tsconfig.json")]);
+  const result = spawnSync(cmd, args, { encoding: "utf8" });
+  const output = result.stdout !== undefined || result.stderr !== undefined
+    ? (result.stdout ?? "") + (result.stderr ?? "")
+    : (result.error?.message ?? "");
+  return { status: result.status ?? -1, output };
 }
 
 test("a changed SQL string fails tsc at the call site until the build runs again", { timeout: 120_000 }, () => {

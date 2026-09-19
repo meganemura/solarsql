@@ -57,10 +57,13 @@ test('rehearsal snapshots committed WAL data and rejects broken foreign keys', a
   subscribe('solarsql.rehearse', observe);
   t.after(() => { unsubscribe('solarsql.rehearse', observe); });
   const dir = mkdtempSync(join(tmpdir(), 'solarsql-rehearsal-wal-'));
-  t.after(() => rmSync(dir, {recursive:true,force:true}));
   const path = join(dir,'source.sqlite');
   const db = new DatabaseSync(path);
+  // Windows refuses to remove a directory holding an open SQLite handle, so
+  // the close hook must run before the rmSync hook; node runs t.after hooks
+  // in registration order, so close is registered first.
   t.after(() => db.close());
+  t.after(() => rmSync(dir, {recursive:true,force:true,maxRetries:5}));
   db.exec('pragma journal_mode = wal; create table parents(id integer primary key); create table children(p integer references parents(id)); insert into parents values (1); insert into children values (1)');
   db.exec("create table identities(value text); insert into identities(rowid,value) values (42,'kept')");
   const report = await rehearse(path,'alter table children add column note text', {

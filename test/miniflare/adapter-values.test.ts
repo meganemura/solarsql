@@ -2,13 +2,13 @@
 // Boundary: local Miniflare evidence; deployed behavior needs the remote suite.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolve, join, relative } from 'node:path';
+import { resolve, join } from 'node:path';
 import { writeFileSync, rmSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { analyzeSchema } from '../../src/build/analyze.ts';
 import { workerMiniflare } from '../worker.ts';
 import { parseJson } from '../../src/runtime/plan.ts';
-import { fixtureDir, librarySpecifier, tscArgs } from '../fixture-dir.ts';
+import { fixtureDir, librarySpecifier, specifier, tscArgs } from '../fixture-dir.ts';
 import { test as property } from '@hegeldev/hegel';
 import * as gs from '@hegeldev/hegel/generators';
 
@@ -63,7 +63,7 @@ export const wrong:Params<typeof q.query>={':id':1,'@id':2,other:3};
   writeFileSync(join(dir,'execute.mjs'),`
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
-import {node} from ${JSON.stringify(relative(dir,join(root,'src/node.ts')))};
+import {node} from ${JSON.stringify(specifier(dir,join(root,'src/node.ts')))};
 import {q,params} from './consumer.ts';
 const raw=new DatabaseSync(':memory:');try{assert.deepEqual(await node(raw).all(q.query,params),[{id:1},{id:2},{id:3}]);}finally{raw.close();}
 `);
@@ -71,8 +71,8 @@ const raw=new DatabaseSync(':memory:');try{assert.deepEqual(await node(raw).all(
   assert.equal(executed.status,0,executed.stdout+executed.stderr);
   writeFileSync(join(dir,'worker.ts'),`
 import {DurableObject} from 'cloudflare:workers';
-import {d1} from ${JSON.stringify(relative(dir,join(root,'src/d1.ts')))};
-import {durable} from ${JSON.stringify(relative(dir,join(root,'src/durable.ts')))};
+import {d1} from ${JSON.stringify(specifier(dir,join(root,'src/d1.ts')))};
+import {durable} from ${JSON.stringify(specifier(dir,join(root,'src/durable.ts')))};
 import {q,params} from './consumer.ts';
 export class Slots extends DurableObject {async fetch(){return Response.json(await durable(this.ctx.storage).all(q.query,params));}}
 export default {async fetch(request,env){if(new URL(request.url).pathname==='/do')return env.SLOTS.get(env.SLOTS.idFromName('slots')).fetch('http://local');return Response.json(await d1(env.DB).all(q.query,params));}};
@@ -112,7 +112,7 @@ export const wrong:JsonValue=new Uint8Array();
   writeFileSync(join(dir,'execute.mjs'),`
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
-import {node} from ${JSON.stringify(relative(dir,join(root,'src/node.ts')))};
+import {node} from ${JSON.stringify(specifier(dir,join(root,'src/node.ts')))};
 import {q,params,expected,check} from './consumer.ts';
 const raw=new DatabaseSync(':memory:');try{const rows=await node(raw).all(q.query,params);assert.deepEqual(check(rows[0].result.data),expected);}finally{raw.close();}
 `);
@@ -120,8 +120,8 @@ const raw=new DatabaseSync(':memory:');try{const rows=await node(raw).all(q.quer
   assert.equal(executed.status,0,executed.stdout+executed.stderr);
   writeFileSync(join(dir,'worker.ts'),`
 import {DurableObject} from 'cloudflare:workers';
-import {d1} from ${JSON.stringify(relative(dir,join(root,'src/d1.ts')))};
-import {durable} from ${JSON.stringify(relative(dir,join(root,'src/durable.ts')))};
+import {d1} from ${JSON.stringify(specifier(dir,join(root,'src/d1.ts')))};
+import {durable} from ${JSON.stringify(specifier(dir,join(root,'src/durable.ts')))};
 import {q,params,expected,check} from './consumer.ts';
 export class Slots extends DurableObject {async fetch(){return Response.json(await durable(this.ctx.storage).all(q.query,params));}}
 export default {async fetch(request,env){if(new URL(request.url).pathname==='/do')return env.SLOTS.get(env.SLOTS.idFromName('slots')).fetch('http://local');return Response.json(await d1(env.DB).all(q.query,params));}};
@@ -160,7 +160,7 @@ export function serialize(rows:Row<typeof q.query>[]){return rows.map(r=>({bytes
   writeFileSync(join(dir,'execute.mjs'),`
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
-import {node} from ${JSON.stringify(relative(dir,join(root,'src/node.ts')))};
+import {node} from ${JSON.stringify(specifier(dir,join(root,'src/node.ts')))};
 import {q,params,serialize} from './consumer.ts';
 const raw=new DatabaseSync(':memory:');try{assert.deepEqual(serialize(await node(raw).all(q.query,params)),[{bytes:Array.from({length:256},(_,i)=>i),typed:true,n:7,text:'{"a":1}suffix',ordered:[{n:2},{n:1}]},{bytes:[],typed:true,n:null,text:null,ordered:null}]);}finally{raw.close();}
 `);
@@ -168,8 +168,8 @@ const raw=new DatabaseSync(':memory:');try{assert.deepEqual(serialize(await node
   assert.equal(executed.status,0,executed.stdout+executed.stderr);
   writeFileSync(join(dir,'worker.ts'),`
 import {DurableObject} from 'cloudflare:workers';
-import {d1} from ${JSON.stringify(relative(dir,join(root,'src/d1.ts')))};
-import {durable} from ${JSON.stringify(relative(dir,join(root,'src/durable.ts')))};
+import {d1} from ${JSON.stringify(specifier(dir,join(root,'src/d1.ts')))};
+import {durable} from ${JSON.stringify(specifier(dir,join(root,'src/durable.ts')))};
 import {q,params,serialize} from './consumer.ts';
 export class Slots extends DurableObject {async fetch(){return Response.json(serialize(await durable(this.ctx.storage).all(q.query,params)));}}
 export default {async fetch(request,env){if(new URL(request.url).pathname==='/do')return env.SLOTS.get(env.SLOTS.idFromName('slots')).fetch('http://local');return Response.json(serialize(await d1(env.DB).all(q.query,params)));}};

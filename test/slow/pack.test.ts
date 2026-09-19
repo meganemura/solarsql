@@ -7,8 +7,9 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { checkDiscovery } from "../cli-discovery.ts";
-import { tscArgs } from "../fixture-dir.ts";
+import { npmArgs, tscArgs } from "../fixture-dir.ts";
 
 const root = resolve(import.meta.dirname, "../..");
 
@@ -40,14 +41,17 @@ test("npm pack, install, and run the CLI from node_modules", { timeout: 180_000 
     // On the machine that wrote this test, `npm pack` did not run the prepack
     // script (a wrapper around npm can pass --ignore-scripts), so dist/ is
     // built here. The test must never pack a stale or missing dist/.
-    execFileSync("npm", ["run", "build", "--silent"], { cwd: root, encoding: "utf8" });
-    const packOutput = execFileSync("npm", ["pack", "--silent", "--pack-destination", dir], { cwd: root, encoding: "utf8" });
+    const [npmCmd, npmBuildArgs] = npmArgs(["run", "build", "--silent"]);
+    execFileSync(npmCmd, npmBuildArgs, { cwd: root, encoding: "utf8" });
+    const [, npmPackArgs] = npmArgs(["pack", "--silent", "--pack-destination", dir]);
+    const packOutput = execFileSync(npmCmd, npmPackArgs, { cwd: root, encoding: "utf8" });
     const tarball = join(dir, packOutput.trim().split("\n").pop()!);
     assert.ok(existsSync(tarball), tarball);
 
     mkdirSync(join(dir, "consumer"));
     writeConsumer(join(dir, "consumer"));
-    execFileSync("npm", ["install", "--silent", "--no-audit", "--no-fund", tarball], { cwd: join(dir, "consumer"), encoding: "utf8" });
+    const [, npmInstallArgs] = npmArgs(["install", "--silent", "--no-audit", "--no-fund", tarball]);
+    execFileSync(npmCmd, npmInstallArgs, { cwd: join(dir, "consumer"), encoding: "utf8" });
 
     // The installed package carries the source next to the compiled output.
     assert.ok(existsSync(join(dir, "consumer/node_modules/solarsql/src/index.ts")));
@@ -145,7 +149,7 @@ test("npm pack, install, and run the CLI from node_modules", { timeout: 180_000 
     const atomicBudgetMs = 5_000;
     const atomicRun = (target: string, args: string[]) => spawnSync(cli, args, {
       cwd: join(dir, "consumer"), encoding: "utf8", timeout: atomicBudgetMs * 4,
-      env: { ...process.env, NODE_OPTIONS: "--import=" + preload, SOLARSQL_TEST_BLOCK_TARGET: target },
+      env: { ...process.env, NODE_OPTIONS: "--import=" + pathToFileURL(preload).href, SOLARSQL_TEST_BLOCK_TARGET: target },
     });
     const module = join(dir, "consumer/example/modules/orders/module.ts");
     const moduleBefore = readFileSync(module, "utf8");
