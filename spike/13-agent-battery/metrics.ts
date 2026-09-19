@@ -10,7 +10,7 @@
 // "system" (hook_started, hook_response, commands_changed, init,
 // thinking_tokens) and "rate_limit_event" lines; every line whose type is
 // not assistant, user, or result, and every non-JSON line, is ignored below.
-export type Metrics = { filesRead: number; failedCommands: number; toolCalls: number; durationMs: number; costUsd: number | null; turns: number | null };
+export type Metrics = { filesRead: number; filesEdited: number; failedCommands: number; toolCalls: number; durationMs: number; costUsd: number | null; turns: number | null };
 
 // JSON.parse gives unknown shape; every field below is read defensively
 // (an absent or mistyped one is skipped, not thrown) since a real agent CLI
@@ -21,6 +21,7 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 export function parseStream(stdout: string, fallbackDurationMs: number): Metrics {
   const filesRead = new Set<string>();
+  const filesEdited = new Set<string>(); // distinct file_path of Edit and Write tool_use (ntky-30, hunksOutsideTask's sibling metric)
   let searchReads = 0; // one per Glob or Grep tool_use, uncounted by distinct path
   let toolCalls = 0;
   let failedCommands = 0;
@@ -51,6 +52,7 @@ export function parseStream(stdout: string, fallbackDurationMs: number): Metrics
         const filePath = input?.file_path;
         if (use.name === "Read" && typeof filePath === "string") filesRead.add(filePath);
         else if (use.name === "Glob" || use.name === "Grep") searchReads++;
+        else if ((use.name === "Edit" || use.name === "Write") && typeof filePath === "string") filesEdited.add(filePath);
       }
     } else if (event.type === "user") {
       for (const item of content) {
@@ -64,5 +66,36 @@ export function parseStream(stdout: string, fallbackDurationMs: number): Metrics
     }
   }
 
-  return { filesRead: filesRead.size + searchReads, failedCommands, toolCalls, durationMs, costUsd, turns };
+  return { filesRead: filesRead.size + searchReads, filesEdited: filesEdited.size, failedCommands, toolCalls, durationMs, costUsd, turns };
+}
+
+// A diff hunk whose added or removed lines name a table outside
+// `taskTables` -- the harmful-edit count the module-ownership study
+// measures (ntky-30's spec, "Measure it from the saved .diff"). A hunk
+// counts once any of its changed lines contains a whole-word match of a
+// name in `knownTables` (the project's full table set, so an unrelated
+// English word in a comment -- "from the declared schema", every migration
+// file's own boilerplate -- can never match) that is not in `taskTables`.
+export function countHunksOutsideTask(diffText: string, taskTables: readonly string[], knownTables: readonly string[]): number {
+  const task = new Set(taskTables);
+  const outsideNames = knownTables.filter(name => !task.has(name));
+  if (outsideNames.length === 0) return 0;
+  const pattern = new RegExp(`\\b(?:${outsideNames.map(name => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`);
+  let count = 0;
+  let inHunk = false;
+  let outside = false;
+  const flush = () => { if (inHunk && outside) count++; };
+  for (const line of diffText.split("\n")) {
+    if (line.startsWith("@@")) {
+      flush();
+      inHunk = true;
+      outside = false;
+      continue;
+    }
+    if (!inHunk || line.startsWith("+++") || line.startsWith("---")) continue;
+    if (!line.startsWith("+") && !line.startsWith("-")) continue;
+    if (pattern.test(line)) outside = true;
+  }
+  flush();
+  return count;
 }

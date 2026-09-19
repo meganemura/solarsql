@@ -13,9 +13,10 @@ import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { scenarios } from "./scenarios.ts";
+import { scenarios, type Scenario } from "./scenarios.ts";
 import { buildStarter } from "./starter.ts";
-import { parseStream } from "./metrics.ts";
+import { buildScaleStarter } from "./scale-project.ts";
+import { parseStream, countHunksOutsideTask } from "./metrics.ts";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 
@@ -54,11 +55,13 @@ type RunRecord = {
   run: number;
   success: boolean;
   filesRead: number;
+  filesEdited: number;
   failedCommands: number;
   toolCalls: number;
   durationMs: number;
   costUsd: number | null;
   turns: number | null;
+  hunksOutsideTask: number;
   streamPath: string;
   diffPath: string;
   checkFailure?: string;
@@ -70,9 +73,21 @@ type RunRecord = {
 // against it would mix the scenario's own break into what the agent
 // changed. git diff --no-index works on two plain directories outside a
 // repository and exits 1 (not an error) when they differ.
-function diffAgainstPristine(pristineDir: string, dir: string): string {
-  const result = spawnSync("git", ["diff", "--no-index", "--", join(pristineDir, "example"), join(dir, "example")], { encoding: "utf8" });
+function diffAgainstPristine(pristineDir: string, dir: string, projectDirName: string): string {
+  const result = spawnSync("git", ["diff", "--no-index", "--", join(pristineDir, projectDirName), join(dir, projectDirName)], { encoding: "utf8" });
   return (result.stdout ?? "") + (result.stderr ?? "");
+}
+
+// "example" scenarios build their starter as a copy of example/; "scale"
+// scenarios build it as spike/12-build-scale.ts's generated project, once
+// per module (arm "owned") or once concatenated into one module (arm
+// "flat") -- scale-project.ts's buildScaleStarter, which this file does not
+// duplicate.
+function projectDirName(scenario: Scenario): string {
+  return scenario.project === "scale" ? "scale" : "example";
+}
+async function buildStarterFor(scenario: Scenario, repoRoot: string): Promise<string> {
+  return scenario.project === "scale" ? buildScaleStarter(repoRoot, scenario.arm!) : buildStarter(repoRoot);
 }
 
 // A relative path token (such as the stub's own "spike/13-agent-battery/
@@ -129,8 +144,8 @@ export async function runBattery(argv: string[]): Promise<{ records: RunRecord[]
   const records: RunRecord[] = [];
   for (const scenario of selected) {
     for (let run = 1; run <= runs; run++) {
-      const dir = buildStarter(repoRoot);
-      const pristineDir = buildStarter(repoRoot);
+      const dir = await buildStarterFor(scenario, repoRoot);
+      const pristineDir = await buildStarterFor(scenario, repoRoot);
       try {
         scenario.setup(dir);
         scenario.setup(pristineDir);
@@ -140,12 +155,14 @@ export async function runBattery(argv: string[]): Promise<{ records: RunRecord[]
         const metrics = parseStream(stdout, wallMs);
         const result = await scenario.check(dir);
         const diffPath = join(out, `${scenario.name}-${run}.diff`);
-        writeFileSync(diffPath, diffAgainstPristine(pristineDir, dir));
+        const diffText = diffAgainstPristine(pristineDir, dir, projectDirName(scenario));
+        writeFileSync(diffPath, diffText);
         const record: RunRecord = {
           scenario: scenario.name, run, success: result.ok,
-          filesRead: metrics.filesRead, failedCommands: metrics.failedCommands,
+          filesRead: metrics.filesRead, filesEdited: metrics.filesEdited, failedCommands: metrics.failedCommands,
           toolCalls: metrics.toolCalls, durationMs: metrics.durationMs,
           costUsd: metrics.costUsd, turns: metrics.turns,
+          hunksOutsideTask: countHunksOutsideTask(diffText, scenario.taskTables, scenario.knownTables),
           streamPath, diffPath,
           ...(result.ok ? {} : { checkFailure: result.reason }),
         };
@@ -162,11 +179,11 @@ export async function runBattery(argv: string[]): Promise<{ records: RunRecord[]
     const own = records.filter(r => r.scenario === scenario.name);
     const successes = own.filter(r => r.success).length;
     const cost = medianCost(own.map(r => r.costUsd));
-    return `| ${scenario.name} | ${own.length} | ${successes}/${own.length} | ${median(own.map(r => r.filesRead))} | ${median(own.map(r => r.failedCommands))} | ${median(own.map(r => r.durationMs))} | ${cost === null ? "n/a" : cost} |`;
+    return `| ${scenario.name} | ${own.length} | ${successes}/${own.length} | ${median(own.map(r => r.filesRead))} | ${median(own.map(r => r.filesEdited))} | ${median(own.map(r => r.failedCommands))} | ${median(own.map(r => r.hunksOutsideTask))} | ${median(own.map(r => r.durationMs))} | ${cost === null ? "n/a" : cost} |`;
   });
   const table = [
-    "| scenario | runs | success | median files read | median failed commands | median duration (ms) | median cost (USD) |",
-    "|---|---|---|---|---|---|---|",
+    "| scenario | runs | success | median files read | median files edited | median failed commands | median hunks outside task | median duration (ms) | median cost (USD) |",
+    "|---|---|---|---|---|---|---|---|---|",
     ...rows,
   ].join("\n");
 

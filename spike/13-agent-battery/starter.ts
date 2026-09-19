@@ -43,14 +43,10 @@ const tscShim = (repoRoot: string) => [
 // wrapper. POSIX shells never see the .cmd file.
 const cmdShim = (name: string) => [`@node "%~dp0${name}" %*`, ""].join("\r\n");
 
-export function buildStarter(repoRoot: string): string {
-  const dir = fixtureDir("battery-");
-  copyExample(dir);
-  // example/.dev.vars and .wrangler/ carry one account's token and cache; a
-  // paid agent reads its cwd, so the starter drops them.
-  rmSync(join(dir, "example/.dev.vars"), { force: true });
-  rmSync(join(dir, "example/.wrangler"), { recursive: true, force: true });
-
+// The two shims every starter needs, shared by the example starter below and
+// spike/13-agent-battery/scale-project.ts's scale starter, so `npx solarsql`
+// and `npx tsc` resolve the same way in both.
+export function writeShims(dir: string, repoRoot: string): void {
   const binDir = join(dir, "node_modules/.bin");
   mkdirSync(binDir, { recursive: true });
   writeFileSync(join(binDir, "solarsql"), solarsqlShim());
@@ -59,19 +55,37 @@ export function buildStarter(repoRoot: string): string {
   writeFileSync(join(binDir, "tsc"), tscShim(repoRoot));
   chmodSync(join(binDir, "tsc"), 0o755);
   writeFileSync(join(binDir, "tsc.cmd"), cmdShim("tsc"));
+}
 
+// The skill, plus the same project note under both names Claude Code and a
+// plain AGENTS.md reader look for -- shared by the example and scale
+// starters; `projectNote` is the one sentence that differs between them.
+export function writeSkillAndNotes(dir: string, projectNote: string): void {
   const skillDir = join(dir, ".claude/skills/solarsql");
   mkdirSync(skillDir, { recursive: true });
   cpSync(skillSource, skillDir, { recursive: true });
+  writeFileSync(join(dir, "AGENTS.md"), projectNote);
+  writeFileSync(join(dir, "CLAUDE.md"), projectNote);
+}
+
+export function buildStarter(repoRoot: string): string {
+  const dir = fixtureDir("battery-");
+  copyExample(dir);
+  // example/.dev.vars and .wrangler/ carry one account's token and cache; a
+  // paid agent reads its cwd, so the starter drops them.
+  rmSync(join(dir, "example/.dev.vars"), { force: true });
+  rmSync(join(dir, "example/.wrangler"), { recursive: true, force: true });
+
+  writeShims(dir, repoRoot);
 
   // Claude Code reads CLAUDE.md, not AGENTS.md; the starter carries both, so
   // an agent that reads either one finds the same three sentences.
-  const projectNote =
+  writeSkillAndNotes(
+    dir,
     "This project uses solarsql, the typed SQL layer for SQLite on Cloudflare D1 and Durable Objects.\n" +
-    "Follow the solarsql skill for its workflow.\n" +
-    "The example project is under example/; its configuration is example/solarsql.config.ts.\n";
-  writeFileSync(join(dir, "AGENTS.md"), projectNote);
-  writeFileSync(join(dir, "CLAUDE.md"), projectNote);
+      "Follow the solarsql skill for its workflow.\n" +
+      "The example project is under example/; its configuration is example/solarsql.config.ts.\n",
+  );
 
   return dir;
 }

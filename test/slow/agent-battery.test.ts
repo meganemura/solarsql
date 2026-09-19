@@ -16,26 +16,36 @@ const root = resolve(import.meta.dirname, "../..");
 const stubAgent = `node ${JSON.stringify(join(root, "spike/13-agent-battery/stub-agent.ts"))}`;
 const summarizePath = join(root, "spike/13-agent-battery/summarize.ts");
 
-const expected: Record<string, { filesRead: number; failedCommands: number }> = {
-  "invalid-sql": { filesRead: 1, failedCommands: 1 },
-  "stale-generated": { filesRead: 1, failedCommands: 1 },
-  "ddl-only": { filesRead: 1, failedCommands: 0 },
-  "cross-module-write": { filesRead: 2, failedCommands: 1 },
-  "rename-needs-intent": { filesRead: 1, failedCommands: 0 },
+const expected: Record<string, { filesRead: number; filesEdited: number; failedCommands: number; hunksOutsideTask: number }> = {
+  "invalid-sql": { filesRead: 1, filesEdited: 1, failedCommands: 1, hunksOutsideTask: 0 },
+  "stale-generated": { filesRead: 1, filesEdited: 0, failedCommands: 1, hunksOutsideTask: 0 },
+  "ddl-only": { filesRead: 1, filesEdited: 0, failedCommands: 0, hunksOutsideTask: 0 },
+  "cross-module-write": { filesRead: 2, filesEdited: 2, failedCommands: 1, hunksOutsideTask: 0 },
+  // The rename touches orders (its declaration and every query, trigger,
+  // and command that spells the column) and order_search (the trigger
+  // bodies that feed it), a real column rename's own honest blast radius,
+  // not a harmful edit outside the task -- hunksOutsideTask counts it
+  // anyway, since it only knows "orders" is the task's table; this pin
+  // documents that reading, it does not endorse it.
+  "rename-needs-intent": { filesRead: 1, filesEdited: 2, failedCommands: 0, hunksOutsideTask: 5 },
+  "owned-cross-module": { filesRead: 2, filesEdited: 2, failedCommands: 0, hunksOutsideTask: 0 },
+  "flat-cross-module": { filesRead: 1, filesEdited: 1, failedCommands: 0, hunksOutsideTask: 0 },
 };
 
-test("the stub repairs all five scenarios, with the pinned reads and failed commands", { timeout: 300_000 }, async () => {
+test("the stub repairs all seven scenarios, with the pinned reads and failed commands", { timeout: 300_000 }, async () => {
   const out = fixtureDir("agent-battery-");
   const { records, table, ok } = await runBattery(["--agent", stubAgent, "--runs", "1", "--out", out]);
 
-  assert.equal(records.length, 5, table);
+  assert.equal(records.length, 7, table);
   assert.equal(ok, true, JSON.stringify(records, null, 2));
   for (const record of records) {
     assert.equal(record.success, true, `${record.scenario}: ${record.checkFailure}`);
     const want = expected[record.scenario];
     assert.ok(want, `no expected counts for ${record.scenario}`);
     assert.equal(record.filesRead, want.filesRead, `${record.scenario} filesRead`);
+    assert.equal(record.filesEdited, want.filesEdited, `${record.scenario} filesEdited`);
     assert.equal(record.failedCommands, want.failedCommands, `${record.scenario} failedCommands`);
+    assert.equal(record.hunksOutsideTask, want.hunksOutsideTask, `${record.scenario} hunksOutsideTask`);
     assert.ok(existsSync(record.streamPath), `${record.scenario} missing ${record.streamPath}`);
     assert.ok(existsSync(record.diffPath), `${record.scenario} missing ${record.diffPath}`);
   }
@@ -46,13 +56,13 @@ test("the stub repairs all five scenarios, with the pinned reads and failed comm
   assert.equal(toolLines.length, invalidSql.toolCalls);
 
   const lines = readFileSync(join(out, "metrics.jsonl"), "utf8").trim().split("\n");
-  assert.equal(lines.length, 5);
+  assert.equal(lines.length, 7);
   for (const line of lines) {
     const record = JSON.parse(line) as { costUsd: unknown; turns: unknown };
     assert.equal(record.costUsd, 0);
     assert.equal(typeof record.turns, "number");
   }
-  assert.match(table, /\| scenario \| runs \| success \| median files read \| median failed commands \| median duration \(ms\) \| median cost \(USD\) \|/);
+  assert.match(table, /\| scenario \| runs \| success \| median files read \| median files edited \| median failed commands \| median hunks outside task \| median duration \(ms\) \| median cost \(USD\) \|/);
   for (const scenario of Object.keys(expected)) assert.match(table, new RegExp(`\\| ${scenario} \\| 1 \\| 1/1 \\|`));
 });
 

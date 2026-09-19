@@ -18,6 +18,11 @@ const skipFix = process.env.SOLARSQL_BATTERY_SKIP_FIX === "1";
 const configArg = "example/solarsql.config.ts";
 const ordersModule = join("example/modules/orders/module.ts");
 const reportsModule = join("example/modules/reports/module.ts");
+const scaleConfigArg = "scale/solarsql.config.ts";
+// CUSTOMER_TABLE/REFERENCING_TABLE, spike/13-agent-battery/cascade-check.ts.
+const t10Module = join("scale/t10/module.ts");
+const t11Module = join("scale/t11/module.ts");
+const flatModule = join("scale/all/module.ts");
 
 // The repository this stub lives in, not the starter's copy -- run() below
 // resolves "npx solarsql"/"npx tsc" straight to node + these entry points
@@ -178,12 +183,71 @@ function fixRenameNeedsIntent(): void {
   void diagnostic;
 }
 
+// The customer table gets a nullable column (a cheap ALTER, schema.md's
+// "new column with a default, or nullable"), added the same way in both
+// arms. Table names are spike/12-build-scale.ts's own ("t10", not
+// "customers") -- cascade-check.ts's CUSTOMER_TABLE/REFERENCING_TABLE name
+// the same pair this file hardcodes as t10/t11.
+function addDeletedAt(source: string): string {
+  return requireReplace(
+    source,
+    "export const t10 = table(`create table t10 (\n    id text primary key not null,\n    parent_id text references t9(id),\n    a text not null,\n    b text not null,\n    n integer not null,\n    r real not null\n  ) strict`);",
+    "export const t10 = table(`create table t10 (\n    id text primary key not null,\n    parent_id text references t9(id),\n    a text not null,\n    b text not null,\n    n integer not null,\n    r real not null,\n    deleted_at text\n  ) strict`);",
+  );
+}
+
+// A build refuses an on-delete-cascade foreign key here (confirmed against
+// this generator: deleting a t10 row would then also delete t11 rows
+// through a command t10 does not own -- commands.md, "What a plan may
+// touch"), so the owning module's own command is the only legal shape: t11
+// gets a new command that deletes its own rows by the customer's id,
+// inserted first in its catalog so cascade-check.ts's structural discovery
+// (which returns the first plan that deletes from t11) finds this one, not
+// the generator's own unrelated by-primary-key delete.
+function addDeleteByParent(source: string): string {
+  return requireReplace(
+    source,
+    "export const t11Commands = commands(generated, {\n",
+    "export const t11Commands = commands(generated, {\n  deleteByParent: {\n    plan: [\"delete from t11 where parent_id = :parent_id\"],\n  },\n",
+  );
+}
+
+function shipScaleMigration(config: string): void {
+  const diagnostic = run(`npx solarsql build ${config}`);
+  if (!skipFix) {
+    run(`npx solarsql migration cascade ${config}`);
+    run(`npx solarsql build ${config}`);
+    run(`npx solarsql build --check ${config}`);
+  }
+  void diagnostic;
+}
+
+function fixOwnedCrossModule(): void {
+  read(t10Module);
+  read(t11Module);
+  if (!skipFix) {
+    edit(t10Module, addDeletedAt);
+    edit(t11Module, addDeleteByParent);
+  }
+  shipScaleMigration(scaleConfigArg);
+}
+
+function fixFlatCrossModule(): void {
+  read(flatModule);
+  if (!skipFix) {
+    edit(flatModule, s => addDeleteByParent(addDeletedAt(s)));
+  }
+  shipScaleMigration(scaleConfigArg);
+}
+
 const fixes: Record<string, () => void> = {
   "invalid-sql": fixInvalidSql,
   "stale-generated": fixStaleGenerated,
   "ddl-only": fixDdlOnly,
   "cross-module-write": fixCrossModuleWrite,
   "rename-needs-intent": fixRenameNeedsIntent,
+  "owned-cross-module": fixOwnedCrossModule,
+  "flat-cross-module": fixFlatCrossModule,
 };
 
 async function main(): Promise<void> {

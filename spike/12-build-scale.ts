@@ -17,7 +17,7 @@ const library = resolve(import.meta.dirname, "../src/index.ts");
 // Every statement's SQL text is unique within the module, so the build's
 // per-statement typing map (keyed by SQL text) sees M distinct entries
 // instead of the 3 templates repeating.
-function moduleFiles(i: number, m: number): string {
+export function moduleFiles(i: number, m: number, libraryPath: string = library): string {
   const table = i - 1;
   const tableName = `t${i}`;
   const prevName = i > 0 ? `t${table}` : tableName; // module 0 self-joins: same template, no cross-module read
@@ -75,7 +75,7 @@ function moduleFiles(i: number, m: number): string {
     }
   }
 
-  return `import { assert, commands, index, queries, table } from ${JSON.stringify(library)};
+  return `import { assert, commands, index, queries, table } from ${JSON.stringify(libraryPath)};
 import { generated } from "./solarsql.generated.ts";
 
 export const ${tableName} = table(\`${createTable}\`);
@@ -91,21 +91,24 @@ ${commandLines.join("\n")}
 `;
 }
 
-function moduleConfigEntry(i: number): string {
+export function moduleConfigEntry(i: number): string {
   return i > 0 ? `{ dir: "./t${i}", readsAll: true }` : `"./t0"`;
 }
 
 // Writes a fresh project of N modules and M statements each under `dir`,
-// and returns the path of its solarsql.config.ts.
-function writeProject(dir: string, n: number, m: number): string {
+// and returns the path of its solarsql.config.ts. `libraryPath` defaults to
+// this repository's own src/index.ts (spike/12's own use); a caller that
+// copies src/ elsewhere (spike/13's scale starter, so a battery run never
+// imports the repository's own source) passes that copy's path instead.
+export function writeProject(dir: string, n: number, m: number, libraryPath: string = library): string {
   for (let i = 0; i < n; i++) {
     const moduleDir = join(dir, `t${i}`);
     mkdirSync(moduleDir, { recursive: true });
-    writeFileSync(join(moduleDir, "module.ts"), moduleFiles(i, m));
+    writeFileSync(join(moduleDir, "module.ts"), moduleFiles(i, m, libraryPath));
   }
   const configPath = join(dir, "solarsql.config.ts");
   const modules = Array.from({ length: n }, (_, i) => moduleConfigEntry(i)).join(", ");
-  writeFileSync(configPath, `export default { modules: [${modules}], migrations: "./migrations", library: ${JSON.stringify(library)} };\n`);
+  writeFileSync(configPath, `export default { modules: [${modules}], migrations: "./migrations", library: ${JSON.stringify(libraryPath)} };\n`);
   return configPath;
 }
 
