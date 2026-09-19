@@ -78,16 +78,17 @@ const db = d1(env.DB, { observe: (e) => console.log(e.kind, e.name, e.outcome, `
 // e: { kind: "query" | "batch" | "command"; name: string; ms: number; outcome: string; meta?: EngineMeta }
 // outcome: "ok", "assert:<name>", a constraint kind, or "error" when thrown
 // the name of a batch is the query names joined with "+"
-// meta, on D1 only: { rows_read, rows_written, duration, served_by_region?, served_by_primary? }
-//   under the names D1 uses; a batch and a command sum the rows and the duration of their statements;
-//   absent on a Durable Object, on node:sqlite, and when the call threw
+// meta, on D1 and on a Durable Object: { rows_read, rows_written, duration?, served_by_region?, served_by_primary? }
+//   under the names D1 uses; a batch and a command sum the rows (and D1's duration) of their statements;
+//   duration is D1 only (a Durable Object has no server-side timing to report);
+//   meta itself is absent on node:sqlite, and when the call threw
 ```
 
 Observation is best-effort and cannot change the database result.
 The adapter contains synchronous throws and rejected observer promises, and does not await telemetry completion.
 An observer that needs failure reporting must handle and report its own delivery errors.
 
-D1 bills on `rows_read` and `rows_written`, so a cost tracer reads `e.meta`.
+Both D1 and a Durable Object bill on `rows_read` and `rows_written`, so a cost tracer reads `e.meta` on either engine.
 
 ## Ids
 

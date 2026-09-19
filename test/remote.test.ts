@@ -35,7 +35,7 @@ if (url === undefined) {
         await value({ step: "reset" });
       });
 
-      exampleSteps(value, { oneIsolate: target === "do", engineMeta: target === "d1" });
+      exampleSteps(value, { oneIsolate: target === "do", engineMeta: target === "d1" || target === "do" });
     });
   }
 }

@@ -150,7 +150,7 @@ export function constraintFailure(error: unknown): ConstraintFailure | null {
   return null;
 }
 
-export type EngineMeta = { rows_read: number; rows_written: number; duration: number; served_by_region?: string; served_by_primary?: boolean };
+export type EngineMeta = { rows_read: number; rows_written: number; duration?: number; served_by_region?: string; served_by_primary?: boolean };
 
 type Event = { kind: "query" | "batch" | "command"; name: string; ms: number; outcome: string; meta?: EngineMeta };
 
@@ -193,7 +193,11 @@ export function engineMeta(replies: readonly { meta?: unknown }[]): EngineMeta |
     } else {
       out.rows_read += m.rows_read;
       out.rows_written += m.rows_written;
-      out.duration += duration;
+      // out.duration is only optional in the type (durable.ts's DO meta
+      // omits it); every reply this loop sums here comes from D1, which
+      // always sets duration, defaulted to 0 above, so the running total is
+      // always a number by the time a second reply reaches this branch.
+      out.duration = (out.duration ?? 0) + duration;
     }
   }
   return out;

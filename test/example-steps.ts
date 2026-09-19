@@ -12,7 +12,8 @@ export type Value = (body: Record<string, unknown>) => Promise<unknown>;
 
 // `oneIsolate` is false when the Worker may run in several isolates, as a
 // deployed one does: then the observe hook's events are not all in one place.
-// `engineMeta` is true on D1, which reports the rows read and written.
+// `engineMeta` is true on D1 and on a Durable Object, which both report the
+// rows read and written; node:sqlite reports none.
 export function exampleSteps(value: Value, options: { oneIsolate: boolean; engineMeta: boolean }): void {
   test("a command with returns gives typed rows", async () => {
     const created = await value({ step: "createCustomer", id: "c1", name: "Ann", email: "ann@example.com" });
@@ -157,8 +158,8 @@ export function exampleSteps(value: Value, options: { oneIsolate: boolean; engin
   test("the observe hook saw every call with its name and outcome", { skip: options.oneIsolate ? false : "the events of the hook live in one isolate, and a deployed Worker runs several" }, async () => {
     const seen = (await value({ step: "observed" })) as { kind: string; name: string; outcome: string; timed: boolean; meta: { rows_read: number; rows_written: number; duration: number } | null }[];
     assert.ok(seen.every((e) => e.timed));
-    // D1 reports its meta on every reply that arrived; a failed plan threw
-    // before one did. The other engines report none.
+    // D1 and a Durable Object report meta on every reply that arrived; a
+    // failed plan threw before one did. node:sqlite reports none.
     assert.ok(seen.filter((e) => e.outcome === "ok").every((e) => (e.meta !== null) === options.engineMeta), JSON.stringify(seen.slice(0, 3)));
     assert.ok(seen.filter((e) => e.outcome !== "ok").every((e) => e.meta === null), JSON.stringify(seen.filter((e) => e.outcome !== "ok")));
     if (options.engineMeta) {

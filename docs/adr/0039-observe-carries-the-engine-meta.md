@@ -25,3 +25,13 @@ Sums, because a command is one transaction and its cost is the cost of the whole
 
 - `D1Like` accepts a `meta` on a reply; a binding without one still fits.
 - The local D1 of Miniflare reports the meta too, so the example test checks it on D1 and its absence on the Durable Object.
+
+## 2026-09-19: a Durable Object's SQL cursor reports rows_read/rows_written too
+
+Cloudflare's Durable Objects Storage API documents `SqlStorageCursor.rowsRead` and `rowsWritten` for cost accounting, and Miniflare confirms it: an insert cursor reports `rowsWritten`, a select cursor reports `rowsRead`, and reading `.toArray()` first does not change either value. The "reports none" line above was written before this was checked.
+
+`observe()` now sums these across the cursors a query, batch, or command touches, and reports them under D1's own `rows_read`/`rows_written` names, the same both-required rule `engineMeta()` already applies to a D1 reply: reported only when at least one cursor gave both as numbers.
+
+`duration` stays D1 only. D1 reports its own server-side timing; a Durable Object's storage API has no corresponding value, and reporting 0 would claim a duration that was never measured. `EngineMeta.duration` is optional for this reason, and a Durable Object's meta omits it rather than fabricating it.
+
+node:sqlite still reports no meta at all: `node.ts`'s storage shim fabricates a cursor with only `toArray()`, and has neither counter to report.

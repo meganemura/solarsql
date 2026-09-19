@@ -209,12 +209,14 @@ export type CommandResult<C> = C extends Command<infer G, infer P>
 
 // What the observe hook of an adapter receives after each query, batch of
 // queries, or command. A batch is named by its queries, joined with "+".
-// What D1 reports about a call, under the names D1 uses: the rows it read
-// and wrote (D1 bills on them), its own duration in milliseconds, and where
-// it ran. A command or a batch sums the rows and the duration of its
-// statements. A Durable Object and node:sqlite report none, and the field
-// is absent.
-export type EngineMeta = { rows_read: number; rows_written: number; duration: number; served_by_region?: string; served_by_primary?: boolean };
+// rows_read and rows_written, under the names D1 uses, since both engines
+// bill on them (a Durable Object's SQL cursor reports them too, confirmed
+// against Miniflare). A command or a batch sums the rows of its statements.
+// duration is D1's own server-side timing; a Durable Object has no
+// corresponding value, so duration stays optional and is left out of its
+// meta rather than reported as a false 0. node:sqlite reports no meta at
+// all, and the field is absent.
+export type EngineMeta = { rows_read: number; rows_written: number; duration?: number; served_by_region?: string; served_by_primary?: boolean };
 
 export type Observed = {
   kind: "query" | "batch" | "command";

@@ -6,14 +6,22 @@
 // promises like the D1 adapter, so a module runs on both without a change.
 // Boundary: no SQL is composed here beyond the assert statement that
 // runtime/plan.ts defines.
-import type { AdapterOptions, BatchRows, Command, CommandResult, Database, Entry, GeneratedMap, ParamsArg, PlanShape, Query, Read, Row, SqlValue, StatementMeta } from "./index.ts";
+import type { AdapterOptions, BatchRows, Command, CommandResult, Database, EngineMeta, Entry, GeneratedMap, ParamsArg, PlanShape, Query, Read, Row, SqlValue, StatementMeta } from "./index.ts";
 import { GUARD_CLEANUP, assertFailure, assertStatement, assertToken, bindValues, constraintFailure, observed, outcomeOf, parseJson, validateParams } from "./runtime/plan.ts";
 import { created, definitions, isKeyword, normalize, parseRebuildRecords, quoteIdent, redeclaredByFile, revivedDeclaration, significant, splitStatements, tokenize, unknownDeclaration } from "./build/scan.ts";
+
+// The cursor shape this adapter reads meta from. rowsRead/rowsWritten are
+// optional: a real Durable Object's SqlStorageCursor carries them (measured
+// against Miniflare, Cloudflare's docs mark them for cost accounting), but
+// node.ts's storageOf() fabricates a cursor with only toArray() for
+// node:sqlite, which has no such counters. Making them required here would
+// make that shim a type error.
+type CursorLike = { toArray(): Record<string, unknown>[]; rowsRead?: number; rowsWritten?: number };
 
 // The part of DurableObjectStorage this adapter uses. Structural, so no
 // type package is needed.
 export type StorageLike = {
-  sql: { exec(sql: string, ...bindings: unknown[]): { toArray(): Record<string, unknown>[] } };
+  sql: { exec(sql: string, ...bindings: unknown[]): CursorLike };
   transactionSync<T>(closure: () => T): T;
   // Node's shim reports whether a transaction the caller opened before
   // calling migrate() is still open (running.md's caller-owned-transaction
@@ -22,15 +30,45 @@ export type StorageLike = {
   inTransaction?: () => boolean;
 };
 
+// The rows a query, batch, or command touched, in the same shape D1's
+// engineMeta() (runtime/plan.ts) produces, so one observe hook works on
+// both adapters. duration is left out: a Durable Object has no server-side
+// timing to report, and EngineMeta.duration is optional for exactly that
+// (unlike D1, which always reports it). Reported only when at least one
+// cursor gave both counters as numbers -- the same both-required rule
+// engineMeta() applies to D1's reply.meta -- so a Node shim's cursor, which
+// has neither, still reports no meta at all. Read after each cursor's own
+// toArray() call, the order the counters were confirmed stable in
+// (Cloudflare's docs describe rowsRead as a running total on the cursor;
+// reading before consuming it was not the case this was measured against).
+function cursorMeta(cursors: readonly CursorLike[]): EngineMeta | undefined {
+  let out: EngineMeta | undefined;
+  for (const c of cursors) {
+    if (typeof c.rowsRead !== "number" || typeof c.rowsWritten !== "number") continue;
+    if (!out) out = { rows_read: c.rowsRead, rows_written: c.rowsWritten };
+    else { out.rows_read += c.rowsRead; out.rows_written += c.rowsWritten; }
+  }
+  return out;
+}
+
 export function durable(storage: StorageLike, options: AdapterOptions = {}): Database {
-  const rows = (sql: string, meta: StatementMeta, params: Record<string, unknown>) =>
-    parseJson(storage.sql.exec(sql, ...bindValues(meta, params)).toArray(), meta.json);
+  // sink, when given, collects the cursor after it is read, for cursorMeta()
+  // above to sum once the caller is done issuing statements.
+  const rows = (sql: string, meta: StatementMeta, params: Record<string, unknown>, sink?: CursorLike[]) => {
+    const cursor = storage.sql.exec(sql, ...bindValues(meta, params));
+    const data = parseJson(cursor.toArray(), meta.json);
+    sink?.push(cursor);
+    return data;
+  };
 
   const all = <Q extends Query<string, Entry>>(query: Q, ...args: ParamsArg<Q>): Promise<Row<Q>[]> =>
-    observed(options.observe, "query", query.name, async () => {
+    observed(options.observe, "query", query.name, async (report) => {
       const params=(args[0] ?? {}) as Record<string,unknown>;
       validateParams([query.meta], params, `query ${query.name}`);
-      return rows(query.sql, query.meta, params) as Row<Q>[];
+      const cursors: CursorLike[] = [];
+      const result = rows(query.sql, query.meta, params, cursors) as Row<Q>[];
+      report(cursorMeta(cursors));
+      return result;
     }, () => "ok");
 
   return {
@@ -41,33 +79,48 @@ export function durable(storage: StorageLike, options: AdapterOptions = {}): Dat
     },
     // The storage is local, so a batch of reads is the reads in order.
     batch: <const R extends readonly Read<Query<string, Entry>>[]>(reads: R): Promise<BatchRows<R>> =>
-      observed(options.observe, "batch", reads.map((r) => r.query.name).join("+"), async () => {
+      observed(options.observe, "batch", reads.map((r) => r.query.name).join("+"), async (report) => {
         for (const item of reads) validateParams([item.query.meta], item.params, `query ${item.query.name}`);
-        return reads.map((r) => rows(r.query.sql, r.query.meta, r.params)) as unknown as BatchRows<R>;
+        const cursors: CursorLike[] = [];
+        const result = reads.map((r) => rows(r.query.sql, r.query.meta, r.params, cursors)) as unknown as BatchRows<R>;
+        report(cursorMeta(cursors));
+        return result;
       }, () => "ok"),
     run: <C extends Command<GeneratedMap, PlanShape<GeneratedMap>>>(command: C, ...args: ParamsArg<C>): Promise<CommandResult<C>> =>
-      observed(options.observe, "command", command.name, async () => {
+      observed(options.observe, "command", command.name, async (report) => {
         const params = (args[0] ?? {}) as Record<string, SqlValue>;
         validateParams([...command.meta.statements, ...(command.meta.returns ? [command.meta.returns] : [])], params, `command ${command.name}`);
         const token = assertToken();
+        // Shared with the D1 command path's own accounting (src/d1.ts): sum
+        // every cursor the plan, the assert cleanup, and the returns clause
+        // touch, not only the plan's own statements (changes above stays
+        // narrower, on purpose -- ADR 0042 counts only the plan's rows).
+        const cursors: CursorLike[] = [];
         try {
           const out = storage.transactionSync(() => {
             let changes = 0;
             const hasAssert = command.plan.some((item) => typeof item !== "string");
             command.plan.forEach((item, i) => {
               const sql = typeof item === "string" ? item : assertStatement(item.name, item.predicate, token);
-              const before = totalChanges(storage);
-              storage.sql.exec(sql, ...bindValues(command.meta.statements[i]!, params)).toArray();
-              if (typeof item === "string") changes += totalChanges(storage) - before;
+              const before = totalChanges(storage, cursors);
+              const cursor = storage.sql.exec(sql, ...bindValues(command.meta.statements[i]!, params));
+              cursor.toArray();
+              cursors.push(cursor);
+              if (typeof item === "string") changes += totalChanges(storage, cursors) - before;
             });
-            const resultRows = command.returns === null ? [] : rows(command.returns, command.meta.returns!, params);
+            const resultRows = command.returns === null ? [] : rows(command.returns, command.meta.returns!, params, cursors);
             // A passing assert's row has no further use once the plan and
             // its returns clause have read what they need; deleting it
             // here, after returns and still inside this transaction, keeps
             // the guard table at zero rows between commands (ADR 0093).
-            if (hasAssert) storage.sql.exec(GUARD_CLEANUP).toArray();
+            if (hasAssert) {
+              const cleanup = storage.sql.exec(GUARD_CLEANUP);
+              cleanup.toArray();
+              cursors.push(cleanup);
+            }
             return { rows: resultRows, changes };
           });
+          report(cursorMeta(cursors));
           return { ok: true, ...out } as CommandResult<C>;
         } catch (e) {
           const failed = assertFailure(e, command.meta.asserts, token);
@@ -83,8 +136,13 @@ export function durable(storage: StorageLike, options: AdapterOptions = {}): Dat
 // D1 reports a statement's changes as the difference of total_changes(),
 // which counts the rows a trigger wrote too, and changes() does not. The
 // same difference here keeps the count equal on the three adapters.
-function totalChanges(storage: StorageLike): number {
-  const n = storage.sql.exec("select total_changes() as n").toArray()[0]?.n;
+// sink, when given, collects this call's own cursor too: it reads 0 rows
+// (measured against Miniflare), so folding it into cursorMeta()'s sum above
+// does not inflate rows_read.
+function totalChanges(storage: StorageLike, sink?: CursorLike[]): number {
+  const cursor = storage.sql.exec("select total_changes() as n");
+  const n = cursor.toArray()[0]?.n;
+  sink?.push(cursor);
   return typeof n === "number" ? n : 0;
 }
 
