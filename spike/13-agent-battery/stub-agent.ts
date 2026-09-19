@@ -200,15 +200,17 @@ function addDeletedAt(source: string): string {
 // this generator: deleting a t10 row would then also delete t11 rows
 // through a command t10 does not own -- commands.md, "What a plan may
 // touch"), so the owning module's own command is the only legal shape: t11
-// gets a new command that deletes its own rows by the customer's id,
-// inserted first in its catalog so cascade-check.ts's structural discovery
-// (which returns the first plan that deletes from t11) finds this one, not
-// the generator's own unrelated by-primary-key delete.
+// gets a new command that deletes its own rows by the customer's id.
+// Appended after the generator's own c9, where an author adds a command,
+// not inserted first -- cascade-check.ts finds it by what it does (a
+// parameter-bound delete from t11, preferring one that names parent_id
+// over the generator's own by-id deletes), not by where it sits in the
+// catalog.
 function addDeleteByParent(source: string): string {
   return requireReplace(
     source,
-    "export const t11Commands = commands(generated, {\n",
-    "export const t11Commands = commands(generated, {\n  deleteByParent: {\n    plan: [\"delete from t11 where parent_id = :parent_id\"],\n  },\n",
+    '    plan: ["insert into t11 (id, parent_id, a, b, n, r) values (:id9, :parent_id9, :a9, :b9, :n9, :r9)"],\n    returns: "select id, a, b, n, r from t11 where id = :id9",\n  },\n});',
+    '    plan: ["insert into t11 (id, parent_id, a, b, n, r) values (:id9, :parent_id9, :a9, :b9, :n9, :r9)"],\n    returns: "select id, a, b, n, r from t11 where id = :id9",\n  },\n  deleteByParent: {\n    plan: ["delete from t11 where parent_id = :parent_id"],\n  },\n});',
   );
 }
 
