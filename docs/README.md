@@ -132,6 +132,7 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0117](adr/0117-the-build-refuses-a-deferred-foreign-key.md) | The build refuses a deferred foreign key |
 | [0118](adr/0118-a-created-search-table-is-repopulated-from-its-insert-trigger.md) | A created search table is repopulated from its insert trigger |
 | [0119](adr/0119-rehearsal-refuses-an-unexpected-dropped-table-dropped-column-or-changed-column-type.md) | Rehearsal refuses an unexpected dropped table, dropped column, or changed column type |
+| [0120](adr/0120-a-thrown-engine-error-classifies-as-transient-or-permanent.md) | A thrown engine error classifies as transient or permanent |
 
 ## Measurements
 

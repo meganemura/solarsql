@@ -101,7 +101,7 @@ export function parseJson<R extends Record<string, unknown>>(rows: readonly Reco
 
 // Unknown thrown values include null and objects with inaccessible fields.
 // Decline classification rather than replacing the original failure.
-function errorDetails(error: unknown): { message: string; errcode?: number } {
+export function errorDetails(error: unknown): { message: string; errcode?: number } {
   try {
     if (error === null || (typeof error !== "object" && typeof error !== "function") || error instanceof AggregateError) return { message: "" };
     const e = error as { message?: unknown; cause?: unknown; errcode?: unknown };
@@ -120,7 +120,7 @@ function errorDetails(error: unknown): { message: string; errcode?: number } {
 // caller sent) fails at D1's own implicit commit rather than at the
 // statement that caused it; SQLite's own constraint text follows the
 // colon, so stripping the prefix exposes it unchanged.
-function bareMessage(error: unknown): string {
+export function bareMessage(error: unknown): string {
   const message = errorDetails(error).message;
   return message
     .replace(/^D1_ERROR:\s*/, "")

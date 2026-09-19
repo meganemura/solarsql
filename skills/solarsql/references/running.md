@@ -137,6 +137,32 @@ Node rejects reads outside that range; D1 can lose precision and its API does no
 `SqlValue` describes possible SQLite values, not a promise that each adapter accepts every value.
 An engine error is thrown; the adapters do not retry an operation whose commit outcome is unknown.
 Use an application idempotency key or reconciliation before repeating a write after a lost response.
+`failureClass(error)` (ADR 0120) reads that thrown value and sorts it, so a caller does not read Cloudflare's error text by hand:
+
+| Message or prefix | Platform | Class | Outcome | What the caller does | Source |
+| --- | --- | --- | --- | --- | --- |
+| `Durable Object is overloaded.` | Durable Object | transient | not_applied | The request never ran; reduce load or send fewer requests (the page says this, not "retry"). | [DO troubleshooting](https://developers.cloudflare.com/durable-objects/observability/troubleshooting/), 2026-05-15 |
+| `Your account is generating too much load on Durable Objects...` | Durable Object | transient | not_applied | Retry, after a short wait; lookups are cached. | [DO troubleshooting](https://developers.cloudflare.com/durable-objects/observability/troubleshooting/), 2026-05-15 |
+| `Your account is doing too many concurrent storage operations...` | Durable Object | transient | not_applied | Back off; prefer one batched read over several single ones. | [DO troubleshooting](https://developers.cloudflare.com/durable-objects/observability/troubleshooting/), 2026-05-15 |
+| `D1 DB is overloaded.` | D1 | transient | not_applied | The request never ran; the page's own action is to send fewer or cheaper requests, not "retry". | [D1 debug](https://developers.cloudflare.com/d1/observability/debug-d1/), 2026-08-11 |
+| `Cannot resolve D1 DB due to transient issue on remote node.` | D1 | transient | not_applied | Retry. | [D1 debug](https://developers.cloudflare.com/d1/observability/debug-d1/), 2026-08-11 |
+| `Network connection lost.` | D1, Workers | transient | unknown | Reconcile before repeating a write. | [D1 debug](https://developers.cloudflare.com/d1/observability/debug-d1/), 2026-08-11; [Workers errors](https://developers.cloudflare.com/workers/observability/errors/), 2026-09-19 |
+| `Replica disconnected from primary.` | D1 | transient | unknown | Reconcile before repeating a write. | [D1 debug](https://developers.cloudflare.com/d1/observability/debug-d1/), 2026-08-11 |
+| `... reset because its code was updated.` | D1, Durable Object | transient | unknown | Reconcile before repeating a write. | [D1 debug](https://developers.cloudflare.com/d1/observability/debug-d1/), 2026-08-11; [DO troubleshooting](https://developers.cloudflare.com/durable-objects/observability/troubleshooting/), 2026-05-15 |
+| `... storage operation exceeded timeout which caused object to be reset.` | D1, Durable Object | transient | unknown | Reconcile before repeating a write. | [D1 debug](https://developers.cloudflare.com/d1/observability/debug-d1/), 2026-08-11; [DO troubleshooting](https://developers.cloudflare.com/durable-objects/observability/troubleshooting/), 2026-05-15 |
+| `Internal error ... caused object to be reset.` | D1 | transient | unknown | Reconcile before repeating a write. | [D1 debug](https://developers.cloudflare.com/d1/observability/debug-d1/), 2026-08-11 |
+| A reset-and-rolled-back wrapper, resolved or not | Durable Object | permanent | (fixed) | Fix the data or the schema; nothing was applied. The wrapper's own text names both the cause (a constraint) and the rollback. | `src/runtime/plan.ts`'s `bareMessage()` comment, checked 2026-09-19 (not on the five fetched pages) |
+| `SQLITE_BUSY`, `SQLITE_LOCKED`, "database is locked" | Node, D1, Durable Object | transient | not_applied | Retry; another connection held the lock this statement needed. | [SQLite result codes](https://sqlite.org/rescode.html), checked 2026-09-19 |
+| `D1_EXEC_ERROR`, `near "..."`, `D1_TYPE_ERROR`, `D1_COLUMN_NOTFOUND`, `no such table`, `no such column`, a `SQLITE_` code, an unresolved constraint | D1, Durable Object, Node | permanent | (fixed) | Fix the query or the schema; do not retry. | [D1 debug](https://developers.cloudflare.com/d1/observability/debug-d1/), 2026-08-11 (only `D1_EXEC_ERROR`, `near "..."`, `D1_TYPE_ERROR`, and `D1_COLUMN_NOTFOUND` are on this page; the rest come from the engine's own text, per `src/runtime/plan.ts`) |
+
+```ts
+const f = failureClass(e);
+if (f.kind === "transient" && f.outcome === "not_applied") {
+  retry();
+} else if (f.kind === "transient") {
+  reconcile();
+} else throw e;
+```
 
 The local tests exercise Node, D1 and Durable Object scalar representations.
 Remote behavior is checked by the opt-in remote suite; local tests do not certify a deployed database.

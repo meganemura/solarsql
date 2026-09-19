@@ -9,6 +9,8 @@
 // the build step does that.
 
 import { uuidV7 } from "./runtime/id.ts";
+export { failureClass } from "./runtime/failure.ts";
+export type { FailureClass } from "./runtime/failure.ts";
 
 export type SqlValue = string | number | bigint | null | Uint8Array;
 // JSONB storage can decode to any JSON shape; binary storage is not the
