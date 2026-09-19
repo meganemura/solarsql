@@ -138,6 +138,7 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0123](adr/0123-migrate-names-the-file-that-introduced-a-foreign-key-violation.md) | `migrate()` names the file that introduced a foreign-key violation |
 | [0124](adr/0124-a-catalog-query-runs-from-the-shell.md) | A catalog query runs from the shell |
 | [0125](adr/0125-the-cli-prints-the-rule-instead-of-naming-the-reference.md) | The CLI prints the rule instead of naming the reference |
+| [0126](adr/0126-a-stale-sql-literal-fails-with-the-remedy-as-its-type.md) | A stale SQL literal fails with the remedy as its type |
 
 ## Measurements
 

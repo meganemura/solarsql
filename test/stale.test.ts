@@ -38,6 +38,15 @@ test("a changed SQL string fails tsc at the call site until the build runs again
     assert.notEqual(stale.status, 0);
     assert.match(stale.output, /orders\/module\.ts/);
     assert.match(stale.output, /select id, customer_id, status from orders where id = :id/);
+    assert.match(stale.output, /run npx solarsql build/);
+
+    // The expected type at the catalog site is the remedy sentence, not the
+    // union of every key of the generated map: the line naming the changed
+    // literal must not also carry another query's SQL (order_lines, from
+    // the withLines query) as an expected-type member (ADR 0126).
+    const catalogLine = stale.output.split("\n").find((line) => line.includes("orders/module.ts"));
+    assert.ok(catalogLine, stale.output);
+    assert.doesNotMatch(catalogLine, /order_lines/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

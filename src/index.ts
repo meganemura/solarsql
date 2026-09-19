@@ -111,15 +111,34 @@ export type Queries<G extends GeneratedMap, Q extends Record<string, keyof G & s
   entries: { [K in keyof Q]: Query<Q[K], G[Q[K]]> };
 } & { [K in keyof Q]: Query<Q[K], G[Q[K]]> };
 
+// A constraint of the form `Record<string, keyof G & string>` names the
+// union of every key of the generated map as the expected type of a stale
+// literal: tsc has no key to point at, so the message repeats the whole
+// catalog (measured on 2026-09-19; see ADR 0126). Checking membership per
+// key in a mapped type instead makes the expected type at a stale key the
+// remedy sentence, not the union.
+type Known<G extends GeneratedMap, Q extends Record<string, string>> = {
+  [K in keyof Q]: Q[K] extends keyof G ? Q[K] : "not in solarsql.generated.ts: run npx solarsql build";
+};
+
 // The read API of a module: one name per SQL string. Every string must be a
 // key of the generated map, so a changed string fails to compile until
 // `solarsql build` runs again.
-export function queries<G extends GeneratedMap, const Q extends Record<string, keyof G & string>>(generated: Meta<G>, q: Q): Queries<G, Q> {
+// Two overloads, not one generic signature, because a single signature that
+// both infers `Q`'s literal types from `q` and checks each of them against
+// `Known` sent every property to the remedy message, not only the stale one
+// (measured on 2026-09-19): TS solves `Q` and its own bound together, and
+// the two constraints fight. The first overload keeps the exact inference a
+// correct catalog had before; the second is never satisfied by a correct
+// catalog, so it only fires, and reports, when the first one fails.
+export function queries<G extends GeneratedMap, const Q extends Record<string, keyof G & string>>(generated: Meta<G>, q: Q): Queries<G, Q>;
+export function queries<G extends GeneratedMap, const Q extends Record<string, string>>(generated: Meta<G>, q: Known<G, Q>): never;
+export function queries<G extends GeneratedMap, const Q extends Record<string, string>>(generated: Meta<G>, q: Q): Queries<G, Q & Record<string, keyof G & string>> {
   const entries = {} as Record<string, Query<string, Entry>>;
   for (const [name, sql] of Object.entries(q)) {
     entries[name] = { kind: "query", name, sql, meta: metaOf(generated, sql) };
   }
-  return { kind: "queries", entries, ...entries } as unknown as Queries<G, Q>;
+  return { kind: "queries", entries, ...entries } as unknown as Queries<G, Q & Record<string, keyof G & string>>;
 }
 
 // --- commands -----------------------------------------------------------------
