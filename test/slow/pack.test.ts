@@ -131,8 +131,19 @@ test("npm pack, install, and run the CLI from node_modules", { timeout: 180_000 
       "};",
       "syncBuiltinESMExports();",
     ].join("\n"));
+    // The worker blocks forever in process.send (Atomics.wait) once it
+    // reaches the atomic write, so the deadline below is what ends the run;
+    // the budget only needs to exceed a cold project import, not bound test
+    // time. On a slow CI runner (run 35419887354, ubuntu, 2026-09-19) a
+    // 500ms budget lost that race: the deadline fired before the worker
+    // reached the atomic write, and the "atomic replacement started"
+    // assertion failed. A cold `build --timeout-ms 60000` import on this
+    // machine measured ~0.2s; 5000ms is well over 20x that with headroom
+    // for a slower runner, and the spawnSync timeout below leaves room for
+    // both the budget and process teardown.
+    const atomicBudgetMs = 5_000;
     const atomicRun = (target: string, args: string[]) => spawnSync(cli, args, {
-      cwd: join(dir, "consumer"), encoding: "utf8", timeout: 10_000,
+      cwd: join(dir, "consumer"), encoding: "utf8", timeout: atomicBudgetMs * 4,
       env: { ...process.env, NODE_OPTIONS: "--import=" + preload, SOLARSQL_TEST_BLOCK_TARGET: target },
     });
     const module = join(dir, "consumer/example/modules/orders/module.ts");
@@ -140,7 +151,7 @@ test("npm pack, install, and run the CLI from node_modules", { timeout: 180_000 
     writeFileSync(module, moduleBefore.replace("update orders set note = :note where id = :id", "update orders set note = :note where id = :id and status = 'draft'"));
     const generatedPath = join(dir, "consumer/example/modules/orders/solarsql.generated.ts");
     const generatedBefore = readFileSync(generatedPath, "utf8");
-    const outputTimeout = atomicRun("solarsql.generated.ts", ["build", "--timeout-ms", "500", "example/solarsql.config.ts"]);
+    const outputTimeout = atomicRun("solarsql.generated.ts", ["build", "--timeout-ms", String(atomicBudgetMs), "example/solarsql.config.ts"]);
     assert.ifError(outputTimeout.error);
     assert.equal(outputTimeout.status, 1, outputTimeout.stderr);
     assert.match(outputTimeout.stderr, /atomic replacement started/);
@@ -166,7 +177,7 @@ test("npm pack, install, and run the CLI from node_modules", { timeout: 180_000 
       'Object.defineProperty(process, "send", { value: () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0) });',
       "",
     ].join("\n") + readFileSync(configPath, "utf8"));
-    const migrationTimeout = atomicRun("migrations/index.ts", ["migration", "atomic_timeout", "--timeout-ms", "500", "example/solarsql.config.ts"]);
+    const migrationTimeout = atomicRun("migrations/index.ts", ["migration", "atomic_timeout", "--timeout-ms", String(atomicBudgetMs), "example/solarsql.config.ts"]);
     const lock = join(dir, "consumer/example/migrations/.solarsql-generation.lock");
     assert.ifError(migrationTimeout.error);
     assert.equal(migrationTimeout.status, 1, migrationTimeout.stderr);
