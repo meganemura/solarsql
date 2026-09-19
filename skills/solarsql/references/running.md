@@ -73,10 +73,6 @@ A caller can also reach past the generated queries and commands and run raw SQL 
 - Durable Object: `const rows = ctx.storage.sql.exec(sql).toArray();` -- `.exec()` returns a cursor, so `.toArray()` reads it into a plain array (`src/durable.ts` uses this same pattern throughout). A Durable Object has no REPL and no external client, so run this line temporarily inside code where `ctx.storage` is already in scope -- typically the constructor's `blockConcurrencyWhile` block -- log the rows, then delete the line once you have confirmed what you needed.
 - Node: `const rows = raw.prepare(sql).all();` -- `raw`, the underlying `node:sqlite` `DatabaseSync` a test or script constructs and passes to `node()`, returns rows as a plain array too.
 
-The same `ctx.storage` reference also exposes `sql.databaseSize` (the current database size in bytes) directly, reachable the same way as the raw SQL line above. solarsql does not surface `databaseSize` through `observe()`, because it is a whole-database snapshot rather than a per-statement value.
-
-`ctx.storage` also exposes three Point-In-Time Recovery methods -- `getCurrentBookmark()`, `getBookmarkForTime(timestamp)`, and `onNextSessionRestoreBookmark(bookmark)` -- directly, reachable the same way. solarsql does not wrap them, because they act on the whole storage rather than on a typed query or command.
-
 `options.observe` is a hook for a logger or a tracer, called once per call:
 
 ```ts
@@ -95,6 +91,23 @@ The adapter contains synchronous throws and rejected observer promises, and does
 An observer that needs failure reporting must handle and report its own delivery errors.
 
 Both D1 and a Durable Object bill on `rows_read` and `rows_written`, so a cost tracer reads `e.meta` on either engine.
+
+## On a Durable Object
+
+- One object per entity: one tenant, one document, one game. The object's storage holds one SQLite database, private to that object, so a module's tables exist inside every object of that class, and a command runs against the one object the request reached. [Durable Objects SQL storage API](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/), checked 2026-09-19: "The `SqlStorage` interface encapsulates methods that modify the SQLite database embedded within a Durable Object."
+- The constructor applies pending migration files under `blockConcurrencyWhile`, before any request reaches the object's code. See [migrations.md, Applying](migrations.md#applying).
+- A command is one `transactionSync` call: every plan statement, assert, and `returns` runs synchronously inside it. `durable()` still returns a promise from `db.run()`, so the same module code also runs on D1's own async `batch()` (ADR 0006, ADR 0032). Nothing inside the call awaits; this is why a plan holds SQL only, never a callback.
+- A failed assert, or a row a constraint rejects, rolls the whole command back inside that one `transactionSync` call and comes back as a value (ADR 0023); the object stays usable for the next request. A thrown error that is not one of those: read it with `failureClass(error)` (the table in "Values across adapters", above).
+- An alarm handler calls the same commands, the same way a fetch handler does:
+
+  ```ts
+  async alarm() {
+    await db.run(orderCommands.expireDraft, { id });
+  }
+  ```
+
+  [Durable Objects Alarms API](https://developers.cloudflare.com/durable-objects/api/alarms/), checked 2026-09-19, documents the `alarm()` handler and `setAlarm()`. Verified on Miniflare 5.20260828.0-alpha on 2026-09-19: an alarm set from a request fires and its handler runs a command (`test/miniflare/durable-alarm.test.ts`).
+- What the adapter does not wrap, and why: `ctx.storage.sql.databaseSize` (the current database size in bytes) is reachable directly, the same way as the raw SQL line above; solarsql does not surface it through `observe()`, because it is a whole-database snapshot rather than a per-statement value. `ctx.storage` also exposes three Point-In-Time Recovery methods -- `getCurrentBookmark()`, `getBookmarkForTime(timestamp)`, and `onNextSessionRestoreBookmark(bookmark)` -- directly, reachable the same way; solarsql does not wrap them either, because they act on the whole storage rather than on a typed query or command.
 
 ## Ids
 
