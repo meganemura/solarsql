@@ -13,6 +13,8 @@ Unknown help targets and extra discovery arguments print usage to stderr and exi
 npx solarsql init <module> [dir]
 npx solarsql build [--timeout-ms 30000] [solarsql.config.ts]
 npx solarsql build --check [--timeout-ms 30000] [solarsql.config.ts]
+npx solarsql build --json [--timeout-ms 30000] [solarsql.config.ts]
+npx solarsql inspect [--timeout-ms 30000] [solarsql.config.ts]
 npx solarsql migration <name> [--intent changes.json] [--timeout-ms 30000] [solarsql.config.ts]
 npx solarsql query <module>.<catalog>.<name> --database <file.sqlite> [--params '{"id":"1"}'] [--timeout-ms 30000] [solarsql.config.ts]
 ```
