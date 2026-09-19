@@ -133,6 +133,7 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0118](adr/0118-a-created-search-table-is-repopulated-from-its-insert-trigger.md) | A created search table is repopulated from its insert trigger |
 | [0119](adr/0119-rehearsal-refuses-an-unexpected-dropped-table-dropped-column-or-changed-column-type.md) | Rehearsal refuses an unexpected dropped table, dropped column, or changed column type |
 | [0120](adr/0120-a-thrown-engine-error-classifies-as-transient-or-permanent.md) | A thrown engine error classifies as transient or permanent |
+| [0121](adr/0121-rehearsals-snapshot-step-uses-vacuum-into-not-backup.md) | Rehearsal's snapshot step uses `vacuum into`, not `backup` |
 | [0122](adr/0122-inspect-carries-the-query-plan.md) | Inspect carries the query plan |
 | [0123](adr/0123-migrate-names-the-file-that-introduced-a-foreign-key-violation.md) | `migrate()` names the file that introduced a foreign-key violation |
 | [0124](adr/0124-a-catalog-query-runs-from-the-shell.md) | A catalog query runs from the shell |

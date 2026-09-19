@@ -1,6 +1,6 @@
 // Responsibility: rehearse one SQL transition on a disposable database snapshot.
 // Boundary: local SQLite evidence only; this does not deploy or certify data meaning.
-import { backup, constants, DatabaseSync } from 'node:sqlite';
+import { constants, DatabaseSync } from 'node:sqlite';
 import { channel } from 'node:diagnostics_channel';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -231,7 +231,18 @@ export async function rehearse(database: string, sql: string, checks: RehearsalC
     end();
     const path = join(dir, 'snapshot.sqlite');
     end = phase('backup');
-    await backup(source, path);
+    // node:sqlite's backup() runs sqlite3_backup_step on the threadpool and
+    // opens a second native handle on the destination; measured at 8,000-
+    // 30,000 ms per call on this machine once a WAL source had been touched
+    // by an earlier call in the same process, with the process at 0% CPU (so
+    // not a SQLite retry loop; node's own BUSY/LOCKED handling has no sleep
+    // either -- src/node_sqlite.cc's BackupJob just reschedules). `vacuum
+    // into` runs synchronously on the already-open source connection, reads
+    // through the same B-tree layer so it still only sees committed data
+    // (verified: test/slow/rehearse-file.test.ts's WAL-sourced test still
+    // finds the committed row and not the in-progress one), and took under
+    // 12 ms per call in the same reproduction. See ADR 0121.
+    source.prepare('vacuum into ?').run(path);
     end();
     end = phase('close-source');
     source.close();

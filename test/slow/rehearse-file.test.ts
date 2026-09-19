@@ -3,11 +3,13 @@
 // Boundary: deployment ordering and arbitrary data meaning remain caller
 // checks; rehearseSnapshot's in-process checks (cases, assertions, queries,
 // expected findings) live in test/rehearse.test.ts, not here.
-// These two tests live apart from the rest of rehearse.test.ts because they
-// go through node:sqlite's native on-disk backup, whose lock wait was
-// measured at 8-30 seconds per call on macOS (the same backup takes 2 ms in
-// a standalone script); every other rehearse() behavior is exercised through
-// rehearseSnapshot() against an in-memory database, in milliseconds.
+// These tests live apart from the rest of rehearse.test.ts because they go
+// through rehearse()'s on-disk snapshot step against a real file, not an
+// in-memory database. That step used node:sqlite's native backup(), whose
+// BUSY/LOCKED retry loop measured 8,000-30,000 ms per call on macOS once a
+// WAL source had been touched earlier in the same process (ADR 0121);
+// rehearse() now uses `vacuum into`, and the last test below asserts that
+// phase stays under 2,000 ms so a regression back to backup() fails loudly.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { subscribe, unsubscribe } from 'node:diagnostics_channel';
@@ -72,4 +74,24 @@ test('rehearsal snapshots committed WAL data and rejects broken foreign keys', a
   const failed = await rehearse(path,'pragma defer_foreign_keys = on; delete from parents');
   assert.equal(failed.ok,false);
   assert.equal(db.prepare('select count(*) as n from parents').get()!.n,1);
+});
+
+test('rehearsal snapshots a one-row database quickly, plain and WAL', async t => {
+  for (const mode of ['plain', 'wal'] as const) {
+    const events: { phase: string; event: string; ms?: number }[] = [];
+    const observe = (message: unknown) => events.push(message as typeof events[number]);
+    subscribe('solarsql.rehearse', observe);
+    t.after(() => { unsubscribe('solarsql.rehearse', observe); });
+    const dir = mkdtempSync(join(tmpdir(), `solarsql-rehearsal-speed-${mode}-`));
+    t.after(() => rmSync(dir, {recursive:true,force:true}));
+    const path = join(dir,'source.sqlite');
+    const db = new DatabaseSync(path);
+    if (mode === 'wal') db.exec('pragma journal_mode = wal');
+    db.exec("create table items(id integer primary key, value text not null); insert into items values (1,'kept')");
+    db.close();
+    const report = await rehearse(path,'alter table items add column note text', {});
+    assert.equal(report.ok,true,JSON.stringify(report));
+    const backupMs = events.find(e => e.phase === 'backup' && e.event === 'end')?.ms;
+    assert.ok(backupMs !== undefined && backupMs < 2000, `${mode} backup phase took ${backupMs} ms`);
+  }
 });

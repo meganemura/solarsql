@@ -4,6 +4,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: rehearse()'s on-disk snapshot step used node:sqlite's `backup()`, which measured 8-30 s waits on a tiny database once a WAL source had been touched earlier in the same process; it now uses `vacuum into`, which took under 12 ms in the same reproduction (ADR 0121).
 - Added: `npx solarsql query <module>.<catalog>.<name> --database <file.sqlite> [--params json]` runs one catalog query against a local SQLite file and prints its rows as one JSON array on stdout; a `commands(...)` entry is refused, naming `db.run` (ADR 0124).
 - Added: `inspect`'s `result.inspection.operations` entries now carry `plan` for a SELECT, VALUES, or WITH-prefixed read statement (`null` for a write): `EXPLAIN QUERY PLAN`'s own rows, the tables it scans in full, the tables and indexes it searches, and whether a sort or a group needed a temporary B-tree (ADR 0122).
 - Added: failureClass(error), exported from the package root, sorts a thrown engine error into transient (outcome not_applied or unknown), permanent, or unclassified, from the error text D1, a Durable Object, and SQLite document; retry stays the caller's decision (ADR 0120).
