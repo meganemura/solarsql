@@ -8,6 +8,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { build } from "../src/build/build.ts";
+import { brandName } from "../src/build/typegen.ts";
 
 const library = resolve(import.meta.dirname, "../src/index.ts");
 
@@ -95,6 +96,16 @@ export function moduleConfigEntry(i: number): string {
   return i > 0 ? `{ dir: "./t${i}", readsAll: true }` : `"./t0"`;
 }
 
+// public.ts, matching init's publicTemplate shape (the id type, the
+// queries, and the commands): ADR 0128 has the generated file import a
+// used id type from here, so a module past t0 needs this to build.
+export function publicFile(i: number): string {
+  const tableName = `t${i}`;
+  return `export type { ${brandName(tableName)} } from "./solarsql.generated.ts";
+export { ${tableName}Queries, ${tableName}Commands } from "./module.ts";
+`;
+}
+
 // Writes a fresh project of N modules and M statements each under `dir`,
 // and returns the path of its solarsql.config.ts. `libraryPath` defaults to
 // this repository's own src/index.ts (spike/12's own use); a caller that
@@ -105,6 +116,7 @@ export function writeProject(dir: string, n: number, m: number, libraryPath: str
     const moduleDir = join(dir, `t${i}`);
     mkdirSync(moduleDir, { recursive: true });
     writeFileSync(join(moduleDir, "module.ts"), moduleFiles(i, m, libraryPath));
+    writeFileSync(join(moduleDir, "public.ts"), publicFile(i));
   }
   const configPath = join(dir, "solarsql.config.ts");
   const modules = Array.from({ length: n }, (_, i) => moduleConfigEntry(i)).join(", ");

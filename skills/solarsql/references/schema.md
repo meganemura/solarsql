@@ -95,6 +95,7 @@ Three files and one line: `modules/<name>/module.ts`, `modules/<name>/public.ts`
 
 ```ts
 // public.ts: the id type, the queries, and the commands. Tables stay private.
+// (other modules' generated files import the id type from here)
 export type { OrdersId } from "./solarsql.generated.ts";
 export { orderQueries, orderCommands } from "./module.ts";
 ```

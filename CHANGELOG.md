@@ -13,6 +13,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 - Fixed: the cross-module write error now names the owner's `module.ts` and its commands catalog, instead of only the owner module's name.
 - Changed: `npx solarsql build` now collects every schema-construction failure of a module (a failing table, index, view, trigger, or search table) in one run instead of stopping at the first; after a failed table, the module's remaining objects are skipped and counted in one line, and its statements are not typed until its schema builds.
 - Changed: a stale query literal's tsc error now names the remedy (`run npx solarsql build`) as its expected type, not another query's SQL (ADR 0126).
+- Changed: the generated file now imports another module's id type through that module's `public.ts`, not its generated file (ADR 0128); upgrade by running `npx solarsql build` once. A `public.ts` that stops exporting an id type another module uses now fails the build with `module <importer> uses <Type> of module <owner>, and <owner>/public.ts does not export it`.
 
 ## 0.5.0 (2026-09-19)
 

@@ -2,8 +2,8 @@
 // After a change to a statement, run `npx solarsql build`, and this file follows.
 // Module reports.
 import type { Meta } from "../../../src/index.ts";
-import type { CustomersId } from "../customers/solarsql.generated.ts";
-import type { OrdersId } from "../orders/solarsql.generated.ts";
+import type { CustomersId } from "../customers/public.ts";
+import type { OrdersId } from "../orders/public.ts";
 
 export type Generated = {
   /** Confirmed revenue per customer, largest first. */

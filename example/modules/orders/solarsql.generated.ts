@@ -2,7 +2,7 @@
 // After a change to a statement, run `npx solarsql build`, and this file follows.
 // Module orders.
 import type { Id, Meta } from "../../../src/index.ts";
-import type { CustomersId } from "../customers/solarsql.generated.ts";
+import type { CustomersId } from "../customers/public.ts";
 
 // The id of a row of order_lines.
 export type OrderLinesId = Id<"order_lines">;

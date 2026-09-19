@@ -679,8 +679,12 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
       for (const b of used) {
         const from = brandModule.get(b);
         if (!from || from === m.name) continue;
-        const dir = modules.find((x) => x.name === from)!.dir;
-        let specifier = relative(m.dir, join(dir, GENERATED_FILE)).split("\\").join("/");
+        const ownerDir = modules.find((x) => x.name === from)!.dir;
+        const publicPath = join(ownerDir, "public.ts");
+        if (!existsSync(publicPath) || !publicExports(readFileSync(publicPath, "utf8")).has(b)) {
+          throw new BuildError(`module ${m.name} uses ${b} of module ${from}, and ${from}/public.ts does not export it. Add: export type { ${b} } from "./solarsql.generated.ts";`);
+        }
+        let specifier = relative(m.dir, publicPath).split("\\").join("/");
         if (!specifier.startsWith(".")) specifier = `./${specifier}`;
         importedBrands.set(specifier, [...(importedBrands.get(specifier) ?? []), b]);
       }
@@ -716,10 +720,29 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
   }
 }
 
+// The names an owner's public.ts makes available to another module: an
+// identifier inside an `export type { ... }` or `export { ... }` list (its
+// external name, after `as` when the list renames it), or the name of an
+// `export type <Name> = ...` declaration. A regex over the statements, not
+// a TypeScript parse: public.ts is a short, hand-written file (ADR 0128).
+function publicExports(text: string): Set<string> {
+  const names = new Set<string>();
+  for (const match of text.matchAll(/export\s+(?:type\s+)?\{([^}]*)\}/g)) {
+    for (const item of match[1]!.split(",")) {
+      const name = item.trim().split(/\s+as\s+/).pop()?.trim();
+      if (name) names.add(name);
+    }
+  }
+  for (const match of text.matchAll(/export\s+type\s+(\w+)\s*=/g)) names.add(match[1]!);
+  return names;
+}
+
 // A module imports another module through its public.ts only (ADR 0008).
 // The check reads the import and export specifiers of the module's own
-// files. The generated file is the build's, and it imports the id types of
-// other modules from their generated files by design (ADR 0025).
+// files. The generated file is the build's own, and it now imports the id
+// types of other modules through their public.ts too, the same door as
+// every hand-written file (ADR 0128, which amends ADR 0025's earlier
+// exception for the generated file).
 function checkImports(modules: readonly Module[]): void {
   for (const m of modules) {
     for (const file of readdirSync(m.dir).filter((f) => f.endsWith(".ts") && f !== GENERATED_FILE).sort()) {

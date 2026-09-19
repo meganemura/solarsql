@@ -123,6 +123,7 @@ Shared SQL reports all its catalog locations.
 | `is used twice` | an included command and the including command share an assert name; rename one |
 | `the returns clause uses changes()` | read the command's changes result instead |
 | `RETURNING clause is discarded` | move the read into the command's `returns` field instead |
+| `does not export it` | a module's generated file uses another module's id type that the owner's `public.ts` no longer exports; add the `export type { ... }` line the message names |
 | `use a named parameter (:name) instead of` | replace `?` with `:name` |
 | `Use its public.ts, or declare readsAll for a report module` | a read of another module's table: read through the owner's `public.ts`, or declare `readsAll` on a report module; a write (`inserts into`, `updates`, `deletes from`) moves to the owner |
 | `shows public.ts; import from there` | import from the other module's `public.ts` |

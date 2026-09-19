@@ -425,6 +425,35 @@ describe("solarsql build", () => {
     }
   });
 
+  test("the generated file imports an id type through the owner module's public.ts (ADR 0128)", async () => {
+    for (const [m, file] of [["orders", "solarsql.generated.ts"], ["reports", "solarsql.generated.ts"]] as const) {
+      const text = readFileSync(join(root, `example/modules/${m}/${file}`), "utf8");
+      assert.match(text, /import type \{ CustomersId \} from "\.\.\/customers\/public\.ts";/);
+    }
+    assert.match(readFileSync(join(root, "example/modules/reports/solarsql.generated.ts"), "utf8"), /import type \{ OrdersId \} from "\.\.\/orders\/public\.ts";/);
+  });
+
+  test("a public.ts that stops exporting an id type another module uses fails the build", async () => {
+    const dir = copy();
+    try {
+      const publicTs = join(dir, "example/modules/customers/public.ts");
+      writeFileSync(publicTs, readFileSync(publicTs, "utf8").replace('export type { CustomersId } from "./solarsql.generated.ts";\n', ""));
+      await expectBuildError(dir, /module orders uses CustomersId of module customers, and customers\/public\.ts does not export it\. Add: export type \{ CustomersId \} from "\.\/solarsql\.generated\.ts";/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a missing public.ts is the same refusal as one that drops the id type", async () => {
+    const dir = copy();
+    try {
+      rmSync(join(dir, "example/modules/customers/public.ts"));
+      await expectBuildError(dir, /module orders uses CustomersId of module customers, and customers\/public\.ts does not export it\. Add: export type \{ CustomersId \} from "\.\/solarsql\.generated\.ts";/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("an index on another module's table is refused", async () => {
     const dir = copy();
     try {
