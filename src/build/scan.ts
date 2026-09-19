@@ -903,6 +903,18 @@ function boundRef(t: readonly Token[], range: { start: number; end: number }): {
   return null;
 }
 
+// A range that is exactly `value ->> 'key'` -- the shape jsonKeys' own
+// per-occurrence branches key off (an adjacent comparison operator or
+// "select"), but boundRef cannot recognize, since its middle token is
+// "->>", never ".". A row-value position spelling a JSON key needs this
+// matcher, in the same style, to pair with the boundRef found at the
+// tuple's matching position.
+function boundJsonKey(t: readonly Token[], range: { start: number; end: number }): { key: string } | null {
+  if (range.end - range.start !== 3) return null;
+  if (!isKeyword(t[range.start], "value") || t[range.start + 1]!.text !== "->>" || t[range.start + 2]!.type !== "string") return null;
+  return { key: t[range.start + 2]!.text.slice(1, -1).replace(/''/g, "'") };
+}
+
 // A range that is a single named parameter, not an anonymous "?" one (which
 // carries no key to type).
 function boundParam(t: readonly Token[], range: { start: number; end: number }): Token | null {
@@ -945,7 +957,10 @@ function insertTarget(t: readonly Token[], i: number): number | null {
 // sits at index p: the parenthesized region around the json_each call, or
 // the whole statement. Each key carries the column it is compared with
 // (`<ref> = value ->> 'k'`), set into (`set c = (select value ->> 'k' ...`),
-// or listed for (`c in (select value ->> 'k' ...`), when one is written.
+// or listed for (`c in (select value ->> 'k' ...`), when one is written --
+// or, for the two row-value shapes below, when it sits at a tuple position
+// that pairs with a column at the same position, since none of those three
+// per-occurrence checks ever sees a "(" or "," neighbor.
 function jsonKeys(t: readonly Token[], p: number): { key: string; ref: { alias: string | null; column: string } | null }[] {
   const scope = t[p - 2]!.depth;
   let from = p;
@@ -959,6 +974,72 @@ function jsonKeys(t: readonly Token[], p: number): { key: string; ref: { alias: 
     if (dir === 1 && t[i + 1]?.text === "." && t[i + 2]?.type === "ident") return { alias: unquote(a.text), column: unquote(t[i + 2]!.text) };
     return { alias: null, column: unquote(a.text) };
   };
+
+  // Refs found by the two row-value shapes below, keyed by the "value"
+  // token's own index, so the per-occurrence loop further down can look one
+  // up instead of running its own neighbor checks against it.
+  const positionRefs = new Map<number, { alias: string | null; column: string } | null>();
+
+  // `(value ->> 'a', ...) <op> (col1, ...)`, in a WHERE, ON, HAVING, or CASE
+  // WHEN -- either side may hold the JSON positions, matching how
+  // rowValueComparison itself treats a row-value comparison generally. Its
+  // own tupleOpeners check already keeps this from matching a function
+  // call's argument list or a SET clause's own column list (whose preceding
+  // keyword, "set", is not a tupleOpener), and its own "select" guard on
+  // each side already keeps it from matching the SET-select shape below.
+  for (let i = from; i < to; i++) {
+    if (t[i]!.text !== "(") continue;
+    const comparison = rowValueComparison(t, i);
+    if (!comparison) continue;
+    for (const pair of comparison.pairs) {
+      const leftIsKey = boundJsonKey(t, pair.left);
+      const rightIsKey = boundJsonKey(t, pair.right);
+      const leftRef = boundRef(t, pair.left);
+      const rightRef = boundRef(t, pair.right);
+      if (leftIsKey && rightRef) positionRefs.set(pair.left.start, rightRef);
+      else if (rightIsKey && leftRef) positionRefs.set(pair.right.start, leftRef);
+    }
+    i = comparison.rhsClose;
+  }
+
+  // `(c1, c2, ...) = (select value ->> 'a', value ->> 'b', ... from
+  // json_each(...) ...)`: a row-value assignment (SET) or comparison
+  // (WHERE/HAVING) whose right-hand side is a SELECT, which
+  // rowValueAssignment (above, SET only) and rowValueComparison (above,
+  // refuses a "select" right-hand side) both decline to look inside, so
+  // this scope's own boundary is read directly instead -- `from` is this
+  // SELECT's own "(" exactly when it is preceded by "=" and a column list's
+  // closing ")", never a bare column (that shape stays branch three's own
+  // job, below, unchanged, and covers both SET and WHERE already). No
+  // "set" keyword is required before the column list: the same positional
+  // pairing between the select list and the column list holds whichever
+  // clause the "=" sits in, so one scan serves both.
+  if (
+    isKeyword(t[from + 1], "select") &&
+    t[from - 1]?.text === "=" && t[from - 1]?.depth === t[from]!.depth &&
+    t[from - 2]?.text === ")" && t[from - 2]?.depth === t[from]!.depth
+  ) {
+    const setDepth = t[from]!.depth;
+    const lhsClose = from - 2;
+    let lhsOpen = lhsClose - 1;
+    while (lhsOpen > 0 && !(t[lhsOpen]!.depth === setDepth && t[lhsOpen]!.text === "(")) lhsOpen--;
+    if (t[lhsOpen]?.text === "(") {
+      const cols = tokenRanges(t, lhsOpen + 1, lhsClose);
+      const selectDepth = t[from + 1]!.depth;
+      let itemsEnd = to;
+      for (let m = from + 2; m < to; m++) {
+        if (t[m]!.depth === selectDepth && isKeyword(t[m], "from")) { itemsEnd = m; break; }
+      }
+      const items = tokenRanges(t, from + 2, itemsEnd);
+      for (let pos = 0; pos < items.length; pos++) {
+        const item = items[pos]!;
+        const col = cols[pos];
+        if (!col || !boundJsonKey(t, item)) continue;
+        positionRefs.set(item.start, boundRef(t, col));
+      }
+    }
+  }
+
   const keys = new Map<string, { alias: string | null; column: string } | null>();
   for (let k = from; k < to; k++) {
     if (!isKeyword(t[k], "value") || t[k + 1]?.text !== "->>" || t[k + 2]?.type !== "string") continue;
@@ -966,7 +1047,9 @@ function jsonKeys(t: readonly Token[], p: number): { key: string; ref: { alias: 
     let ref: { alias: string | null; column: string } | null = null;
     const before = t[k - 1];
     const after = t[k + 3];
-    if (before && compareOps.has(before.text.toLowerCase())) {
+    if (positionRefs.has(k)) {
+      ref = positionRefs.get(k) ?? null;
+    } else if (before && compareOps.has(before.text.toLowerCase())) {
       const r = refAt(k - 2, -1);
       ref = r ?? (t[k - 2]?.text === "." ? refAt(k - 2, -1) : null);
     } else if (after && compareOps.has(after.text.toLowerCase())) {

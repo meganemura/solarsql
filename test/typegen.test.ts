@@ -1170,6 +1170,104 @@ describe("a row-value comparison pairs each parameter with the column at the sam
   });
 });
 
+// jsonKeys() (src/build/scan.ts) resolves a `value ->> 'key'` use's real
+// column type by finding the column it is compared with or set into. A
+// row-value tuple puts that key at a position next to "(" or "," instead,
+// which none of jsonKeys' three per-occurrence checks (an adjacent
+// comparison operator on either side, or a bare column right before
+// "select") ever sees, so each key fell back to SqlValue before this fix --
+// on the WHERE side and the SET side, for two different reasons: the WHERE
+// side's row-value comparison and the SET side's row-value assignment with
+// a SELECT right-hand side are two separate shapes in scan.ts, found by two
+// separate scans.
+describe("a row-value tuple through json_each resolves each key's real column type", () => {
+  const jsonRowValueDdl = [
+    "create table orders (id text primary key not null, customer_id text not null, status text not null check (status in ('draft', 'confirmed')), note text) strict",
+  ];
+
+  test("a single-key json_each comparison, the control this fix must leave unchanged", () => {
+    const engine = new Engine(jsonRowValueDdl);
+    try {
+      const t = new Typer(engine, new Map());
+      const a = t.analyze("select o.id from orders o, json_each(:ids) where value ->> 'id' = o.id", "m");
+      assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["ids", 'readonly { "id": string }[]']]);
+    } finally { engine.close(); }
+  });
+
+  test("a WHERE row-value tuple with the JSON keys on the left resolves both keys' real column types", () => {
+    const engine = new Engine(jsonRowValueDdl);
+    try {
+      const t = new Typer(engine, new Map());
+      const a = t.analyze(
+        "select o.id from orders o, json_each(:ids) where (value ->> 'id', value ->> 'status') = (o.id, o.status)",
+        "m",
+      );
+      assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["ids", 'readonly { "id": string; "status": "draft" | "confirmed" }[]']]);
+    } finally { engine.close(); }
+  });
+
+  test("a WHERE row-value tuple with the JSON keys on the right resolves both keys' real column types", () => {
+    const engine = new Engine(jsonRowValueDdl);
+    try {
+      const t = new Typer(engine, new Map());
+      const a = t.analyze(
+        "select o.id from orders o, json_each(:ids) where (o.id, o.status) = (value ->> 'id', value ->> 'status')",
+        "m",
+      );
+      assert.deepEqual(a.params.map((p) => [p.name, p.type]), [["ids", 'readonly { "id": string; "status": "draft" | "confirmed" }[]']]);
+    } finally { engine.close(); }
+  });
+
+  test("a SET row-value assignment from a json_each SELECT resolves every key's real column type", () => {
+    const engine = new Engine(jsonRowValueDdl);
+    try {
+      const t = new Typer(engine, new Map());
+      const a = t.analyze(
+        "update orders set (note, status) = (select value ->> 'note', value ->> 'status' from json_each(:rows) where value ->> 'id' = orders.id)",
+        "m",
+      );
+      assert.deepEqual(
+        a.params.map((p) => [p.name, p.type]),
+        [["rows", 'readonly { "note": string | null; "status": "draft" | "confirmed"; "id": string }[]']],
+      );
+    } finally { engine.close(); }
+  });
+
+  test("a mixed row-value tuple, one position a JSON key and the other a plain column, still leaves the plain parameter typed by the existing row-value comparison", () => {
+    const engine = new Engine(jsonRowValueDdl);
+    try {
+      const t = new Typer(engine, new Map());
+      const a = t.analyze(
+        "select o.id from orders o, json_each(:ids) where (value ->> 'id', o.status) = (o.id, :s)",
+        "m",
+      );
+      assert.deepEqual(a.params.map((p) => [p.name, p.type]), [
+        ["ids", 'readonly { "id": string }[]'],
+        ["s", '"draft" | "confirmed"'],
+      ]);
+    } finally { engine.close(); }
+  });
+
+  test("a JSON row-value comparison types the same as the same keys written as an AND chain, for any non-empty subset and either operand order", () => {
+    const engine = new Engine(jsonRowValueDdl);
+    try {
+      const t = new Typer(engine, new Map());
+      const columns = ["id", "customer_id", "status", "note"];
+      hegel.test((tc) => {
+        const subset = tc.draw(gs.arrays(gs.sampledFrom(columns), { minSize: 1, maxSize: columns.length, unique: true }));
+        const jsonSideFirst = tc.draw(gs.sampledFrom([true, false]));
+        const andChain = `select o.id from orders o, json_each(:ids) where ${subset.map((c) => `value ->> '${c}' = o.${c}`).join(" and ")}`;
+        const jsonSide = `(${subset.map((c) => `value ->> '${c}'`).join(", ")})`;
+        const columnSide = `(${subset.map((c) => `o.${c}`).join(", ")})`;
+        const rowValue = `select o.id from orders o, json_each(:ids) where ${jsonSideFirst ? `${jsonSide} = ${columnSide}` : `${columnSide} = ${jsonSide}`}`;
+        const andChainParams = t.analyze(andChain, "m").params.map((p) => [p.name, p.type]);
+        const rowValueParams = t.analyze(rowValue, "m").params.map((p) => [p.name, p.type]);
+        assert.deepEqual(rowValueParams, andChainParams);
+      });
+    } finally { engine.close(); }
+  });
+});
+
 // D1 and a Durable Object's own storage refuse a function call outside
 // workerd's own allowlist at prepare (ADR 0113). Engine.prepare() mirrors
 // that refusal, so the build catches it instead of only the real deploy
