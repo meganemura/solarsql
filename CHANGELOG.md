@@ -4,6 +4,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Added: `inspect`'s `result.inspection.operations` entries now carry `plan` for a SELECT, VALUES, or WITH-prefixed read statement (`null` for a write): `EXPLAIN QUERY PLAN`'s own rows, the tables it scans in full, the tables and indexes it searches, and whether a sort or a group needed a temporary B-tree (ADR 0122).
 - Added: failureClass(error), exported from the package root, sorts a thrown engine error into transient (outcome not_applied or unknown), permanent, or unclassified, from the error text D1, a Durable Object, and SQLite document; retry stays the caller's decision (ADR 0120).
 - Added: rehearsal now reports each table's columns (`columns.before`/`columns.after`) and fails with `SCHEMA_SHAPE_CHANGED` on an unexpected dropped table, dropped column, or changed column type; a new `checks.json` field, `expected`, names an intentional one (ADR 0119).
 - Added: a created search table whose target schema has exactly one `INSERT` trigger in the documented shape (schema.md, "Search tables") now gets a repopulation insert, generated from that trigger and placed right after its `create virtual table` statement; any other shape leaves a comment on the create statement instead of a silent gap (ADR 0118).

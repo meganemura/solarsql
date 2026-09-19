@@ -48,6 +48,13 @@ export type OutputColumn = {
   type: string | null;
 };
 
+// One row of `EXPLAIN QUERY PLAN`, https://sqlite.org/eqp.html: `id` names
+// the row, `parent` its enclosing row (0 for a top-level one, so a CTE or a
+// subquery keeps its own rows nested under it), `detail` the plan text a
+// SCAN, a SEARCH, or a "USE TEMP B-TREE FOR ..." line. The fourth column
+// SQLite returns, `notused`, carries no documented meaning and is dropped.
+export type PlanRow = { id: number; parent: number; detail: string };
+
 export type Access = {
   action: "read" | "insert" | "update" | "delete" | "function" | "other";
   table: string | null;
@@ -65,8 +72,8 @@ export type Access = {
 // Engine constructor's own DDL loop (a CHECK, VIEW, or TRIGGER body is SQL
 // too), and migration.ts's applied(), a second DDL entry point outside this
 // class (see withDeniedFunctions below; ADR 0113, ADR 0114). The build's own
-// internal SQL -- accesses(), columns(), fullScans(), affinities(), and a
-// diagnostic `select sqlite_version()` -- is unaffected by design (see
+// internal SQL -- accesses(), columns(), fullScans(), plan(), affinities(),
+// and a diagnostic `select sqlite_version()` -- is unaffected by design (see
 // Engine.prepare()'s own comment for why).
 // Copied verbatim from cloudflare/workerd's ALLOWED_SQLITE_FUNCTIONS,
 // src/workerd/util/sqlite.c++, commit c240f0e, lines 380-543. workerd
@@ -364,6 +371,18 @@ export class Engine {
       }
     });
     return out;
+  }
+
+  // `EXPLAIN QUERY PLAN <sql>` as SQLite returns it, https://sqlite.org/eqp.html.
+  // build.ts derives an operation's SEARCH/SCAN/temp-B-tree summary from
+  // `detail`'s grammar (also documented there); this method only shapes the
+  // raw rows, the same way fullScans() above reads them for its own purpose.
+  plan(sql: string): PlanRow[] {
+    return (this.db.prepare(`explain query plan ${sql}`).all() as { id: number; parent: number; detail: string }[]).map((r) => ({
+      id: r.id,
+      parent: r.parent,
+      detail: r.detail,
+    }));
   }
 
   // The declared type each output column would get in CREATE TABLE ... AS.

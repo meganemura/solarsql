@@ -11,11 +11,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Command, Config, Index, ModuleConfig, PlanItem, Query, Search, Table, Trigger, View } from "../index.ts";
 import { GUARD_DDL, GUARD_TABLE, assertStatement } from "../runtime/plan.ts";
 import { GENERATED_FILE, emitGenerated, emitMigrationsIndex, emitStub } from "./emit.ts";
-import { Engine, type Access, type OutputColumn } from "./facts.ts";
+import { Engine, type Access, type OutputColumn, type PlanRow } from "./facts.ts";
 import { applied, diff, introspect, open, type DropIntent, type Rename, type RenameRepair } from "./migration.ts";
 import type { MigrationIntent } from "./migration-intent.ts";
 import { migrationSequence, nextMigrationFile, withMigrationLock, writeNewMigration } from "./migration-files.ts";
-import { created, definitions, indexTarget, isKeyword, quoteIdent, significant, tokenize, triggerTarget, type RebuildRecord } from "./scan.ts";
+import { created, definitions, indexTarget, isKeyword, quoteIdent, significant, tokenize, triggerTarget, unquote, type RebuildRecord } from "./scan.ts";
 import { sqliteName } from "./scope.ts";
 import { shellArgument } from "./shell.ts";
 import { writeGeneratedFile } from "./output.ts";
@@ -53,6 +53,22 @@ export type BuildOptions = {
   inspect?: boolean;
 };
 
+// EXPLAIN QUERY PLAN's own summary of one read statement (a SELECT, a
+// VALUES, or a WITH-prefixed read), derived by summarizePlan() below. `rows`
+// is the plan verbatim, for a case the three derived fields don't cover; a
+// CTE or a subquery keeps its own rows here, unfolded, rather than folded
+// into its parent's. A name in `scans` or `searches[].table` is the alias
+// the SQL wrote (`from orders o` reports "o", not "orders"), because that
+// is what EXPLAIN QUERY PLAN's own `detail` text names; `fullScans()` (and
+// the build's own `scan` line, from it) resolves an alias back to the table
+// or tables it could mean, and this summary does not repeat that work.
+export type OperationPlan = {
+  rows: PlanRow[];
+  scans: string[];
+  searches: { table: string; index: string | null }[];
+  tempBtree: boolean;
+};
+
 export type OperationInspection = {
   module: string;
   sql: string;
@@ -62,7 +78,45 @@ export type OperationInspection = {
   origins: OutputColumn[];
   accesses: Access[];
   reads: string[];
+  // null for a write statement: EXPLAIN QUERY PLAN describes how a
+  // statement is read, and a write has no read plan of its own to report.
+  plan: OperationPlan | null;
 };
+
+// EXPLAIN QUERY PLAN's detail grammar, https://sqlite.org/eqp.html: a line
+// reads "SCAN <table>" or "SEARCH <table> USING [COVERING] INDEX <name>",
+// or "SEARCH <table> USING [INTEGER] PRIMARY KEY" when no sqlite_schema
+// index names the access path (a WITHOUT ROWID table's own key, or a
+// rowid-alias INTEGER PRIMARY KEY), or "USE TEMP B-TREE FOR ORDER BY" (or
+// GROUP BY, or DISTINCT) when the plan sorts or groups outside any index.
+// A trailing qualifier word ("EXISTS", "LEFT-JOIN") can follow either
+// clause; the patterns below anchor only the start of the line, not its end,
+// for that reason -- the same reason Engine.fullScans() anchors its own SCAN
+// match that way. The name each pattern captures is the alias as the SQL
+// wrote it, because that is what `detail` names; this function does not
+// resolve it back to a table the way Engine.fullScans() does.
+export function summarizePlan(rows: readonly PlanRow[]): OperationPlan {
+  const scans: string[] = [];
+  const searches: { table: string; index: string | null }[] = [];
+  let tempBtree = false;
+  for (const row of rows) {
+    const detail = row.detail;
+    if (detail.includes("USE TEMP B-TREE")) tempBtree = true;
+    const scan = /^SCAN\s+(\S+)/.exec(detail);
+    if (scan) {
+      scans.push(unquote(scan[1]!));
+      continue;
+    }
+    const indexed = /^SEARCH\s+(\S+)\s+USING\s+(?:COVERING\s+)?INDEX\s+(\S+)/.exec(detail);
+    if (indexed) {
+      searches.push({ table: unquote(indexed[1]!), index: unquote(indexed[2]!) });
+      continue;
+    }
+    const byKey = /^SEARCH\s+(\S+)\s+USING\s+(?:INTEGER\s+)?PRIMARY\s+KEY\b/.exec(detail);
+    if (byKey) searches.push({ table: unquote(byKey[1]!), index: null });
+  }
+  return { rows: [...rows], scans, searches, tempBtree };
+}
 
 export type BuildResult = {
   inspection?: { sqlite: string; operations: OperationInspection[] };
@@ -463,7 +517,8 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
       if (options.inspect) {
         for (const { key, analysis } of entries) {
           operations.push({ module: m.name, sql: key, locations: m.statementUses.get(key)!, params: analysis.params,
-            columns: analysis.columns, origins: engine.columns(analysis.sql), accesses: engine.accesses(analysis.sql), reads: analysis.reads });
+            columns: analysis.columns, origins: engine.columns(analysis.sql), accesses: engine.accesses(analysis.sql), reads: analysis.reads,
+            plan: isSelect(analysis.sql) ? summarizePlan(engine.plan(analysis.sql)) : null });
         }
       }
       const importedBrands = new Map<string, string[]>();

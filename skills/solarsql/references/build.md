@@ -136,6 +136,8 @@ Run `npx solarsql inspect solarsql.config.ts` for JSON with format `version: 1`.
 Types combine engine metadata with static scope and expression rules. Column origins are evidence, not a complete proof of the result type.
 The report identifies the local SQLite version and states that deployment compatibility was not verified.
 
+Each read operation's entry also carries `plan`: EXPLAIN QUERY PLAN's own account of that SELECT, VALUES, or WITH-prefixed read, or `null` for a write. `rows` holds the plan verbatim (`id`, `parent`, `detail`); `scans` names each table SQLite reads in full; `searches` names each table an index (or a table's own key) narrows, with the index name or `null` for a key with no separate index object; `tempBtree` is true when a sort, a group, or a DISTINCT needed a temporary B-tree because no index served it. A `SCAN` on a table with a WHERE clause is the same fact `build`'s own `scan` line already reports, from the same engine call. A name in `scans` or `searches[].table` is the alias as the SQL wrote it (`from orders o` reports `"o"`, not `"orders"`); the build's `scan` line names the table, resolved from that alias. The plan comes from node:sqlite's planner against an empty, freshly built schema; a deployed database that has run `ANALYZE` holds row-count statistics this planner does not have, and may choose a different plan.
+
 `inspect` and `build --json` emit one JSON document on stdout.
 Application import logs go to stderr. A premature import exit produces `BUILD_WORKER_FAILED`; inspect stderr to locate the cause.
 Inspection writes no build artifacts. Configuration and module imports still execute application JavaScript; inspection is not a sandbox.
