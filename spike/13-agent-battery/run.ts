@@ -14,7 +14,7 @@ import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "no
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { scenarios, type Scenario } from "./scenarios.ts";
-import { buildStarter } from "./starter.ts";
+import { buildStarter, finalizeStarter } from "./starter.ts";
 import { buildScaleStarter } from "./scale-project.ts";
 import { parseStream, countHunksOutsideTask } from "./metrics.ts";
 
@@ -149,6 +149,10 @@ export async function runBattery(argv: string[]): Promise<{ records: RunRecord[]
       try {
         scenario.setup(dir);
         scenario.setup(pristineDir);
+        // Only the starter the agent runs in needs its own git repository
+        // and smoke test (starter.ts's finalizeStarter); pristineDir is
+        // never touched by an agent, only diffed against.
+        finalizeStarter(dir);
         const { stdout, wallMs } = await spawnAgent(agent, dir, scenario.task, scenario.name);
         const streamPath = join(out, `${scenario.name}-${run}.stream.jsonl`);
         writeFileSync(streamPath, stdout);

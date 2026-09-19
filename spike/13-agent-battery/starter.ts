@@ -6,6 +6,7 @@
 // name, resolve without a network install on every platform.
 // Boundary: this file only builds the starter; scenarios.ts breaks it and
 // checks it, stub-agent.ts (or a real agent) repairs it.
+import { spawnSync } from "node:child_process";
 import { chmodSync, cpSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { copyExample } from "../../test/copy-example.ts";
@@ -66,6 +67,37 @@ export function writeSkillAndNotes(dir: string, projectNote: string): void {
   cpSync(skillSource, skillDir, { recursive: true });
   writeFileSync(join(dir, "AGENTS.md"), projectNote);
   writeFileSync(join(dir, "CLAUDE.md"), projectNote);
+}
+
+// A smoke test, so `npm test` -- the command the build's own "next:" line
+// names after a migration -- reports one pass instead of node:test's
+// file-not-found error on an empty test/. Shared by the example and scale
+// starters (finalizeStarter below), so neither writes it twice.
+function writeSmokeTest(dir: string): void {
+  mkdirSync(join(dir, "test"), { recursive: true });
+  writeFileSync(join(dir, "test/smoke.test.ts"), 'import { test } from "node:test";\n\ntest("starter", () => {});\n');
+}
+
+// Run after a scenario's setup has broken (or, for the two cross-module
+// scenarios, left untouched) the starter, and before the agent starts: the
+// smoke test above, then the starter's own git repository, with the setup's
+// mutation as the one committed baseline. Measured on three saved
+// ddl-only streams (2026-09-19): of 15-18 tool calls per run, 5-6 were an
+// agent's `git status`/`git diff`/`git log`/`git rev-parse --show-toplevel`/
+// `git check-ignore` resolving past the starter to this repository, since
+// the starter sits under this repository's own .scratch/ with no git
+// identity of its own; 2-3 more were a search for tests after `npm test`
+// found none. A starter that is already a git repository, and already has
+// one passing test, answers both before the agent asks.
+//
+// hunksOutsideTask's own diff (run.ts's diffAgainstPristine) is unaffected:
+// it runs `git diff --no-index` on the project subdirectory only (example/
+// or scale/), never the starter root where this .git lives.
+export function finalizeStarter(dir: string): void {
+  writeSmokeTest(dir);
+  spawnSync("git", ["init", "-q"], { cwd: dir });
+  spawnSync("git", ["add", "-A"], { cwd: dir });
+  spawnSync("git", ["-c", "user.name=battery", "-c", "user.email=battery@example.invalid", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "starter"], { cwd: dir });
 }
 
 export function buildStarter(repoRoot: string): string {
