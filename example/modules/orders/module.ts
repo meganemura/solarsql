@@ -123,6 +123,16 @@ export const orderCommands = commands(generated, {
     ],
     returns: "select id, customer_id, status, note from orders where id = :id",
   },
+  // The orders, lines, and search rows of one customer, gone. customers.remove
+  // includes this command (ADR 0127) ahead of its own delete from customers,
+  // so both run in the one D1 batch or Durable Object transaction.
+  deleteByCustomer: {
+    plan: [
+      "delete from order_lines where order_id in (select id from orders where customer_id = :customer_id)",
+      "delete from order_search where order_id in (select id from orders where customer_id = :customer_id)",
+      "delete from orders where customer_id = :customer_id",
+    ],
+  },
   // Every order, its lines, and the search rows, gone. No trigger follows a
   // delete into the search table, so the plan clears it by hand.
   clear: {

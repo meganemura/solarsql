@@ -154,8 +154,24 @@ export function assert<const N extends string, const P extends string>(name: N, 
 
 export type PlanItem = string | Assert<string, string>;
 
+// A plan item declared in a module's own commands(): a statement key or an
+// assert, plus (ADR 0127) another module's exported command, included
+// whole. commands() flattens an included item at construction, so a
+// Command's own `plan` (below) only ever holds PlanItem: an adapter and the
+// build's per-statement checks never see a Command in a plan.
+// The included command's own generated map and plan shape are `any` here,
+// not `G`/`PlanShape<G>`: those name the *including* module's own
+// generated map, and an included command's real generic arguments (its own
+// module's map and shape) are recovered per use-site below, by `infer`
+// against the literal type the caller's object carries -- naming them
+// `GeneratedMap`/`PlanShape<GeneratedMap>` here would make this alias its
+// own unbounded expansion (Command's `P` extends PlanShape<G>, whose `plan`
+// holds PlanShapeItem<G> again), which tsc reports as excessively deep
+// (measured on this repository's own build).
+export type PlanShapeItem<G extends GeneratedMap> = (keyof G & string) | Assert<string, keyof G & string> | Command<any, any>;
+
 export type PlanShape<G extends GeneratedMap> = {
-  plan: readonly (keyof G & string | Assert<string, keyof G & string>)[];
+  plan: readonly PlanShapeItem<G>[];
   returns?: keyof G & string;
 };
 
@@ -164,13 +180,45 @@ type EntryParams<G extends GeneratedMap, S> = S extends keyof G ? G[S]["params"]
 type UnionToIntersection<U> = (U extends unknown ? (x: U) => void : never) extends (x: infer I) => void ? I : never;
 type Simplify<T> = { [K in keyof T]: T[K] } & {};
 
+// An included command contributes the parameters of its own plan (ADR
+// 0127); a statement key or an assert contributes the parameters of that
+// one statement, the rule a plan already had.
+// This reads the phantom `__params` field a `Command<G2, P2>` already
+// carries, computed once where that command was declared, instead of
+// re-deriving `PlanParams<G2, P2>` here through `I extends Command<infer
+// G2, infer P2>`: that inference pattern, applied to a generic, unresolved
+// plan-item type, forced tsc to expand `PlanParams` through the `Command<
+// any, any>` member `PlanShapeItem` admits for every G, with no G,P ever
+// narrow enough to ground the recursion, and it reported the whole file
+// "excessively deep" (measured on this repository's own build, in
+// `Database.run`'s wide `Command<GeneratedMap, PlanShape<GeneratedMap>>>`
+// bound). Reading a field is a plain property lookup, not a fresh generic
+// instantiation, so it does not re-trigger that expansion.
+type ItemParams<G extends GeneratedMap, I> = I extends { __params?: infer PP } ? (unknown extends PP ? EntryParams<G, ItemSql<I>> : PP) : EntryParams<G, ItemSql<I>>;
+
 // The parameters of a command: every parameter of every statement, assert,
-// and the returns query, merged into one object.
+// included command, and the returns query, merged into one object.
 export type PlanParams<G extends GeneratedMap, P extends PlanShape<G>> = Simplify<
-  UnionToIntersection<EntryParams<G, ItemSql<P["plan"][number]>> | EntryParams<G, P["returns"]>>
+  UnionToIntersection<ItemParams<G, P["plan"][number]> | EntryParams<G, P["returns"]>>
 >;
 export type PlanRows<G extends GeneratedMap, P extends PlanShape<G>> = P["returns"] extends keyof G ? G[P["returns"]]["row"] : never;
-export type PlanAsserts<P extends { plan: readonly unknown[] }> = Extract<P["plan"][number], Assert<string, string>>["name"];
+// An included command's own assert names join the plan's own, the rule ADR
+// 0127 gives asserts; a plain statement key contributes none. Reads the
+// phantom `__asserts` field for the same reason ItemParams reads `__params`
+// above.
+type ItemAssertNames<I> = I extends { __asserts?: infer AA } ? (unknown extends AA ? (I extends Assert<infer N, string> ? N : never) : AA) : (I extends Assert<infer N, string> ? N : never);
+export type PlanAsserts<P extends { plan: readonly unknown[] }> = ItemAssertNames<P["plan"][number]>;
+
+// The item index range (in the flattened `plan`, `to` exclusive) an
+// included command's own items landed at, for `inspect`'s provenance
+// display. `module` is filled in by the build, which is the only side that
+// knows which module owns a command; the runtime never sets it.
+// `nested` is true when the included command's own plan already included
+// another command: the build refuses that (a range's statements would then
+// belong to more than one owner), so it needs to see this flag without
+// re-deriving it from the flattened plan, which no longer distinguishes a
+// nested include's items from the plain statements around them.
+export type PlanInclusion = { name: string; module?: string; from: number; to: number; nested?: boolean };
 
 export type Command<G extends GeneratedMap, P extends PlanShape<G>> = {
   kind: "command";
@@ -178,8 +226,14 @@ export type Command<G extends GeneratedMap, P extends PlanShape<G>> = {
   plan: readonly PlanItem[];
   returns: string | null;
   meta: { statements: readonly StatementMeta[]; returns: StatementMeta | null; asserts: readonly string[] };
+  included: readonly PlanInclusion[];
   readonly __generated?: G;
   readonly __plan?: P;
+  // Computed once, here, for a command included in another module's plan
+  // (ADR 0127) to contribute to that plan without ItemParams/ItemAssertNames
+  // re-deriving them (see the comment on ItemParams above).
+  readonly __params?: PlanParams<G, P>;
+  readonly __asserts?: PlanAsserts<P>;
 };
 
 export type Commands<G extends GeneratedMap, C extends Record<string, PlanShape<G>>> = {
@@ -187,23 +241,49 @@ export type Commands<G extends GeneratedMap, C extends Record<string, PlanShape<
   entries: { [K in keyof C]: Command<G, C[K]> };
 } & { [K in keyof C]: Command<G, C[K]> };
 
+function isIncludedCommand(item: unknown): item is Command<any, any> {
+  return !!item && typeof item === "object" && (item as { kind?: unknown }).kind === "command";
+}
+
 // The write API of a module: one verb per plan. A plan is a list of SQL
-// strings and asserts that runs as one D1 batch or one Durable Object
-// transaction. `returns` is a query whose rows the command returns.
+// strings, asserts, and (ADR 0127) other modules' commands, that runs as
+// one D1 batch or one Durable Object transaction. `returns` is a query
+// whose rows the command returns.
+// An included command is expanded here, at construction: its own `plan`
+// items and `meta.statements` are spliced in place, verbatim (they carry
+// their own meta already, computed by the owner's own `commands()` call,
+// so this module's `generated` map, which lacks those keys, never has to
+// answer for them); its `returns` is dropped, since only the outer
+// command's `returns` runs. `included` records the item range each
+// included command landed at, for `inspect`.
 export function commands<G extends GeneratedMap, const C extends Record<string, PlanShape<G>>>(generated: Meta<G>, c: C): Commands<G, C> {
   const entries = {} as Record<string, Command<G, PlanShape<G>>>;
   for (const [name, shape] of Object.entries(c)) {
-    const plan = shape.plan as readonly PlanItem[];
+    const rawPlan = shape.plan as readonly (PlanItem | Command<any, any>)[];
+    const plan: PlanItem[] = [];
+    const statements: StatementMeta[] = [];
+    const asserts: string[] = [];
+    const included: PlanInclusion[] = [];
+    for (const item of rawPlan) {
+      if (isIncludedCommand(item)) {
+        const from = plan.length;
+        plan.push(...item.plan);
+        statements.push(...item.meta.statements);
+        asserts.push(...item.meta.asserts);
+        included.push({ name: item.name, from, to: plan.length, ...(item.included.length > 0 ? { nested: true } : {}) });
+        continue;
+      }
+      plan.push(item);
+      statements.push(metaOf(generated, typeof item === "string" ? item : item.predicate));
+      if (typeof item !== "string") asserts.push(item.name);
+    }
     entries[name] = {
       kind: "command",
       name,
       plan,
       returns: shape.returns ?? null,
-      meta: {
-        statements: plan.map((item) => metaOf(generated, typeof item === "string" ? item : item.predicate)),
-        returns: shape.returns ? metaOf(generated, shape.returns) : null,
-        asserts: plan.filter((item): item is Assert<string, string> => typeof item !== "string").map((a) => a.name),
-      },
+      meta: { statements, returns: shape.returns ? metaOf(generated, shape.returns) : null, asserts },
+      included,
     };
   }
   return { kind: "commands", entries, ...entries } as unknown as Commands<G, C>;

@@ -81,6 +81,38 @@ So a transaction is a module: tables that change together live in one module.
 An assert may read the tables of its module and the primary keys its foreign keys reference; a rule that reads more of another module lives in a module with `readsAll`, which still writes only its own tables.
 A delete from a parent table reads the foreign key columns of its children, in any module, and the build allows that read.
 
+## Include another module's command
+
+A write that spans two modules includes the owner's command in the plan, imported from its `public.ts` (ADR 0127):
+
+```ts
+// modules/customers/module.ts
+import { orderCommands } from "../orders/public.ts";
+
+export const customerCommands = commands(generated, {
+  remove: {
+    plan: [orderCommands.deleteByCustomer, "delete from customers where id = :customer_id"],
+  },
+});
+```
+
+The build expands the included command in place, into its own statements and asserts, so the plan still runs as one D1 batch or one Durable Object transaction.
+
+- Each expanded statement keeps its owning module: the ownership check above applies to it under that module, not under the including module.
+- Parameters merge by name, the plan's existing rule: give the shared value the same name in the including statement and in the included command, so the caller gives it once, not once per name.
+- Assert names must be unique across the whole expanded plan; a name the including command and the included command both use is refused, naming both.
+- The included command's `returns` is dropped; only the including command's `returns` runs.
+- `changes()` in an assert still counts the statement right before it, in the expanded order.
+- The included module must be listed before the including module in `modules`: it is already the rule a public import across modules needs.
+- `inspect` and `--json` show each expanded item's source module and command (`source: { module, command }`), `null` for the including module's own items.
+
+| The message contains | Fix |
+|---|---|
+| `must come before module <including> in modules` | list the included command's module earlier in `modules` |
+| `whose statements no module owns` | the included command's statements do not all belong to one module; include the command as it is exported from its own module's `public.ts`, not a re-declared copy |
+| `whose statements more than one module owns` | two modules declare the same statement text; give one of them a distinct statement |
+| `assert name ... is used twice` | rename one of the two asserts so each name is unique across the expanded plan |
+
 ## Bulk writes
 
 Many rows come in one array parameter and one statement: `insert ... select ... from json_each(:rows)` for inserts, `update ... where id in (select value ->> 'id' from json_each(:rows))` for updates, and `changes() = json_array_length(:rows)` as the assert that every id was known.

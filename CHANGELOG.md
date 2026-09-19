@@ -4,6 +4,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Added: a plan may include another module's exported command (ADR 0127), expanded in place into its statements and asserts, so a write that spans two modules runs as one D1 batch or one Durable Object transaction.
 - Added: an agent-outcome battery (spike/13-agent-battery) with a stub agent in the slow test set; docs/v5-measurements.md records the first real run, and section 3 records the module-ownership study.
 - Changed: `SKILL.md`'s schema step now tells the agent to run `npx solarsql build` before it searches for a renamed column: it names the first blocking trigger, view, or search table, then every query and plan statement.
 - Changed: `npx solarsql build` now reports every failing statement in one run, each with its own `in:` and `at:` lines, instead of stopping at the first; `no such column` also lists `columns of <table>: ...`.

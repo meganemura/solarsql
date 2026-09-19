@@ -33,7 +33,7 @@ describe("solarsql build", () => {
     const dir = copy();
     try {
       const result = await build(join(dir, "example/solarsql.config.ts"));
-      assert.deepEqual(result.modules.map((m) => [m.name, m.changed, m.added, m.removed]), [["customers", false, [], []], ["orders", false, [], []], ["reports", false, [], []]]);
+      assert.deepEqual(result.modules.map((m) => [m.name, m.changed, m.added, m.removed]), [["orders", false, [], []], ["customers", false, [], []], ["reports", false, [], []]]);
       assert.ok(result.modules.every((m) => Number.isInteger(m.ms) && m.ms >= 0));
       assert.ok(Number.isInteger(result.ms) && result.ms >= 0);
       assert.deepEqual(result.migration, { pending: false, statements: [], reason: null });
@@ -73,7 +73,7 @@ describe("solarsql build", () => {
       const file = join(dir, "example/modules/customers/module.ts");
       writeFileSync(file, `import { orderQueries } from "../orders/public.ts";\nexport const orderQueryNames = Object.keys(orderQueries.entries);\n${readFileSync(file, "utf8")}`);
       const result = await build(join(dir, "example/solarsql.config.ts"));
-      assert.deepEqual(result.modules.map((m) => [m.name, m.changed]), [["customers", true], ["orders", true], ["reports", true]]);
+      assert.deepEqual(result.modules.map((m) => [m.name, m.changed]), [["orders", true], ["customers", true], ["reports", true]]);
       assert.equal(readFileSync(join(dir, "example/modules/orders/solarsql.generated.ts"), "utf8"), readFileSync(join(root, "example/modules/orders/solarsql.generated.ts"), "utf8"));
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -99,7 +99,7 @@ describe("solarsql build", () => {
     const dir = copy();
     try {
       for (const m of ["customers", "orders", "reports"]) rmSync(join(dir, `example/modules/${m}/solarsql.generated.ts`));
-      configThatImportsOrders(dir, '"./modules/customers", "./modules/orders", { dir: "./modules/reports", readsAll: true }');
+      configThatImportsOrders(dir, '"./modules/orders", "./modules/customers", { dir: "./modules/reports", readsAll: true }');
       const result = await build(join(dir, "example/solarsql.config.ts"));
       assert.deepEqual(result.modules.map((m) => m.changed), [true, true, true]);
       for (const m of ["customers", "orders", "reports"]) {
@@ -116,7 +116,7 @@ describe("solarsql build", () => {
     const dir = copy();
     try {
       for (const m of ["customers", "orders", "reports"]) rmSync(join(dir, `example/modules/${m}/solarsql.generated.ts`));
-      configThatImportsOrders(dir, '"./modules/customers", "./modules/orders", { dir: "./modules/reports", readsAll: true }');
+      configThatImportsOrders(dir, '"./modules/orders", "./modules/customers", { dir: "./modules/reports", readsAll: true }');
       await assert.rejects(build(join(dir, "example/solarsql.config.ts"), { write: false }), (e: unknown) => {
         assert.ok(e instanceof BuildError, String(e));
         assert.match(e.message, /module orders: .*solarsql\.generated\.ts is missing\. Run: npx solarsql build/);
@@ -148,10 +148,10 @@ describe("solarsql build", () => {
       const generated = join(dir, "example/modules/orders/solarsql.generated.ts");
       const before = readFileSync(generated, "utf8");
       const checked = await build(join(dir, "example/solarsql.config.ts"), { write: false });
-      assert.deepEqual(checked.modules.map((m) => [m.name, m.changed]), [["customers", false], ["orders", true], ["reports", false]]);
+      assert.deepEqual(checked.modules.map((m) => [m.name, m.changed]), [["orders", true], ["customers", false], ["reports", false]]);
       assert.equal(readFileSync(generated, "utf8"), before);
       const written = await build(join(dir, "example/solarsql.config.ts"));
-      assert.equal(written.modules[1]!.changed, true);
+      assert.equal(written.modules[0]!.changed, true);
       assert.notEqual(readFileSync(generated, "utf8"), before);
       rmSync(generated);
       await assert.rejects(build(join(dir, "example/solarsql.config.ts"), { write: false }), /module orders: .*solarsql\.generated\.ts is missing\. Run: npx solarsql build/);
@@ -290,6 +290,125 @@ describe("solarsql build", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  describe("ADR 0127: a plan may include another module's command", () => {
+    test("customers.remove expands orders.deleteByCustomer in place, with its own statements typed under orders", async () => {
+      const dir = copy();
+      try {
+        const result = await build(join(dir, "example/solarsql.config.ts"), { write: false, inspect: true });
+        const ops = result.inspection!.operations.filter((o) => /order_lines where order_id in \(select id from orders where customer_id = :customer_id\)/.test(o.sql));
+        // The statement appears once for orders (its owner, source: null) and
+        // once for customers (the including module, with its source).
+        const own = ops.find((o) => o.module === "orders")!;
+        const included = ops.find((o) => o.module === "customers")!;
+        assert.equal(own.source, null);
+        assert.deepEqual(included.source, { module: "orders", command: "deleteByCustomer" });
+        // The included statements are not in customers' own generated file.
+        const customers = result.modules.find((m) => m.name === "customers")!;
+        assert.equal(customers.entries, 6);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("the owner of an included command must come before the including module in the configuration", async () => {
+      const dir = copy();
+      try {
+        const configPath = join(dir, "example/solarsql.config.ts");
+        writeFileSync(configPath, readFileSync(configPath, "utf8").replace(
+          '["./modules/orders", "./modules/customers", { dir: "./modules/reports", readsAll: true }]',
+          '["./modules/customers", "./modules/orders", { dir: "./modules/reports", readsAll: true }]',
+        ));
+        await expectBuildError(dir, /command customers\.remove includes deleteByCustomer: module orders must come before module customers in modules\./);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("an assert name used by both the including command and the included command is refused", async () => {
+      const dir = copy();
+      try {
+        const orders = join(dir, "example/modules/orders/module.ts");
+        writeFileSync(orders, readFileSync(orders, "utf8").replace(
+          `  deleteByCustomer: {
+    plan: [`,
+          `  deleteByCustomer: {
+    plan: [
+      assert("guard", "1 = 1"),`,
+        ));
+        const customers = join(dir, "example/modules/customers/module.ts");
+        writeFileSync(customers, readFileSync(customers, "utf8")
+          .replace(`import { commands, queries, table }`, `import { assert, commands, queries, table }`)
+          .replace(
+            `plan: [orderCommands.deleteByCustomer, "delete from customers where id = :customer_id"],`,
+            `plan: [orderCommands.deleteByCustomer, "delete from customers where id = :customer_id", assert("guard", "1 = 1")],`,
+          ));
+        await expectBuildError(dir, /command customers\.remove: assert name "guard" is used twice: deleteByCustomer's plan item 1 and this command's plan item 6\./);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("an included command whose statements more than one module owns is refused", async () => {
+      const dir = copy();
+      try {
+        const orders = join(dir, "example/modules/orders/module.ts");
+        writeFileSync(orders, readFileSync(orders, "utf8").replace(
+          "export const orderCommands = commands(generated, {",
+          "export const orderCommands = commands(generated, {\n  probe: { plan: [\"select 1\"] },",
+        ));
+        const customers = join(dir, "example/modules/customers/module.ts");
+        writeFileSync(customers, readFileSync(customers, "utf8").replace(
+          "export const customerCommands = commands(generated, {",
+          "export const customerCommands = commands(generated, {\n  probe: { plan: [\"select 1\"] },",
+        ));
+        const reports = join(dir, "example/modules/reports/module.ts");
+        writeFileSync(reports, readFileSync(reports, "utf8")
+          .replace(`import { queries, view } from "../../../src/index.ts";`, `import { commands, queries, view } from "../../../src/index.ts";\nimport { orderCommands } from "../orders/public.ts";`)
+          .replace(`export const reportQueries`, `export const reportCommands = commands(generated, {\n  probe: { plan: [orderCommands.probe] },\n});\n\nexport const reportQueries`));
+        await expectBuildError(dir, /command reports\.probe includes probe, whose statements more than one module owns: orders, customers\./);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("a command that includes a command which itself includes a command is refused", async () => {
+      const dir = copy();
+      try {
+        const orders = join(dir, "example/modules/orders/module.ts");
+        writeFileSync(orders, readFileSync(orders, "utf8").replace(
+          "export const orderCommands = commands(generated, {",
+          "export const orderCommands = commands(generated, {\n  leaf: { plan: [\"select 1\"] },",
+        ));
+        const customers = join(dir, "example/modules/customers/module.ts");
+        writeFileSync(customers, readFileSync(customers, "utf8").replace(
+          "export const customerCommands = commands(generated, {",
+          "export const customerCommands = commands(generated, {\n  middle: { plan: [orderCommands.leaf] },",
+        ));
+        const reports = join(dir, "example/modules/reports/module.ts");
+        writeFileSync(reports, readFileSync(reports, "utf8")
+          .replace(`import { queries, view } from "../../../src/index.ts";`, `import { commands, queries, view } from "../../../src/index.ts";\nimport { customerCommands } from "../customers/public.ts";`)
+          .replace(`export const reportQueries`, `export const reportCommands = commands(generated, {\n  outer: { plan: [customerCommands.middle] },\n});\n\nexport const reportQueries`));
+        await expectBuildError(dir, /command reports\.outer includes middle, which itself includes a command; include the inner commands directly\./);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("the ownership check still refuses a direct cross-module write in the including module's own plan item", async () => {
+      const dir = copy();
+      try {
+        const customers = join(dir, "example/modules/customers/module.ts");
+        writeFileSync(customers, readFileSync(customers, "utf8").replace(
+          `plan: [orderCommands.deleteByCustomer, "delete from customers where id = :customer_id"],`,
+          `plan: [orderCommands.deleteByCustomer, "delete from customers where id = :customer_id", "delete from orders where customer_id = :customer_id"],`,
+        ));
+        await expectBuildError(dir, /module customers deletes from orders\. Module orders owns orders: add a command to \.\/modules\/orders\/module\.ts \(catalog orderCommands\) and export it from its public\.ts\./);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   test("a module imports another module through public.ts only", async () => {

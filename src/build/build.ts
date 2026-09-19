@@ -8,7 +8,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { Command, Config, Index, ModuleConfig, PlanItem, Query, Search, Table, Trigger, View } from "../index.ts";
+import type { Command, Config, Index, ModuleConfig, PlanInclusion, PlanItem, Query, Search, Table, Trigger, View } from "../index.ts";
 import { GUARD_DDL, GUARD_TABLE, assertStatement } from "../runtime/plan.ts";
 import { GENERATED_FILE, emitGenerated, emitMigrationsIndex, emitStub } from "./emit.ts";
 import { Engine, type Access, type OutputColumn, type PlanRow } from "./facts.ts";
@@ -43,7 +43,13 @@ export type Module = {
   // The queries by catalog name, in catalog order: `statements` is keyed by
   // SQL, and the reads report names the query.
   queries: { name: string; sql: string }[];
-  commands: { name: string; catalog: string; plan: readonly PlanItem[]; returns: string | null }[];
+  // `included[]` names, per command, the item ranges (in `plan`, `to`
+  // exclusive) another module's command contributed (ADR 0127); `module` is
+  // unset until resolveIncludes() fills it in. Those ranges' own statements
+  // are not in `statements`/`statementUses`/`readStatements` above: they
+  // are the owner's, typed and boundary-checked as the owner's own, not
+  // re-registered here as the including module's.
+  commands: { name: string; catalog: string; plan: readonly PlanItem[]; returns: string | null; included: PlanInclusion[] }[];
 };
 
 export type BuildOptions = {
@@ -81,6 +87,10 @@ export type OperationInspection = {
   // null for a write statement: EXPLAIN QUERY PLAN describes how a
   // statement is read, and a write has no read plan of its own to report.
   plan: OperationPlan | null;
+  // Set for an item an including command's plan pulled in from another
+  // module's command (ADR 0127); null for a module's own statement,
+  // including the same SQL text seen through the owner's own command.
+  source: { module: string; command: string } | null;
 };
 
 // EXPLAIN QUERY PLAN's detail grammar, https://sqlite.org/eqp.html: a line
@@ -223,8 +233,17 @@ export async function load(configPath: string, write = true): Promise<Loaded> {
       }
       if (v.kind === "commands") {
         for (const [cname, c] of Object.entries(v.entries)) {
-          commands.push({ name: cname, catalog, plan: c.plan, returns: c.returns });
+          const included = (c.included ?? []).map((i) => ({ ...i }));
+          commands.push({ name: cname, catalog, plan: c.plan, returns: c.returns, included });
+          const isIncluded = (position: number): boolean => included.some((i) => position >= i.from && position < i.to);
           for (const [position, item] of c.plan.entries()) {
+            // An item in an included range (ADR 0127) is the owner
+            // module's own statement, typed and boundary-checked under the
+            // owner: registering it here too would make this module a
+            // false ownership candidate for it, and would run the owner's
+            // statement through this module's checkBoundary a second time,
+            // under this module's own, different, permissions.
+            if (isIncluded(position)) continue;
             const key = typeof item === "string" ? item : item.predicate;
             statement(key, typeof item === "string" ? item : assertStatement(item.name, item.predicate), "plan",
               `command ${catalog}.${cname}, plan item ${position + 1}${typeof item === "string" ? "" : `, assert ${item.name}`}`);
@@ -345,6 +364,8 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
   const { config, configDir, modules } = loaded;
   const library = config.library ?? "solarsql";
   checkImports(modules);
+  resolveIncludes(modules);
+  checkAssertCollisions(modules);
 
   // Ownership: one module per table.
   const owner = new Map<string, Module>();
@@ -573,6 +594,12 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
     // failure skips its own tail below (checkCommands, the readsAll reads,
     // and the generated write): those all assume every statement typed.
     const failures: { message: string; sql: string; at: string[]; kind: "schema" | "statement" }[] = [];
+    // Every module's own typed entries, by key, built up as modules type in
+    // config order (resolveIncludes already required an included range's
+    // owner to come first). An including command's checkCommands, and
+    // inspect's provenance entries, read an included range's Analysis from
+    // its owner here instead of retyping it under the including module.
+    const entriesByModule = new Map<string, Map<string, Analysis>>();
 
     for (const m of modules) {
       // A module whose schema failed to build is not typed at all: every
@@ -621,12 +648,31 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
         const analysisBySql = new Map(entries.map((entry) => [entry.key, entry.analysis]));
         for (const query of m.queries) reads.push({ module: m.name, query: query.name, tables: analysisBySql.get(query.sql)!.reads });
       }
-      checkCommands(m, entries);
+      entriesByModule.set(m.name, new Map(entries.map((e) => [e.key, e.analysis])));
+      checkCommands(m, entries, entriesByModule);
       if (options.inspect) {
         for (const { key, analysis } of entries) {
           operations.push({ module: m.name, sql: key, locations: m.statementUses.get(key)!, params: analysis.params,
             columns: analysis.columns, origins: engine.columns(analysis.sql), accesses: engine.accesses(analysis.sql), reads: analysis.reads,
-            plan: isSelect(analysis.sql) ? summarizePlan(engine.plan(analysis.sql)) : null });
+            plan: isSelect(analysis.sql) ? summarizePlan(engine.plan(analysis.sql)) : null, source: null });
+        }
+        // An included item, expanded into this module's own command: the
+        // same statement the owner already typed and reported above (with
+        // source: null), shown again here with the including command's own
+        // provenance, so `inspect` on this module's command needs no
+        // second look at the owner's module to see what it runs.
+        for (const c of m.commands) {
+          for (const range of c.included) {
+            const ownerEntries = entriesByModule.get(range.module!);
+            if (!ownerEntries) continue;
+            for (const item of c.plan.slice(range.from, range.to)) {
+              const key = typeof item === "string" ? item : item.predicate;
+              const analysis = ownerEntries.get(key)!;
+              operations.push({ module: m.name, sql: key, locations: m.statementUses.get(key) ?? [`${join(m.dir, "module.ts")}: command ${c.catalog}.${c.name} includes ${range.name}`],
+                params: analysis.params, columns: analysis.columns, origins: engine.columns(analysis.sql), accesses: engine.accesses(analysis.sql), reads: analysis.reads,
+                plan: isSelect(analysis.sql) ? summarizePlan(engine.plan(analysis.sql)) : null, source: { module: range.module!, command: range.name } });
+            }
+          }
         }
       }
       const importedBrands = new Map<string, string[]>();
@@ -686,6 +732,69 @@ function checkImports(modules: readonly Module[]): void {
         if (other && basename(target) !== "public.ts") {
           throw new BuildError(`module ${m.name}: ${file} imports ${specifier}. Module ${other.name} shows public.ts; import from there.`);
         }
+      }
+    }
+  }
+}
+
+// ADR 0127: a plan item may be another module's exported command. The
+// build resolves each included range's owner -- the module whose own
+// statement set (m.statements, which load() never adds an included item's
+// keys to) contains every key of the range -- and requires that module to
+// come before the including one in `modules`, the same order a public
+// import across modules already requires.
+function resolveIncludes(modules: readonly Module[]): void {
+  for (const m of modules) {
+    for (const c of m.commands) {
+      for (const range of c.included) {
+        const at = `${join(m.dir, "module.ts")}: command ${c.catalog}.${c.name} includes ${range.name}`;
+        // A command whose own plan already includes another command: the
+        // range's statements would then belong to more than one owner, and
+        // the from/to range this build works with covers only one level.
+        // Include the inner commands directly instead of through the
+        // in-between command.
+        if (range.nested) {
+          throw new BuildError(`command ${m.name}.${c.name} includes ${range.name}, which itself includes a command; include the inner commands directly.\n  at: ${at}`);
+        }
+        const keys = c.plan.slice(range.from, range.to).map((item) => (typeof item === "string" ? item : item.predicate));
+        const candidates = modules.filter((o) => keys.length > 0 && keys.every((k) => o.statements.has(k)));
+        if (candidates.length === 0) {
+          throw new BuildError(`command ${m.name}.${c.name} includes ${range.name}, whose statements no module owns.\n  at: ${at}`);
+        }
+        if (candidates.length > 1) {
+          throw new BuildError(`command ${m.name}.${c.name} includes ${range.name}, whose statements more than one module owns: ${candidates.map((o) => o.name).join(", ")}.\n  at: ${at}`);
+        }
+        const owner = candidates[0]!;
+        if (modules.indexOf(owner) > modules.indexOf(m)) {
+          throw new BuildError(`command ${m.name}.${c.name} includes ${range.name}: module ${owner.name} must come before module ${m.name} in modules.\n  at: ${at}`);
+        }
+        range.module = owner.name;
+      }
+    }
+  }
+}
+
+// Assert names must be unique across a command's whole expanded plan (ADR
+// 0127), own items and an included command's items together: two asserts
+// of the same name would make CommandResult's `assert` field ambiguous
+// about which one failed.
+function checkAssertCollisions(modules: readonly Module[]): void {
+  for (const m of modules) {
+    for (const c of m.commands) {
+      const seen = new Map<string, number>();
+      for (const [position, item] of c.plan.entries()) {
+        if (typeof item === "string") continue;
+        const label = (i: number): string => {
+          const range = c.included.find((r) => i >= r.from && i < r.to);
+          return range ? `${range.name}'s plan item ${i + 1 - range.from}` : `this command's plan item ${i + 1}`;
+        };
+        const prior = seen.get(item.name);
+        if (prior !== undefined) {
+          throw new BuildError(
+            `command ${m.name}.${c.name}: assert name ${JSON.stringify(item.name)} is used twice: ${label(prior)} and ${label(position)}.\n  at: ${join(m.dir, "module.ts")}: command ${c.catalog}.${c.name}`,
+          );
+        }
+        seen.set(item.name, position);
       }
     }
   }
@@ -774,12 +883,42 @@ function isReferencingKey(engine: Engine, m: Module, owner: Map<string, Module>,
 // and the JSON encoding, of its typed use elsewhere in the plan, so the
 // command's parameter object has one type and every statement binds the
 // value the same way.
-function checkCommands(m: Module, entries: readonly { key: string; analysis: Analysis }[]): void {
+// An included command's own statements (ADR 0127) are typed under their
+// owner, not under `m`, so `entriesByModule` (every module's own entries,
+// filled as modules type in config order) supplies their Analysis; that
+// analysis is the owner's own object, so a SqlValue refinement here can
+// only be detected, not written back into the owner's already-emitted
+// generated file -- a real gap, accepted because a statement an included
+// command runs is typically typed by its own column already, and a plan
+// that still needs cross-module refinement can give the statement its own
+// type or split it, the existing remedy this function already offers.
+function checkCommands(m: Module, entries: readonly { key: string; analysis: Analysis }[], entriesByModule: ReadonlyMap<string, ReadonlyMap<string, Analysis>>): void {
   const byKey = new Map(entries.map((e) => [e.key, e.analysis]));
+  // A command whose included range's owner module itself failed to type
+  // (schema or statement failure) is skipped here: that failure is already
+  // in the build's own failures list, and this command's own checks would
+  // otherwise crash on the missing owner entries rather than add anything.
+  const skipped = new Set<string>();
+  for (const c of m.commands) {
+    for (const range of c.included) {
+      if (!entriesByModule.has(range.module!)) skipped.add(c.name);
+    }
+  }
+  for (const c of m.commands) {
+    if (skipped.has(c.name)) continue;
+    for (const range of c.included) {
+      const owned = entriesByModule.get(range.module!)!;
+      for (const item of c.plan.slice(range.from, range.to)) {
+        const key = typeof item === "string" ? item : item.predicate;
+        if (!byKey.has(key)) byKey.set(key, owned.get(key)!);
+      }
+    }
+  }
   // Where a statement's parameter was refined, so two commands that share
   // the statement cannot pull it two ways.
   const refined = new Map<string, Map<string, { type: string; command: string }>>();
   for (const c of m.commands) {
+    if (skipped.has(c.name)) continue;
     let failureKeys: string[] = [];
     try {
       const types = new Map<string, { type: string; encode: boolean; sql: string }>();

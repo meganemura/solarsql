@@ -80,7 +80,7 @@ Use the same configuration path for each command if the project uses a custom pa
 import { config } from "solarsql";
 
 export default config({
-  modules: ["./modules/customers", "./modules/orders", { dir: "./modules/reports", readsAll: true }],
+  modules: ["./modules/orders", "./modules/customers", { dir: "./modules/reports", readsAll: true }],
   migrations: "./migrations",
 });
 ```
@@ -117,6 +117,10 @@ Shared SQL reports all its catalog locations.
 | `of this statement is` | the same statement text sits in two commands with two types; give it a type of its own, or split it |
 | `in one statement and` | the same parameter name has two types across the plan's statements; use one type, or two parameter names |
 | `uses changes(), which counts the statement right before it` | put the assert right after the statement it counts |
+| `must come before module` | an included command's owner (ADR 0127) must be listed before the including module in `modules` |
+| `whose statements no module owns` | an included command's statements do not all belong to one module; include it as exported from its own module's `public.ts` |
+| `whose statements more than one module owns` | two modules declare the same statement text as an included command's plan; give one a distinct statement |
+| `is used twice` | an included command and the including command share an assert name; rename one |
 | `the returns clause uses changes()` | read the command's changes result instead |
 | `RETURNING clause is discarded` | move the read into the command's `returns` field instead |
 | `use a named parameter (:name) instead of` | replace `?` with `:name` |

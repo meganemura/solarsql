@@ -1,4 +1,5 @@
 import { commands, queries, table } from "../../../src/index.ts";
+import { orderCommands } from "../orders/public.ts";
 import { generated } from "./solarsql.generated.ts";
 
 export const customers = table(`
@@ -28,5 +29,13 @@ export const customerCommands = commands(generated, {
   // the orders module's own clear.
   clear: {
     plan: ["delete from customers"],
+  },
+  // One customer, gone, with its orders (ADR 0127): the plan includes
+  // orders' own deleteByCustomer ahead of this module's own delete, and the
+  // two run atomically, in the one batch or transaction the plan is. Both
+  // statements name the shared value :customer_id, so remove takes one
+  // parameter, not two for the same value.
+  remove: {
+    plan: [orderCommands.deleteByCustomer, "delete from customers where id = :customer_id"],
   },
 });

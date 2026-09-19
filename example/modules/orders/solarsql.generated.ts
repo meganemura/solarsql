@@ -50,6 +50,18 @@ export type Generated = {
     params: { lines: readonly { "price": number; "id": OrderLinesId }[] };
     row: {};
   };
+  "delete from order_lines where order_id in (select id from orders where customer_id = :customer_id)": {
+    params: { customer_id: CustomersId };
+    row: {};
+  };
+  "delete from order_search where order_id in (select id from orders where customer_id = :customer_id)": {
+    params: { customer_id: CustomersId };
+    row: {};
+  };
+  "delete from orders where customer_id = :customer_id": {
+    params: { customer_id: CustomersId };
+    row: {};
+  };
   "delete from order_lines": {
     params: {};
     row: {};
@@ -110,6 +122,9 @@ export const generated: Meta<Generated> = {
   "select id, note, updated_at from orders where id = :id": { params: ["id"], encode: [], json: [], reads: ["orders"] },
   "update order_lines\n       set price = (select value ->> 'price' from json_each(:lines) where value ->> 'id' = order_lines.id)\n       where order_id = :id and id in (select value ->> 'id' from json_each(:lines))": { params: ["lines", "id"], encode: ["lines"], json: [], reads: ["order_lines"] },
   "changes() = json_array_length(:lines)": { params: ["lines"], encode: ["lines"], json: [], reads: [] },
+  "delete from order_lines where order_id in (select id from orders where customer_id = :customer_id)": { params: ["customer_id"], encode: [], json: [], reads: ["order_lines", "orders"] },
+  "delete from order_search where order_id in (select id from orders where customer_id = :customer_id)": { params: ["customer_id"], encode: [], json: [], reads: ["order_search", "orders"] },
+  "delete from orders where customer_id = :customer_id": { params: ["customer_id"], encode: [], json: [], reads: ["customers", "order_lines", "orders"] },
   "delete from order_lines": { params: [], encode: [], json: [], reads: ["orders"] },
   "delete from orders": { params: [], encode: [], json: [], reads: ["customers", "order_lines"] },
   "delete from order_search": { params: [], encode: [], json: [], reads: [] },

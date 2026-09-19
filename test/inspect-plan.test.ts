@@ -55,6 +55,18 @@ describe("inspect's query plan", () => {
     const op = findOperation(result.inspection!.operations, /^\s*insert into customers/);
     assert.equal(op.plan, null);
   });
+
+  // ADR 0127: customers.remove includes orders.deleteByCustomer. The same
+  // statement is reported twice -- once for orders, its owner, and once for
+  // customers, the including command -- and only the second carries source.
+  test("an included command's statement carries its source when inspected through the including module", async () => {
+    const result = await build(configPath, { write: false, inspect: true });
+    const pattern = /delete from order_lines where order_id in \(select id from orders where customer_id = :customer_id\)/;
+    const owned = result.inspection!.operations.find((o) => pattern.test(o.sql) && o.module === "orders")!;
+    const included = result.inspection!.operations.find((o) => pattern.test(o.sql) && o.module === "customers")!;
+    assert.equal(owned.source, null);
+    assert.deepEqual(included.source, { module: "orders", command: "deleteByCustomer" });
+  });
 });
 
 describe("summarizePlan", () => {

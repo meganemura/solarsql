@@ -13,6 +13,7 @@ import type { OrderLinesId, OrdersId } from "./modules/orders/public.ts";
 
 type Step =
   | { step: "createCustomer"; id: string; name: string; email: string }
+  | { step: "removeCustomer"; id: string }
   | { step: "placeOrder"; id: string; customer_id: string; lines: { id: string; sku: string; qty: number; price: number }[] }
   | { step: "ordersByIds"; ids: string[] }
   | { step: "search"; customer_id: string; status: "draft" | "confirmed" | null; sort: "id" | "status"; limit: number; offset: number }
@@ -40,6 +41,12 @@ async function run(db: Database, s: Step): Promise<unknown> {
   switch (s.step) {
     case "createCustomer":
       return db.run(customerCommands.create, { id: s.id as CustomersId, name: s.name, email: s.email });
+    // customers.remove includes orders.deleteByCustomer (ADR 0127): one
+    // customer, its orders, lines, and search rows, gone in one plan. Both
+    // statements name the shared value :customer_id, so remove takes one
+    // parameter.
+    case "removeCustomer":
+      return db.run(customerCommands.remove, { customer_id: s.id as CustomersId });
     case "placeOrder":
       return db.run(orderCommands.place, { id: s.id as OrdersId, customer_id: s.customer_id as CustomersId, lines: s.lines.map((l) => ({ ...l, id: l.id as OrderLinesId })) });
     case "confirm":

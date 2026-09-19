@@ -27,7 +27,11 @@ const expected: Record<string, { filesRead: number; filesEdited: number; failedC
   // not a harmful edit outside the task -- hunksOutsideTask counts it
   // anyway, since it only knows "orders" is the task's table; this pin
   // documents that reading, it does not endorse it.
-  "rename-needs-intent": { filesRead: 1, filesEdited: 2, failedCommands: 0, hunksOutsideTask: 5 },
+  // 6, not 5, since ADR 0127's deleteByCustomer command: the diff library's
+  // context merging (a few unchanged lines keep two changes in one hunk)
+  // depends on the example's generated file size, not on the stub's own
+  // edits, and orders/solarsql.generated.ts grew, splitting one hunk in two.
+  "rename-needs-intent": { filesRead: 1, filesEdited: 2, failedCommands: 0, hunksOutsideTask: 6 },
   "owned-cross-module": { filesRead: 2, filesEdited: 2, failedCommands: 0, hunksOutsideTask: 0 },
   "flat-cross-module": { filesRead: 1, filesEdited: 1, failedCommands: 0, hunksOutsideTask: 0 },
 };
