@@ -42,3 +42,27 @@ test("an existing file is never written over", async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// init.ts normalizes relative() with .split("\\").join("/") because the
+// paths it returns are printed and compared as project-relative POSIX
+// paths on every platform: test/slow/pack.test.ts matches the CLI's
+// "wrote   migrations/0001_initial.sql" output with a forward-slash regex
+// (the `written` array), and this test matches the "exists" error message
+// the same way. A success run of init() needs "solarsql" to resolve from
+// the written config, which only the installed package gives (see the file
+// header); that keeps `written`'s own no-backslash assertion out of this
+// file too, and in pack.test.ts's existing regex match instead. node:path
+// is imported at module scope in init.ts, not injected, so this test runs
+// relative() on the current platform rather than a Windows-shaped one; the
+// CI matrix's windows-latest job is what exercises the backslash-producing
+// branch of node:path on every push.
+test("the exists message contains no backslash", async () => {
+  const dir = fresh();
+  try {
+    mkdirSync(join(dir, "modules/orders"), { recursive: true });
+    writeFileSync(join(dir, "modules/orders/module.ts"), "// mine\n");
+    await assert.rejects(init("orders", dir), (e: unknown) => e instanceof BuildError && !e.message.includes("\\"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

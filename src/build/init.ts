@@ -30,7 +30,9 @@ export async function init(module: string, dir = "."): Promise<InitResult> {
   const tsconfig = join(root, "tsconfig.json");
   if (!existsSync(tsconfig)) files.push([tsconfig, tsconfigTemplate]);
   for (const [path] of files) {
-    if (existsSync(path)) throw new BuildError(`${relative(root, path) || path} exists. init is for a project without one; add a module by hand, as the README shows.`);
+    // relative() returns backslashes on Windows; the message is printed and,
+    // in test/init.test.ts, matched as a project-relative POSIX path.
+    if (existsSync(path)) throw new BuildError(`${(relative(root, path) || path).split("\\").join("/")} exists. init is for a project without one; add a module by hand, as the README shows.`);
   }
   // The first migration is the first file of its directory. A directory that
   // exists holds another project's history, wrangler's or an earlier one.
@@ -42,7 +44,7 @@ export async function init(module: string, dir = "."): Promise<InitResult> {
   const first = await migration(config, "initial");
   const written = [...files.map(([p]) => p), join(moduleDir, "solarsql.generated.ts"), join(root, "migrations", "index.ts")];
   if (first.filename) written.push(join(root, "migrations", first.filename));
-  return { written: written.map((p) => relative(root, p)), migration: first.filename, notice: notice(root) };
+  return { written: written.map((p) => relative(root, p).split("\\").join("/")), migration: first.filename, notice: notice(root) };
 }
 
 // Node runs a .ts file as an ES module when package.json says so, or when
