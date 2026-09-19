@@ -7,7 +7,7 @@ It proves the migration applies to a snapshot of that data without losing rows, 
 npx solarsql rehearse local.sqlite proposed.sql checks.json
 ```
 
-The command opens the source read-only and uses SQLite backup to create a disposable snapshot, including committed WAL data.
+The command opens the source read-only and uses `vacuum into` to write a disposable snapshot, including committed WAL data (ADR 0121).
 It applies the proposed SQL to the snapshot in one transaction and checks database integrity and foreign keys.
 It blocks database attachments. It deletes the snapshot on completion or failure.
 The versioned JSON result includes before/after row counts, before/after column lists, completed checks, and failure diagnostics. Exit 1 indicates failure.
@@ -87,11 +87,28 @@ A successful case does not prove that the returned values are equal before and a
 | `Schema shape changed unexpectedly` | a table or column vanished, or a column's declared type changed; name it in `expected.dropped` or `expected.retyped` if intended |
 | `did not happen` | an `expected` entry names a drop or a retype the migration did not perform; remove the stale entry |
 
-For a slow local snapshot, run `node spike/11-backup-lifecycle.ts` from a source checkout.
-It measures each backup phase, checks WAL rows and implicit row identities, and stops after 20 seconds (ADR 0063).
+`node spike/11-backup-lifecycle.ts` measures the `backup()` path the snapshot step no longer uses; run it from a source checkout to see the WAL-row and implicit-row-identity checks it still shares with the current `vacuum into` step. It stops after 20 seconds (ADR 0063, ADR 0121).
 
 The rehearsal CLI has a 30,000ms default time budget, including startup and snapshot creation.
 Use `--timeout-ms 120000` when the workload needs a larger finite budget.
 A deadline produces exit 1 and `REHEARSAL_TIMEOUT` after the parent removes its snapshots.
 Inspect the workload before increasing the budget. The source database remains unchanged.
-This deadline applies to the CLI; the in-process `rehearse` function does not cancel native backup.
+This deadline applies to the CLI; the in-process `rehearse` function does not cancel the snapshot statement.
+
+## Rehearse against a D1 export
+
+```sh
+npx wrangler d1 export <database> --remote --output dump.sql
+sqlite3 snapshot.sqlite < dump.sql
+npx solarsql rehearse snapshot.sqlite migrations/000N_<name>.sql checks.json
+```
+
+Confirm current flags with `npx wrangler d1 export --help`.
+
+Export refuses a database that already has an FTS5 search table:
+
+```
+D1 Export error: cannot export databases with Virtual Tables (fts5)
+```
+
+Work around this. Drop the search table and its triggers from a copy of the database before exporting, or rehearse without the search table. The generator's own `insert into <search> ... select ...` statement, emitted right after `create virtual table` when the search table's one insert trigger keeps to the documented shape, repopulates it once the migration applies for real (`migrations.md`, "What a migration holds", ADR 0118); the rehearsal itself does not need the search table present.

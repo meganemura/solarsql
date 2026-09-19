@@ -226,6 +226,18 @@ A database that already has tables, made by hand or by another tool, has no migr
 
 This path cannot prove that every replica of the deployed schema equals the one declared in `module.ts`, only the one `schema.sql` captured. It also cannot prove what `d1_migrations`'s history was before the baseline: that history is now the baseline file, trusted, not verified.
 
+## Check a deployed schema against the declaration
+
+```sh
+npx wrangler d1 export <database> --remote --no-data --output deployed.sql
+sqlite3 deployed.sqlite < deployed.sql
+for f in migrations/*.sql; do sqlite3 check.sqlite < "$f"; done
+```
+
+Compare `check.sqlite` and `deployed.sqlite` the way step 7 of "An existing D1 database" compares `check.sqlite` and `schema.sqlite`: the same `diff` pair, the same dropped-object filters.
+
+This comparison cannot show row data, table statistics, or a replica other than the one that answered the export request.
+
 ## Applying
 
 On D1, wrangler applies the files and records each in `d1_migrations`:
