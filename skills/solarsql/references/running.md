@@ -90,7 +90,7 @@ Observation is best-effort and cannot change the database result.
 The adapter contains synchronous throws and rejected observer promises, and does not await telemetry completion.
 An observer that needs failure reporting must handle and report its own delivery errors.
 
-Both D1 and a Durable Object bill on `rows_read` and `rows_written`, so a cost tracer reads `e.meta` on either engine.
+Both D1 and a Durable Object bill on `rows_read` and `rows_written`, so a cost tracer reads `e.meta` on either engine (ADR 0039).
 
 ## On a Durable Object
 
@@ -142,9 +142,7 @@ Engine versions and adapter conversions must be checked for each target.
 
 ## Values across adapters
 
-BLOB results use `Uint8Array` on all adapters, including BLOB values in an ANY column.
-The adapters convert D1 byte arrays and Durable Object ArrayBuffers before decoding JSON text.
-JSON arrays remain ordinary arrays. SQL NULL remains `null`.
+BLOB results use `Uint8Array` on all adapters, including an ANY column; the adapters convert D1 byte arrays and Durable Object ArrayBuffers before decoding JSON text, so a JSON array stays an ordinary array (ADR 0054). SQL NULL remains `null`.
 INTEGER results use JavaScript numbers. Keep portable integer values within the safe integer range.
 Node rejects reads outside that range; D1 can lose precision and its API does not support bigint parameters.
 `SqlValue` describes possible SQLite values, not a promise that each adapter accepts every value.
@@ -177,11 +175,10 @@ if (f.kind === "transient" && f.outcome === "not_applied") {
 } else throw e;
 ```
 
-The local tests exercise Node, D1 and Durable Object scalar representations.
-Remote behavior is checked by the opt-in remote suite; local tests do not certify a deployed database.
+Local tests exercise Node, D1, and Durable Object scalar representations (ADR 0054); the opt-in remote suite checks remote behavior, and local tests do not certify a deployed database.
 See [D1 value conversion](https://developers.cloudflare.com/d1/worker-api/#type-conversion).
 
-The Node adapter uses savepoints, so direct SQL and typed commands can share a caller-owned transaction.
+The Node adapter uses savepoints, so direct SQL and typed commands can share a caller-owned transaction (ADR 0072).
 An ordinary command failure rolls back its work. The caller still owns the outer COMMIT or ROLLBACK.
 Deferred constraints can fail at that outer commit after an inner command returned success.
 `migrate()` uses the same savepoints, so a deferred constraint that a migration adds also fails at the outer commit.

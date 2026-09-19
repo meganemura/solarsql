@@ -1,5 +1,17 @@
 # Migrations
 
+## Read this first
+
+- New table or column: [What a migration holds](#what-a-migration-holds).
+- Changed column: [What a migration holds](#what-a-migration-holds).
+- Dropped table or column: [Remove an ordinary table or column](#remove-an-ordinary-table-or-column).
+- Renamed column: [Rename a column without losing its values](#rename-a-column-without-losing-its-values).
+- Changed search table: [What a migration holds](#what-a-migration-holds).
+- Changed view or trigger: [What a migration holds](#what-a-migration-holds).
+- Existing database with no migration history yet: [An existing D1 database](#an-existing-d1-database).
+- Rehearse a migration before deploy: [rehearse.md](rehearse.md).
+- A replay error naming a `code`: [Migration history integrity](#migration-history-integrity).
+
 ```
 npx solarsql migration <name>
 ```
@@ -12,8 +24,8 @@ Every build keeps `index.ts` in step with the `.sql` files.
 Generation appends after the highest numeric sequence, including gaps.
 History names use at least four digits followed by `_name.sql`; sequences must be unique and increase in filename order.
 Two branches that each generate the next file independently can collide on the same sequence number; `build`/`build --check` refuse that before merge, and if both files are already applied somewhere, the repair is a new migration that reconciles them, not a rename.
-After renumbering a file that rebuilds a table, run `build --check` again: a rebuild generated before a sibling migration merged in ahead of it may no longer know about every column that table now has, a known column's current declared shape, or a table-level constraint, an index, or a trigger the table now has, and replay refuses it rather than silently losing that data or that declaration (ADR 0099, ADR 0101, ADR 0102). Delete the refused file and run `npx solarsql migration` again against the merged schema; it regenerates the rebuild with full knowledge of the current columns.
-Replay also refuses the opposite case. A sibling migration dropped a table-level constraint, an index, or a trigger. This file's own target schema still declares it, so replaying it would bring that declaration back (ADR 0116). The repair is the same: delete the file and regenerate it against the merged schema. A rebuild that drops the same declaration on purpose still replays.
+After renumbering a file that rebuilds a table, run `build --check` again: a rebuild generated before a sibling migration merged in ahead of it may no longer know about every column, shape, constraint, index, or trigger the table now has, and replay refuses it rather than silently losing that data or that declaration (ADR 0099, ADR 0101, ADR 0102). Delete the refused file and run `npx solarsql migration` again against the merged schema.
+Replay also refuses the opposite case, where a sibling migration dropped a declaration this file's own target schema still declares (ADR 0116). The repair is the same: delete the file and regenerate it against the merged schema. A rebuild that drops the same declaration on purpose still replays.
 Generation rejects a new name that would replay before existing history, including an unsafe digit-width rollover.
 Keep applied filenames unchanged when resolving a conflict.
 New SQL files use exclusive creation and generation holds `.solarsql-generation.lock` while comparing and writing history.
@@ -23,8 +35,7 @@ If a crash leaves the lock, check that its recorded process has exited before re
 ## Remove an ordinary table or column
 
 An automatic migration does not remove an ordinary table or column until an
-intent file names the exact objects. This prevents a DDL edit from silently
-discarding data on a database that has rows.
+intent file names the exact objects (ADR 0090).
 
 Create `changes.json` with this strict version-one shape. Keep both lists,
 even when one list is empty:
@@ -60,7 +71,7 @@ rejects malformed JSON before it imports the project configuration.
 ## Rename a column without losing its values
 
 When a table loses one column and gains one column, the build reports an exact
-rename repair and a command. Copy the reported JSON into `changes.json`, or
+rename repair and a command (ADR 0091). Copy the reported JSON into `changes.json`, or
 write this shape yourself:
 
 ```json
@@ -126,6 +137,7 @@ explicit migration that preserves the required rows and foreign keys.
 The order in a file: drop views, drop triggers and indexes, drop tables, change tables, create search tables, create indexes, views, and triggers.
 The rebuild check examines incoming references in both schemas, including self-references; cheap ALTER changes remain available.
 A trigger in a migration file opens with an uppercase `BEGIN`, whatever the declaration wrote: D1's HTTP API keeps a trigger body whole only then.
+Automatic table rebuilds preserve accessible row identifiers when both schema versions have them. If all identifier spellings are shadowed, or a new primary-key alias would change their meaning, generation reports a blocked migration; keep an accessible identifier with the same alias, or write an explicit migration with a data check (ADR 0068). When both versions use AUTOINCREMENT, rebuilds also retain its sequence history, including deleted maximum identifiers (ADR 0070).
 
 ## A project where every database starts empty
 
@@ -233,22 +245,13 @@ ctx.blockConcurrencyWhile(async () => {
 });
 ```
 
-A migration applied this way that adds a foreign key an existing row violates fails inside `migrate()` itself, the same as it already did on node:sqlite: `migrate()` runs `pragma foreign_key_check` at the end of each file's own transaction and throws a catchable error naming the violation when it finds one, so the constructor's `blockConcurrencyWhile` rejects and only that file rolls back.
-This closes a gap measured directly against workerd (Miniflare's bundled runtime, the same engine Cloudflare deploys): a deferred foreign-key check does not fire on its own at a Durable Object's `transactionSync` RELEASE, only later, at the request's own implicit commit, by which point `migrate()` had already returned normally and the platform discarded the response and reset the object instead of handing the constructor a catchable error.
-An immediate constraint (NOT NULL, UNIQUE, CHECK, or a non-deferred foreign key) never showed this: it always threw inside `migrate()` and rolled back only its own file.
+A migration applied this way that adds a foreign key an existing row violates fails inside `migrate()` itself, the same as it already did on node:sqlite: `migrate()` runs `pragma foreign_key_check` at the end of each file's own transaction and throws a catchable error naming the violation when it finds one, so the constructor's `blockConcurrencyWhile` rejects and only that file rolls back. This closes a gap on a Durable Object under workerd, where a deferred foreign-key check otherwise fires only at the request's own implicit commit, after `migrate()` already returned (ADR 0123).
 On Node, this check runs the same way when `migrate()` is called with no caller-owned transaction already open; when the caller already opened one before calling `migrate()`, the check is skipped and the deferred foreign-key check still fires at the caller's own commit instead, unchanged (`running.md`'s caller-owned-transaction composition).
-`pragma foreign_key_check` scans every foreign key in the database, not only the ones the current file's own statements touch.
-`migrate()` still names the next file that meets a violation.
-It now tells apart a violation that already existed before that file ran (a row a different table wrote while `pragma foreign_keys` was off, or one left over from before this check existed) from one the file introduced.
-To do this, it reads each violated row's table, foreign key, primary-key value, and the current value of the column (or columns) that foreign key references, before the file runs and again after, and compares the two readings.
-The referencing column's value matters on its own: a statement that only changes which row a violation points at, with the primary-key value unchanged, is still a new violation.
-When every violation found after the file ran already existed before it ran, the error says the violation predates the file, instead of blaming the file for it; the rollback stays the same, and only this file's own change rolls back.
-This distinction needs a table with exactly one primary-key column, of a declared type other than INTEGER, to read the value back -- or, on a single-column INTEGER PRIMARY KEY (a rowid alias), one declared with AUTOINCREMENT. AUTOINCREMENT forces every new rowid past `sqlite_sequence`'s own high-water mark, so the same row's rowid is never reused the way a plain `integer primary key`'s can be; `migrate()` uses the rowid itself as the value there, instead of reading a column back.
-On a table with an INTEGER PRIMARY KEY that has no AUTOINCREMENT, a composite primary key, or a WITHOUT ROWID table (its rowid is always null), `migrate()` cannot read a value back this way, so it always blames the named file, even when the violation predates it.
-A migration that renames the violated foreign key's own referencing column joins them: `migrate()` identifies a foreign key by its referencing column name among other things, so the rename changes that identity even though the same row still names the same missing parent, and `migrate()` blames the renaming file for a violation that predates it.
-A migration whose statements reassign an AUTOINCREMENT row's own rowid (an `update` that sets its INTEGER PRIMARY KEY column to a new value) joins them too: AUTOINCREMENT only guarantees a fresh rowid on insert, not that an existing row's rowid stays fixed, so `migrate()`'s two readings of that row's rowid stop matching and it blames the file, even when the violation predates it.
+`pragma foreign_key_check` scans every foreign key in the database, not only the ones the current file's own statements touch, so it can surface a violation a different file or table left behind.
 
-For example, `migrate()` throws a plain `Error` (not the `MigrationHistoryError` below), and the word `predates` appears in its message. The message embeds the violation in the same row shape `pragma foreign_key_check` itself returns, such as `{"table":"child","rowid":1,"parent":"parent","fkid":0}` for a `child` row whose `parent_id` no longer names a row in `parent`. A repair migration file's own statements can remove the violating row directly:
+`migrate()` tells apart a violation that predates the file from one the file introduced, by comparing each violated row's primary-key value and referencing-column value before and after the file runs (ADR 0123). This needs a table with one primary-key column, either a non-INTEGER type or a single-column INTEGER PRIMARY KEY declared AUTOINCREMENT; on any other primary-key shape, `migrate()` always blames the named file. Renaming the violated foreign key's referencing column, or reassigning an AUTOINCREMENT row's own rowid, also makes `migrate()` blame the file even when the violation predates it.
+
+When every violation found after the file ran already existed before it ran, `migrate()` throws a plain `Error` (not the `MigrationHistoryError` below) whose message contains `predates`, embedding the violation in the same row shape `pragma foreign_key_check` itself returns, such as `{"table":"child","rowid":1,"parent":"parent","fkid":0}` for a `child` row whose `parent_id` no longer names a row in `parent`. A repair migration file's own statements can remove the violating row directly:
 
 ```sql
 -- 0001_repair.sql
@@ -261,13 +264,7 @@ Query `pragma foreign_key_check` yourself, on the same database, before generati
 
 A rebuild that adds a foreign key an existing row already violates carries `pragma defer_foreign_keys = on`, so the file's own foreign-key check waits until commit instead of failing mid-rebuild.
 On D1, wrangler's local apply sends one `batch()` per file (v0-measurements.md, section 4c), the same shape `src/d1.ts` uses for a command's own `db.batch()` call.
-A direct run of this rebuild against wrangler 4.127.1's local D1, on a database with the same kind of orphaned row, rejected the whole file with exit code 1: `Durable Object was reset and rolled back to its last known good state because the application left the database in a state where constraints were violated: FOREIGN KEY constraint failed: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_FOREIGNKEY)`.
-`orders`'s schema read back unchanged afterward, and `d1_migrations` recorded no entry for the rejected file: the whole migration rolled back atomically, the same property `db.batch()` on Miniflare's D1 shows.
-The message is not opaque about the constraint: SQLite's own `FOREIGN KEY constraint failed: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_FOREIGNKEY)` text is there, after the platform's own `Durable Object was reset...` prefix.
-`constraintFailure()` (`src/runtime/plan.ts`) now strips this platform prefix too, and classifies the text underneath it -- but only when a caller passes it that message. Neither path in this section does: `wrangler d1 migrations apply` never calls into solarsql's code, and a direct call to the D1 binding's own `batch()` method, the way this section's own measurement reaches it, never goes through solarsql's `run()` either.
-A person reading the error sees the constraint kind; a caller on these two paths never asks solarsql's classifier at all.
-Node and a Durable Object carry the same cost, not only D1: `migrate()`'s own `pragma_foreign_key_check` scan (above) throws `Migration <file>: FOREIGN KEY constraint failed (pragma_foreign_key_check): [...]`, and `constraintFailure()` returns `null` for that message too, for the same reason -- its `Migration <file>: ` prefix and `(pragma_foreign_key_check): [...]` suffix both survive `bareMessage()` unstripped.
-This is measured for D1's local apply and for `db.batch()` directly; a remote apply's own rejection message under a real violation has not been observed the same way -- wrangler applies a rebuild file in one call there too, but the one remote run on record found empty tables and no violation to reject.
+A migration that fails this way rolls back atomically: the schema and `d1_migrations` (or `solarsql_migrations`) read back unchanged. The rejection carries SQLite's own constraint text, but `wrangler d1 migrations apply`, a direct `batch()` call, and `migrate()`'s own `pragma_foreign_key_check` message all reach a caller without going through `constraintFailure()` (ADR 0123); read the constraint kind from the message text directly.
 
 On node:sqlite, `migrate(db, migrations)` from `solarsql/node` applies the pending files once, in name order, and records each; it returns the names applied now.
 
@@ -302,102 +299,4 @@ D1 migrations applied through wrangler retain wrangler's history behavior; this 
 | `REBUILD_LOSES_COLUMN` | Regenerate the file against the current schema. |
 | `REBUILD_REVIVES_DECLARATION` | Regenerate the file against the current schema. |
 
-## Rehearse with existing data
-
-```sh
-npx solarsql rehearse local.sqlite proposed.sql checks.json
-```
-
-The command opens the source read-only and uses SQLite backup to create a disposable snapshot, including committed WAL data.
-It applies the proposed SQL to the snapshot in one transaction and checks database integrity and foreign keys.
-It blocks database attachments. It deletes the snapshot on completion or failure.
-The versioned JSON result includes before/after row counts, before/after column lists, completed checks, and failure diagnostics. Exit 1 indicates failure.
-
-`result.columns.before` and `result.columns.after` list, per table, each column's `name`, declared `type`, `notnull`, and `pk`, read from `pragma_table_xinfo`. After the migration runs and the database passes its integrity and foreign-key checks, the command compares the two lists. A table present before and missing after, a column present before and missing after (matched by name, case-insensitive), or a column whose type differs (case-insensitive) is a finding. An added table or an added column is never a finding. The comparison does not detect a rename: a rename shows up as one dropped column and one added column.
-
-The optional `checks.json` has two maps of names to SQL:
-
-```json
-{
-  "queries": { "oldRead": "select id, value from items where id = :id" },
-  "assertions": { "retained": "select count(*) = 20 from items" }
-}
-```
-
-Queries compile before and after the change; result column names and declared types must match.
-This detects structural incompatibility, not every semantic or nullability change.
-Assertions execute after migration and must each return one row with one value equal to 1. They take no parameters: a named or anonymous parameter in an assertion is refused, instead of running with the unbound value SQLite would otherwise silently use (ADR 0106).
-Use assertions for application-specific data requirements. Row counts alone do not prove value preservation.
-The command rehearses proposed SQL, not migration history adoption or a remote deployment.
-
-A finding fails the rehearsal unless `checks.json` names it as expected:
-
-```json
-{
-  "expected": {
-    "dropped": [{ "table": "retired" }, { "table": "orders", "column": "obsolete_note" }],
-    "retyped": [{ "table": "orders", "column": "qty" }]
-  }
-}
-```
-
-A dropped table names only `table`. A dropped column, or a retyped column, names both `table` and `column`. An `expected` entry the migration does not actually produce is also a failure, so a `checks.json` written for an earlier migration cannot excuse a later, unrelated loss. The failure message lists every unexpected finding, `table.column` per item, in one message.
-
-A query check compares result columns only; it does not execute the query.
-A migration can keep the same columns and still break stored data, for example when it turns a JSON column into plain text.
-Add a `cases` map to `checks.json` to run a representative old query with real parameters and catch this:
-
-```json
-{
-  "cases": {
-    "reader": {
-      "sql": "select json_extract(payload, '$.id') as id from items where id = :id",
-      "params": { ":id": 1 }
-    }
-  }
-}
-```
-
-Each case is one read statement (SELECT or VALUES, WITH allowed) with named parameters; an anonymous `?` parameter is rejected.
-A `params` key is the full name written in the SQL, prefix included (`:id`, `@id`, or `$id`), not the bare name (`id`).
-This matches the prefix that Node's adapter itself binds by, and it stops two parameters that share a bare name under different prefixes from colliding.
-A string, a finite number, or null binds as itself.
-A boolean is rejected at the top level: no generated query parameter is ever a boolean, because SqlValue has none. Use 0 or 1 instead.
-An array or an object binds as its JSON text, readable through `json_extract`, `json_each`, and similar functions. A boolean nested inside one still binds correctly, because JSON itself has a boolean.
-A BLOB (`Uint8Array`) or a BigInt has no JSON representation and is rejected; encode it as a string instead.
-
-The command runs every case before the migration and again after it, inside the same rehearsal.
-Both runs must execute without error, and the result columns must still match, or the rehearsal fails.
-This is stronger than a query check: a case proves the statement still executes against real rows, not only that its column shape is unchanged.
-A successful case is reported by name only; its SQL, parameters, and rows never appear in the result.
-A successful case does not prove that the returned values are equal before and after the migration, and it does not prove compatibility with a remote D1 database or Durable Object.
-
-| The message contains | Fix |
-|---|---|
-| `takes no parameters, but uses` | bind real values with a case instead |
-| `must be a finite number` | use a finite number |
-| `is a BigInt` | bind it as a string instead |
-| `is a BLOB` | bind it as a string instead |
-| `has unknown field` | use only `sql` and `params` |
-| `uses an anonymous parameter` | name every slot |
-| `more than one prefix` | use one prefix per bare parameter name |
-| `is missing parameter` | supply a value for every named slot the SQL uses |
-| `has unexpected parameter` | remove a param key the SQL does not use |
-| `is a boolean` | bind 0 or 1 instead |
-| `Result columns changed for case` | the case's result shape changed across the migration; treat this the same as a query check's shape mismatch |
-| `Schema shape changed unexpectedly` | a table or column vanished, or a column's declared type changed; name it in `expected.dropped` or `expected.retyped` if intended |
-| `did not happen` | an `expected` entry names a drop or a retype the migration did not perform; remove the stale entry |
-
-For a slow local snapshot, run `node spike/11-backup-lifecycle.ts` from a source checkout.
-It measures each backup phase, checks WAL rows and implicit row identities, and stops after 20 seconds (ADR 0063).
-
-The rehearsal CLI has a 30,000ms default time budget, including startup and snapshot creation.
-Use `--timeout-ms 120000` when the workload needs a larger finite budget.
-A deadline produces exit 1 and `REHEARSAL_TIMEOUT` after the parent removes its snapshots.
-Inspect the workload before increasing the budget. The source database remains unchanged.
-This deadline applies to the CLI; the in-process `rehearse` function does not cancel native backup.
-
-Automatic table rebuilds preserve accessible row identifiers when both schema versions have them.
-If all identifier spellings are shadowed, or a new primary-key alias would change their meaning, generation reports a blocked migration.
-Keep an accessible identifier with the same alias, or write an explicit migration with a data check (ADR 0068).
-When both versions use AUTOINCREMENT, rebuilds also retain its sequence history, including deleted maximum identifiers (ADR 0070).
+Rehearse a migration against a snapshot of real data before you deploy it: [rehearse.md](rehearse.md).

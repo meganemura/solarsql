@@ -73,5 +73,5 @@ The supported query shapes and named parameter rules in [queries](queries.md) al
 In DDL mode, the supplied DDL must describe your database.
 Database mode observes the source schema at analysis time; later changes require another invocation.
 This check proves a local contract, not production schema freshness or Cloudflare behavior.
-Use [migration rehearsal](migrations.md) with a populated snapshot for a proposed transition.
+Use [migration rehearsal](rehearse.md) with a populated snapshot for a proposed transition.
 See [running](running.md) for adapter conversions and numeric limits.
