@@ -24,7 +24,7 @@ This release can break a caller in two ways. `EngineMeta.duration` is now option
 - Added: `migrations.md` documents the baseline path for an existing D1 database that already has tables, verified on local D1.
 - Added: rehearsal now has its own reference, `rehearse.md`, split out of `migrations.md`.
 - Added: `rehearse.md` and `migrations.md` document rehearsing a migration against a D1 export, including the FTS5 export refusal and its two workarounds, and checking a deployed schema for drift against the declaration.
-- Added: tests and the example build now run on ubuntu, macOS, and Windows; child-process helpers run through node so the same tests pass on Windows.
+- Added: tests and the example build now run on ubuntu, macOS, and Windows. Child-process helpers run through node so the same tests pass on Windows.
 - Added: README records that node:sqlite's and workerd's SQLite versions were compared and matched (3.53.4, checked 2026-09-19); a test fails on a major or minor version difference.
 - Fixed: rehearse()'s on-disk snapshot step used node:sqlite's `backup()`, which measured 8-30 s waits on a tiny database once a WAL source had been touched earlier in the same process; it now uses `vacuum into`, which took under 12 ms in the same reproduction (ADR 0121).
 - Fixed: a `json_each` key compared through a row-value tuple (`(value ->> 'a', ...) = (col1, ...)`, or a row-value SET/WHERE whose right-hand side is a SELECT over `json_each`) now resolves that key's real column type, instead of `SqlValue`, the same as a single `value ->> 'k'` comparison already did.
@@ -66,6 +66,7 @@ This release can break a caller in two ways. `EngineMeta.duration` is now option
 - Fixed: `fullScans` names every table a reused alias could scan, instead of only the table the alias's last declaration names.
 - Fixed: `fullScans` no longer reports a false scan of a WITHOUT ROWID or INTEGER PRIMARY KEY table when that table's alias is reused by a genuine scan elsewhere in the same query.
 - Fixed: `durable.ts` compares a rebuild's recorded table name to the live schema case-insensitively at every lookup, so a case mismatch no longer causes a false refusal on columns or a missed refusal on indexes and triggers.
+- Fixed: `solarsql init` now prints the exists message and the written file list with forward slashes on Windows too.
 
 ## 0.4.0 (2026-09-14)
 
