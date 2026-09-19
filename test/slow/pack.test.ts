@@ -59,15 +59,21 @@ test("npm pack, install, and run the CLI from node_modules", { timeout: 180_000 
     assert.ok(existsSync(join(dir, "consumer/node_modules/solarsql/skills/solarsql/SKILL.md")));
 
     const cli = join(dir, "consumer/node_modules/.bin/solarsql");
-    checkDiscovery([cli], JSON.parse(readFileSync(join(dir, "consumer/node_modules/solarsql/package.json"), "utf8")).version);
+    // node_modules/.bin/solarsql is a .cmd shim on Windows, so spawnSync
+    // reports status null for it; run the bin entry the shim points to
+    // through node directly, on every platform.
+    if (process.platform !== "win32") assert.ok(existsSync(cli));
+    const installedPackageJson = JSON.parse(readFileSync(join(dir, "consumer/node_modules/solarsql/package.json"), "utf8")) as { version: string; bin: { solarsql: string } };
+    const binPath = join(dir, "consumer/node_modules/solarsql", installedPackageJson.bin.solarsql);
+    checkDiscovery([process.execPath, binPath], installedPackageJson.version);
     const machine = (...args: string[]) => {
-      const result = spawnSync(cli, args, { cwd: join(dir, "consumer"), encoding: "utf8", timeout: 10_000 });
+      const result = spawnSync(process.execPath, [binPath, ...args], { cwd: join(dir, "consumer"), encoding: "utf8", timeout: 10_000 });
       assert.ifError(result.error);
       assert.equal(result.signal, null);
       assert.equal(result.stdout.trim().split("\n").length, 1, result.stdout);
       return { result, report: JSON.parse(result.stdout) as { ok: boolean; diagnostics: { code: string; timeoutMs?: number; message?: string }[] } };
     };
-    const built = spawnSync(cli, ["build", "example/solarsql.config.ts"], { cwd: join(dir, "consumer"), encoding: "utf8" });
+    const built = spawnSync(process.execPath, [binPath, "build", "example/solarsql.config.ts"], { cwd: join(dir, "consumer"), encoding: "utf8" });
     assert.equal(built.status, 0, built.stdout + built.stderr);
     assert.match(built.stdout, /migrations are current/);
     for (const args of [["inspect"], ["build", "--json"]]) {
@@ -89,7 +95,7 @@ test("npm pack, install, and run the CLI from node_modules", { timeout: 180_000 
       assert.equal(timed.report.diagnostics[0]!.timeoutMs, 500);
     }
     for (const args of [["build"], ["build", "--check"], ["migration", "deadline_test"]]) {
-      const timed = spawnSync(cli, [...args, "--timeout-ms", "500", hanging], { cwd: join(dir, "consumer"), encoding: "utf8", timeout: 10_000 });
+      const timed = spawnSync(process.execPath, [binPath, ...args, "--timeout-ms", "500", hanging], { cwd: join(dir, "consumer"), encoding: "utf8", timeout: 10_000 });
       assert.ifError(timed.error);
       assert.equal(timed.status, 1, timed.stderr);
       assert.match(timed.stderr, /packed deadline import/);
@@ -105,14 +111,14 @@ test("npm pack, install, and run the CLI from node_modules", { timeout: 180_000 
       assert.match(rejected.report.diagnostics[0]!.message!, /requires an integer/);
     }
     for (const args of [["build"], ["build", "--check"], ["migration", "deadline_test"]]) {
-      const rejected = spawnSync(cli, [...args, "--timeout-ms", "0", invalid], { cwd: join(dir, "consumer"), encoding: "utf8", timeout: 10_000 });
+      const rejected = spawnSync(process.execPath, [binPath, ...args, "--timeout-ms", "0", invalid], { cwd: join(dir, "consumer"), encoding: "utf8", timeout: 10_000 });
       assert.ifError(rejected.error);
       assert.equal(rejected.status, 1);
       assert.doesNotMatch(rejected.stderr, /packed invalid deadline import/);
       assert.match(rejected.stderr, /requires an integer/);
     }
     for (const args of [["build", "--check"], ["migration", "deadline_test"]]) {
-      const result = spawnSync(cli, [...args, "--timeout-ms", "60000", "example/solarsql.config.ts"], { cwd: join(dir, "consumer"), encoding: "utf8", timeout: 10_000 });
+      const result = spawnSync(process.execPath, [binPath, ...args, "--timeout-ms", "60000", "example/solarsql.config.ts"], { cwd: join(dir, "consumer"), encoding: "utf8", timeout: 10_000 });
       assert.ifError(result.error);
       assert.equal(result.status, 0, result.stderr);
     }
@@ -147,7 +153,7 @@ test("npm pack, install, and run the CLI from node_modules", { timeout: 180_000 
     // for a slower runner, and the spawnSync timeout below leaves room for
     // both the budget and process teardown.
     const atomicBudgetMs = 5_000;
-    const atomicRun = (target: string, args: string[]) => spawnSync(cli, args, {
+    const atomicRun = (target: string, args: string[]) => spawnSync(process.execPath, [binPath, ...args], {
       cwd: join(dir, "consumer"), encoding: "utf8", timeout: atomicBudgetMs * 4,
       env: { ...process.env, NODE_OPTIONS: "--import=" + pathToFileURL(preload).href, SOLARSQL_TEST_BLOCK_TARGET: target },
     });
@@ -220,7 +226,7 @@ test("npm pack, install, and run the CLI from node_modules", { timeout: 180_000 
     // migration; the module's test runs on node:sqlite, and tsc accepts what
     // init wrote. The consumer's root has no configuration yet.
     const consumer = join(dir, "consumer");
-    const inited = spawnSync(cli, ["init", "order_lines"], { cwd: consumer, encoding: "utf8" });
+    const inited = spawnSync(process.execPath, [binPath, "init", "order_lines"], { cwd: consumer, encoding: "utf8" });
     assert.equal(inited.status, 0, inited.stdout + inited.stderr);
     assert.match(inited.stdout, /wrote   migrations\/0001_initial\.sql/);
     assert.match(inited.stdout, /wrote   tsconfig\.json/);
@@ -238,7 +244,7 @@ test("npm pack, install, and run the CLI from node_modules", { timeout: 180_000 
     const typed = spawnSync(tscCmd, tscCmdArgs, { cwd: consumer, encoding: "utf8" });
     assert.equal(typed.status, 0, typed.stdout + typed.stderr);
     // A second init in the same project is refused, and changes nothing.
-    const again = spawnSync(cli, ["init", "orders"], { cwd: consumer, encoding: "utf8" });
+    const again = spawnSync(process.execPath, [binPath, "init", "orders"], { cwd: consumer, encoding: "utf8" });
     assert.equal(again.status, 1);
     assert.match(again.stderr, /solarsql\.config\.ts exists/);
   } finally {

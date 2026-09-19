@@ -40,12 +40,15 @@ function fixture(t: TestContext) {
     },
     runAfterRenameStarts(target: string, ...args: string[]) {
       const preload = join(dir, "stop-after-atomic-write.mjs");
+      // Normalize backslashes before the endsWith check, so a Windows path
+      // (which renameSync receives with "\\" separators) still matches a
+      // target written with "/".
       writeFileSync(preload, [
         'import fs from "node:fs";',
         'import { syncBuiltinESMExports } from "node:module";',
         "const rename = fs.renameSync;",
         'fs.renameSync = (from, to) => {',
-        '  if (String(to).endsWith(process.env.SOLARSQL_TEST_BLOCK_TARGET ?? "")) {',
+        '  if (String(to).split("\\\\").join("/").endsWith(process.env.SOLARSQL_TEST_BLOCK_TARGET ?? "")) {',
         '    console.error("atomic replacement started: " + to);',
         '    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);',
         "  }",
