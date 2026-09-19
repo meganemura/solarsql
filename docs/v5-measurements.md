@@ -34,3 +34,55 @@ Conclusions:
 - These runs shared the machine with other concurrent work in the same repository checkout; absolute milliseconds vary run to run (a repeat of the N=20, M=20 case ranged from 138 ms to 742 ms across attempts), but the flat-per-module, linear-overhead shape held in every run. No hot spot was profiled, since no size was clearly super-linear.
 
 See also: [v2-measurements.md](v2-measurements.md).
+
+## 2. Agent-outcome battery
+
+### 2.1 Method
+
+The battery (`spike/13-agent-battery/README.md`) gives a fresh agent a broken copy of `example/` and one task, then measures repair success, files read, failed commands, and wall time to a passing `build --check`.
+Agent command: `claude -p --model sonnet --output-format stream-json --verbose --permission-mode acceptEdits --allowedTools Read,Edit,Write,Bash,Glob,Grep --setting-sources project` (Claude Code 2.1.278).
+Date: 2026-09-19.
+`--setting-sources project` isolates the run to the starter's own `CLAUDE.md` and skill, not the operator's own `~/.claude`.
+Each run starts from a fresh starter (`starter.ts`'s copy of `src/` and `example/`, with the skill and the `npx solarsql`/`npx tsc` shims).
+Files read count a distinct `Read` `file_path`, plus one for each `Glob` or `Grep` call; a file read through `cat` or `grep` in Bash is not counted, which undercounts reads in a run that prefers Bash over Read and Grep.
+Failed commands count every tool result with `is_error: true`; a Bash command that exits non-zero without the tool itself erroring (for example, `npm test` against a missing script) is not counted.
+
+### 2.2 Results
+
+First run, five scenarios, three runs each, 15/15 repaired, total cost 4.47 USD:
+
+| scenario | runs | success | median tool calls | median files read | median failed commands | median duration (s) | median cost (USD) |
+|---|---|---|---|---|---|---|---|
+| invalid-sql | 3 | 3/3 | 8 | 2 | 0 | 30.5 | 0.176047 |
+| stale-generated | 3 | 3/3 | 6 | 0 | 0 | 23.4 | 0.1456172 |
+| ddl-only | 3 | 3/3 | 19 | 2 | 0 | 91.3 | 0.3691446 |
+| cross-module-write | 3 | 3/3 | 14 | 3 | 0 | 62.3 | 0.2598194 |
+| rename-needs-intent | 3 | 3/3 | 23 | 3 | 1 | 170.7 | 0.5540984 |
+
+The rename scenario re-run three times, with streams and diffs saved:
+
+| scenario | runs | success | median tool calls | median files read | median failed commands | median duration (s) | median cost (USD) |
+|---|---|---|---|---|---|---|---|
+| rename-needs-intent | 3 | 3/3 | 29 | 11 | 1 | 133.6 | 0.7750914 |
+
+### 2.3 Where the rename's tool calls go
+
+`summarize.ts` on the three saved streams (`rename-needs-intent-{1,2,3}.stream.jsonl`).
+
+Every run read `references/migrations.md` before its first build: run 1 at tool call 7 (build at 27), run 2 at tool call 3 (build at 22), run 3 at tool call 3 (build at 21).
+Every run located the old column with Grep and Bash `grep` calls before editing: run 1 made 10 (7 Grep, 3 Bash `grep`), run 2 made 8 (7 Grep, 1 Bash `grep`), run 3 made 6 (3 Grep, 3 Bash `grep`).
+Every run then edited the sites by hand -- the search table, its two triggers, the queries, the command, and `worker.ts` -- before running the build once: run 1 made 8 `Edit` calls, run 2 made 7, run 3 made 8.
+After the build printed the blocked-migration JSON, every run copied it (`Write` in runs 1 and 2, a Bash heredoc to `/tmp/changes.json` in run 3) and ran the printed `solarsql migration` command.
+Failed commands: run 1 had none counted (`is_error: true`), but its `npm test` failed with "Missing script: \"test\"" without setting `is_error`; run 2 and run 3 each had one Grep with no match, from a search scoped to a `test/` directory the starter does not have.
+
+### 2.4 What this changes
+
+(a) After a DDL edit the build already lists every statement that still names the old column, in one run, so `skills/solarsql/SKILL.md` now tells the agent to run the build before searching.
+(b) The starter's `package.json` (written by `test/copy-example.ts`) gets a `test` script, so `npm test` from the build's `next:` line does not fail.
+(c) The invalid-sql and stale-generated scenarios sit at 6 to 9 tool calls, the floor for read task, edit, build, verify.
+(d) The earlier 1.5x tool-call figure against a query builder is not reproduced here, because this battery has no comparison arm; a comparison arm is a separate decision.
+
+### 2.5 Limits
+
+One model (`sonnet`), three runs per scenario, a five-scenario example project.
+Cost figures are Claude Code's own `total_cost_usd`.

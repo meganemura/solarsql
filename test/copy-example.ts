@@ -12,8 +12,15 @@ const root = resolve(import.meta.dirname, "..");
 export function copyExample(dir: string = mkdtempSync(join(tmpdir(), "solarsql-"))): string {
   cpSync(join(root, "src"), join(dir, "src"), { recursive: true });
   cpSync(join(root, "example"), join(dir, "example"), { recursive: true });
-  // The copy is an ES module project, like the repository.
-  writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "solarsql-copy", private: true, type: "module" }));
+  // The copy is an ES module project, like the repository. The build's
+  // "next:" line names `npm test`; a copy with no test script turns that
+  // line into a failed command instead of the file-not-found node:test
+  // gives on an empty test/ (spike/13-agent-battery's starter is this
+  // function plus bin shims, so this script covers it too).
+  writeFileSync(
+    join(dir, "package.json"),
+    JSON.stringify({ name: "solarsql-copy", private: true, type: "module", scripts: { test: "node --test" } }),
+  );
   writeFileSync(
     join(dir, "tsconfig.json"),
     JSON.stringify({

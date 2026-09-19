@@ -49,6 +49,6 @@ If you want to cite an internal document, write its substance in place instead.
 - `node src/build/cli.ts build example/solarsql.config.ts` builds the example from the source.
 - `solarsql init <module>` starts a project; it needs the installed package, so `test/slow/pack.test.ts` is where it runs.
 - `SOLARSQL_REMOTE_URL=<the Worker's URL> node --test test/remote.test.ts` runs the example's steps against a deployed Worker, on remote D1 and on a Durable Object. `npm test` skips it. The README says how to deploy; `example/wrangler.jsonc` is gitignored because it names one account's database.
-- `node spike/<file>.ts` runs one experiment and prints the measurements that `docs/v0-measurements.md` and `docs/v1-measurements.md` cite.
+- `node spike/<file>.ts` runs one experiment and prints the measurements that `docs/v0-measurements.md`, `docs/v1-measurements.md`, and `docs/v5-measurements.md` cite.
 
 The `spike/` directory holds the experiments. They are evidence for the ADRs.
