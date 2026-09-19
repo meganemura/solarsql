@@ -3,10 +3,10 @@
 // the installed package, because that is where "solarsql" resolves.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { init } from "../src/build/init.ts";
+import { init, initEmpty } from "../src/build/init.ts";
 import { BuildError } from "../src/build/typegen.ts";
 
 const fresh = () => mkdtempSync(join(tmpdir(), "solarsql-init-"));
@@ -64,5 +64,49 @@ test("the exists message contains no backslash", async () => {
     await assert.rejects(init("orders", dir), (e: unknown) => e instanceof BuildError && !e.message.includes("\\"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("init --empty writes exactly config, tsconfig, and an empty migrations index", async () => {
+  const dir = fresh();
+  try {
+    const result = await initEmpty(dir);
+    assert.deepEqual(result.written, ["solarsql.config.ts", "tsconfig.json", "migrations/index.ts"]);
+    assert.equal(existsSync(join(dir, "modules")), false);
+    assert.equal(readdirSync(join(dir, "migrations")).length, 1);
+    assert.match(readFileSync(join(dir, "solarsql.config.ts"), "utf8"), /modules: \[\]/);
+    assert.match(readFileSync(join(dir, "migrations/index.ts"), "utf8"), /export const migrations = \[\n\] as const;/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a second init --empty refuses on the existing config, the same as init", async () => {
+  const dir = fresh();
+  try {
+    await initEmpty(dir);
+    await assert.rejects(initEmpty(dir), (e: unknown) => e instanceof BuildError && /solarsql\.config\.ts exists/.test(e.message));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a tsconfig without allowImportingTsExtensions gets a note; with it, no note", async () => {
+  const withoutFlag = fresh();
+  const withFlag = fresh();
+  try {
+    writeFileSync(join(withoutFlag, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true } }));
+    const missing = await initEmpty(withoutFlag);
+    assert.deepEqual(missing.notes, [
+      'tsconfig.json lacks allowImportingTsExtensions; the generated imports use .ts extensions. See skills/solarsql/references/deploy.md, "An existing Workers project".',
+    ]);
+    assert.equal(existsSync(join(withoutFlag, "tsconfig.json")), true);
+
+    writeFileSync(join(withFlag, "tsconfig.json"), JSON.stringify({ compilerOptions: { allowImportingTsExtensions: true } }));
+    const present = await initEmpty(withFlag);
+    assert.deepEqual(present.notes, []);
+  } finally {
+    rmSync(withoutFlag, { recursive: true, force: true });
+    rmSync(withFlag, { recursive: true, force: true });
   }
 });

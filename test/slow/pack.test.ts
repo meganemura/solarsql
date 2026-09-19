@@ -250,6 +250,26 @@ test("npm pack, install, and run the CLI from node_modules", { timeout: 180_000 
     const again = spawnSync(process.execPath, [binPath, "init", "orders"], { cwd: consumer, encoding: "utf8" });
     assert.equal(again.status, 1);
     assert.match(again.stderr, /solarsql\.config\.ts exists/);
+
+    // init --empty: a config with no module, for a model-first project; and
+    // build still passes with zero modules. Nested in the consumer so
+    // "solarsql" resolves from its node_modules.
+    const emptyProject = join(consumer, "empty-project");
+    mkdirSync(emptyProject);
+    const initedEmpty = spawnSync(process.execPath, [binPath, "init", "--empty"], { cwd: emptyProject, encoding: "utf8" });
+    assert.equal(initedEmpty.status, 0, initedEmpty.stdout + initedEmpty.stderr);
+    assert.equal(initedEmpty.stdout.trim().split("\n").filter(l => l.startsWith("wrote")).length, 3);
+    assert.match(initedEmpty.stdout, /wrote   solarsql\.config\.ts/);
+    assert.match(initedEmpty.stdout, /wrote   tsconfig\.json/);
+    assert.match(initedEmpty.stdout, /wrote   migrations\/index\.ts/);
+    assert.equal(existsSync(join(emptyProject, "modules")), false);
+    const emptyBuild = spawnSync(process.execPath, [binPath, "build"], { cwd: emptyProject, encoding: "utf8" });
+    assert.equal(emptyBuild.status, 0, emptyBuild.stdout + emptyBuild.stderr);
+
+    // `init <module> --empty` is refused before anything is written.
+    const refused = spawnSync(process.execPath, [binPath, "init", "orders", "--empty"], { cwd: consumer, encoding: "utf8" });
+    assert.equal(refused.status, 2);
+    assert.match(refused.stderr, /init --empty takes no module name/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

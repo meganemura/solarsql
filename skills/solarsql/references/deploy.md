@@ -19,6 +19,33 @@ The local database is a SQLite file under `.wrangler/state/v3/d1/miniflare-D1Dat
 
 `wrangler dev` also runs a project's Durable Object locally; its SQLite storage lives under the same `.wrangler/state` directory, one file per object.
 
+## An existing Workers project
+
+The generated files use `.ts` extensions in their imports. Set `"allowImportingTsExtensions": true` in the project's tsconfig, with `"noEmit": true` or a bundler `moduleResolution`. The example's own tsconfig (this repository's root `tsconfig.json`) sets `"module": "nodenext"` and `"noEmit": true`. `solarsql init` prints a note when an existing `tsconfig.json` lacks the flag: `note: tsconfig.json lacks allowImportingTsExtensions; ...`.
+
+A module's tests run on node:test and node:sqlite, whose ambient types collide with the Workers types in one tsconfig. Split the check into two tsconfigs instead. The Workers tsconfig excludes the test files:
+
+```json
+{
+  "compilerOptions": { "allowImportingTsExtensions": true, "noEmit": true },
+  "exclude": ["modules/**/*.test.ts"]
+}
+```
+
+`tsconfig.node.json` extends it, sets `"types": ["node"]`, and includes the modules directory, test files and all:
+
+```json
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "types": ["node"] },
+  "include": ["modules"]
+}
+```
+
+The project's `typecheck` script runs both: `tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit`.
+
+A local seed writes data only, into wrangler's local sqlite file named above, through `node()`; the schema comes from wrangler (migrations.md, "One schema path per database").
+
 ## One Miniflare test for a project
 
 A project can run its own module against the D1 contract on workerd, the same way this repository's tests do, without an account. Add `miniflare` (pinned at `5.20260828.0-alpha` in this repository's `package.json`) as a dev dependency.

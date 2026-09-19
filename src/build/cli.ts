@@ -4,13 +4,14 @@
 //   solarsql build --check [config]     the same, writing nothing; exit 1 when a file is stale
 //   solarsql migration <name> [--intent file] [config]  write the next migration file
 //   solarsql init <module> [dir]        a first module, built, with its migration
+//   solarsql init --empty [dir]         a config and migrations/ with no module yet
 // Boundary: printing and exit codes only. build.ts and init.ts do the work.
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { relative } from "node:path";
 import { analyzeDatabase, analyzeSchema } from "./analyze.ts";
 import { rehearse } from "./rehearse.ts";
 import { build, migration, StatementFailures } from "./build.ts";
-import { init } from "./init.ts";
+import { init, initEmpty } from "./init.ts";
 import { readMigrationIntent, type MigrationIntent } from "./migration-intent.ts";
 import type { DropIntent, Rename, RenameRepair } from "./migration.ts";
 import { announceWorkerDone, isCliWorker, isReportWorker, printReport, runHuman, runMachine, runRehearsalProcess } from "./machine.ts";
@@ -32,7 +33,8 @@ const usage = `usage:
   solarsql build --json [--timeout-ms 30000] [solarsql.config.ts]   machine-readable generation result (combine with --check)
   solarsql migration <name> [--intent changes.json] [--timeout-ms 30000] [solarsql.config.ts]
   solarsql query <module>.<catalog>.<name> --database <file.sqlite> [--params '{"id":"1"}'] [--timeout-ms 30000] [solarsql.config.ts]
-  solarsql init <module> [dir]                  writes solarsql.config.ts and modules/<module>/, then builds and writes the first migration`;
+  solarsql init <module> [dir]                  writes solarsql.config.ts and modules/<module>/, then builds and writes the first migration
+  solarsql init --empty [dir]                   writes solarsql.config.ts with modules: [], tsconfig.json, and an empty migrations/index.ts`;
 
 function discovery(argv: string[]): number | undefined {
   const commands = ["analyze", "build", "rehearse", "inspect", "migration", "query", "init"];
@@ -254,6 +256,9 @@ async function main(argv: string[]): Promise<number> {
     for (const r of result.reads) {
       console.log(`reads   ${r.module}.${r.query}: ${r.tables.length > 0 ? r.tables.join(", ") : "(none)"}`);
     }
+    for (const n of result.notes) {
+      console.log(`note    ${n.module}.${n.command}: parameter :${n.parameter} of the included command ${n.included.module}.${n.included.command} is not named by any statement or assert of module ${n.module}`);
+    }
     console.log(`time    ${result.ms}ms`);
     if (result.index.path !== null && result.index.changed) console.log(`${check ? "stale  " : "wrote  "} ${result.index.path} (the migration files, for a Durable Object)`);
     const stale = result.modules.some((m) => m.changed) || result.index.changed;
@@ -316,14 +321,26 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   if (command === "init") {
+    if (rest[0] === "--empty") {
+      const result = await initEmpty(rest[1] ?? ".");
+      for (const f of result.written) console.log(`wrote   ${f}`);
+      for (const n of result.notes) console.error(`note: ${n}`);
+      console.log(`next: add the first module: schema.md, "Three files and one line", then npx solarsql build`);
+      return 0;
+    }
     const module = rest[0];
     if (!module) {
       console.error(usage);
       return 2;
     }
+    if (rest.includes("--empty")) {
+      console.error("init --empty takes no module name");
+      return 2;
+    }
     const result = await init(module, rest[1] ?? ".");
     for (const f of result.written) console.log(`wrote   ${f}`);
     if (result.notice) console.log(`note    ${result.notice}`);
+    for (const n of result.notes) console.error(`note: ${n}`);
     console.log(`next    node --test                 runs modules/${module}/module.test.ts on node:sqlite`);
     console.log(`        npx tsc --noEmit            typescript and @types/node are the dev dependencies it needs`);
     console.log(`        import { d1 } from "solarsql/d1", or "solarsql/durable", in the Worker; see the README`);

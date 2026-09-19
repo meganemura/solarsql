@@ -4,6 +4,10 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Added: `solarsql init --empty` writes the configuration, the tsconfig, and an empty migrations index and no placeholder module.
+- Added: `solarsql init` prints a note when the existing tsconfig.json lacks `allowImportingTsExtensions`, pointing at deploy.md's "An existing Workers project".
+- Added: deploy.md documents adopting solarsql in an existing Workers project (the tsconfig flag, a second tsconfig for node tests, a local seed); migrations.md states that a database has one schema path (wrangler on D1, `migrate()` for node tests and Durable Objects).
+- Added: the build prints a note for each parameter of an included command that no statement or assert of the including module names; commands.md documents that the including plan's asserts pin the pairing.
 - Added: a plan may include another module's exported command (ADR 0127), expanded in place into its statements and asserts, so a write that spans two modules runs as one D1 batch or one Durable Object transaction.
 - Added: an agent-outcome battery (spike/13-agent-battery) with a stub agent in the slow test set; docs/v5-measurements.md records the first real run, and section 3 records the module-ownership study.
 - Changed: `SKILL.md`'s schema step now tells the agent to run `npx solarsql build` before it searches for a renamed column: it names the first blocking trigger, view, or search table, then every query and plan statement.

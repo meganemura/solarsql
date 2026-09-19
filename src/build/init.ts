@@ -9,9 +9,12 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { build, migration } from "./build.ts";
+import { emitMigrationsIndex } from "./emit.ts";
+import { writeGeneratedFile } from "./output.ts";
 import { BuildError, brandName } from "./typegen.ts";
 
-export type InitResult = { written: string[]; migration: string | null; notice: string | null };
+export type InitResult = { written: string[]; migration: string | null; notice: string | null; notes: string[] };
+export type InitEmptyResult = { written: string[]; notes: string[] };
 
 // The module name is the table name and the directory name, as typed.
 const namePattern = /^[a-z][a-z0-9_]*$/;
@@ -28,7 +31,8 @@ export async function init(module: string, dir = "."): Promise<InitResult> {
     [join(moduleDir, "module.test.ts"), testTemplate(module)],
   ];
   const tsconfig = join(root, "tsconfig.json");
-  if (!existsSync(tsconfig)) files.push([tsconfig, tsconfigTemplate]);
+  const tsconfigExists = existsSync(tsconfig);
+  if (!tsconfigExists) files.push([tsconfig, tsconfigTemplate]);
   for (const [path] of files) {
     // relative() returns backslashes on Windows; the message is printed and,
     // in test/init.test.ts, matched as a project-relative POSIX path.
@@ -44,7 +48,71 @@ export async function init(module: string, dir = "."): Promise<InitResult> {
   const first = await migration(config, "initial");
   const written = [...files.map(([p]) => p), join(moduleDir, "solarsql.generated.ts"), join(root, "migrations", "index.ts")];
   if (first.filename) written.push(join(root, "migrations", first.filename));
-  return { written: written.map((p) => relative(root, p).split("\\").join("/")), migration: first.filename, notice: notice(root) };
+  const notes: string[] = [];
+  if (tsconfigExists) {
+    const note = tsconfigNote(tsconfig);
+    if (note) notes.push(note);
+  }
+  return { written: written.map((p) => relative(root, p).split("\\").join("/")), migration: first.filename, notice: notice(root), notes };
+}
+
+// `--empty` is for a model-first project: a blank config, no placeholder
+// module to delete on every run. It writes no module directory and no
+// migration file (there is nothing yet to migrate); the first `build` after
+// a module is added writes the first migration, the same as a hand-added
+// module (schema.md, "Adding a module by hand").
+export async function initEmpty(dir = "."): Promise<InitEmptyResult> {
+  const root = resolve(dir);
+  const config = join(root, "solarsql.config.ts");
+  const migrations = join(root, "migrations");
+  const tsconfig = join(root, "tsconfig.json");
+  if (existsSync(config)) throw new BuildError(`solarsql.config.ts exists. init is for a project without one; add a module by hand, as the README shows.`);
+  if (existsSync(migrations)) throw new BuildError(`migrations/ exists. init writes the first migration; a project with a history adds a module by hand, as the README shows.`);
+  const tsconfigExists = existsSync(tsconfig);
+  const files: [string, string][] = [[config, emptyConfigTemplate]];
+  if (!tsconfigExists) files.push([tsconfig, tsconfigTemplate]);
+  mkdirSync(migrations, { recursive: true });
+  for (const [path, text] of files) writeFileSync(path, text);
+  const indexPath = join(migrations, "index.ts");
+  writeGeneratedFile(indexPath, emitMigrationsIndex([]));
+  const written = [...files.map(([p]) => p), indexPath];
+  const notes: string[] = [];
+  if (tsconfigExists) {
+    const note = tsconfigNote(tsconfig);
+    if (note) notes.push(note);
+  }
+  return { written: written.map((p) => relative(root, p).split("\\").join("/")), notes };
+}
+
+const emptyConfigTemplate = `import { config } from "solarsql";
+
+export default config({
+  modules: [],
+  migrations: "./migrations",
+});
+`;
+
+// tsconfig.json can carry "//" and "/* */" comments, the dialect tsc itself
+// reads; stripped before JSON.parse so a comment does not fail this check.
+function stripJsonComments(text: string): string {
+  return text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+}
+
+// The generated files import each other with a .ts extension (Node's type
+// stripping needs it); a Workers tsconfig that never turned on
+// allowImportingTsExtensions fails tsc on those imports. Read-only: this
+// never rewrites the user's tsconfig. A tsconfig this cannot parse is not
+// this check's job to enforce, so it is skipped rather than reported wrong.
+function tsconfigNote(path: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripJsonComments(readFileSync(path, "utf8")));
+  } catch {
+    return null;
+  }
+  const options = (parsed as { compilerOptions?: { allowImportingTsExtensions?: unknown } }).compilerOptions;
+  if (options?.allowImportingTsExtensions === true) return null;
+  return `tsconfig.json lacks allowImportingTsExtensions; the generated imports use .ts extensions. See skills/solarsql/references/deploy.md, "An existing Workers project".`;
 }
 
 // Node runs a .ts file as an ES module when package.json says so, or when

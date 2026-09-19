@@ -26,6 +26,7 @@ The module name is the table name and the directory name, as typed, and matches 
 It never writes over a file: it refuses when any file it would write exists, and when `migrations/` exists.
 It writes no Worker, no wrangler configuration, and no package.json.
 The files are ES modules; a package.json that says `"type": "commonjs"` gets a note.
+`init --empty [dir]` writes `solarsql.config.ts` with `modules: []`, `tsconfig.json` when there is none, and an empty `migrations/index.ts`; no module directory and no migration file, for a model-first project that starts a module by hand. `init <module> --empty` is refused: `--empty` takes no module name.
 
 ## build
 
@@ -121,6 +122,7 @@ Shared SQL reports all its catalog locations.
 | `whose statements no module owns` | an included command's statements do not all belong to one module; include it as exported from its own module's `public.ts` |
 | `whose statements more than one module owns` | two modules declare the same statement text as an included command's plan; give one a distinct statement |
 | `is used twice` | an included command and the including command share an assert name; rename one |
+| `is not named by any statement or assert of module` | a `note` line, not a failure: an included command's parameter that no statement or assert of the including module names is a parameter nothing ties to the including row; add an assert that ties it, or give the shared value one name |
 | `the returns clause uses changes()` | read the command's changes result instead |
 | `RETURNING clause is discarded` | move the read into the command's `returns` field instead |
 | `does not export it` | a module's generated file uses another module's id type that the owner's `public.ts` no longer exports; add the `export type { ... }` line the message names |
