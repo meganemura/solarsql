@@ -240,6 +240,13 @@ This comparison cannot show row data, table statistics, or a replica other than 
 
 ## Applying
 
+### One schema path per database
+
+On D1, `wrangler d1 migrations apply` is the only schema path, local and remote.
+`migrate()` (from `solarsql/node`, and from `solarsql/durable` for a Durable Object) is for node:sqlite tests and for Durable Objects.
+Never apply both to one database: each keeps its own history table, and the second one re-creates tables the first one made.
+For a local seed, open wrangler's local sqlite file (deploy.md, "Develop locally", names the path) with `node()` and write data only; the schema comes from wrangler.
+
 On D1, wrangler applies the files and records each in `d1_migrations`:
 
 ```sh
