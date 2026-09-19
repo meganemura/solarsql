@@ -1,8 +1,9 @@
 // Responsibility: a fresh starter project for one battery run -- a copy of
 // src/ and example/ (so a run cannot touch the repository), with the skill
-// where a Claude Code agent finds it and two node_modules/.bin shims so
-// `npx solarsql ...` and `npx tsc ...`, the commands the skill and the
-// build's own "next:" line name, resolve without a network install.
+// where a Claude Code agent finds it and node_modules/.bin shims (a .cmd
+// pair alongside each extensionless one) so `npx solarsql ...` and
+// `npx tsc ...`, the commands the skill and the build's own "next:" line
+// name, resolve without a network install on every platform.
 // Boundary: this file only builds the starter; scenarios.ts breaks it and
 // checks it, stub-agent.ts (or a real agent) repairs it.
 import { chmodSync, cpSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -36,6 +37,12 @@ const tscShim = (repoRoot: string) => [
   "",
 ].join("\n");
 
+// npx resolves a bin name to node_modules/.bin/<name>.cmd on Windows and to
+// the extensionless script everywhere else; the extensionless script has no
+// shebang cmd.exe understands, so npx would fail on Windows without this
+// wrapper. POSIX shells never see the .cmd file.
+const cmdShim = (name: string) => [`@node "%~dp0${name}" %*`, ""].join("\r\n");
+
 export function buildStarter(repoRoot: string): string {
   const dir = fixtureDir("battery-");
   copyExample(dir);
@@ -48,8 +55,10 @@ export function buildStarter(repoRoot: string): string {
   mkdirSync(binDir, { recursive: true });
   writeFileSync(join(binDir, "solarsql"), solarsqlShim());
   chmodSync(join(binDir, "solarsql"), 0o755);
+  writeFileSync(join(binDir, "solarsql.cmd"), cmdShim("solarsql"));
   writeFileSync(join(binDir, "tsc"), tscShim(repoRoot));
   chmodSync(join(binDir, "tsc"), 0o755);
+  writeFileSync(join(binDir, "tsc.cmd"), cmdShim("tsc"));
 
   const skillDir = join(dir, ".claude/skills/solarsql");
   mkdirSync(skillDir, { recursive: true });

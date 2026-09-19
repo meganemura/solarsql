@@ -10,13 +10,29 @@
 // fixer -- generality is not this file's job, proving check() is.
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { tscArgs } from "../../test/fixture-dir.ts";
 
 const scenario = process.env.SOLARSQL_BATTERY_SCENARIO;
 const skipFix = process.env.SOLARSQL_BATTERY_SKIP_FIX === "1";
 const configArg = "example/solarsql.config.ts";
 const ordersModule = join("example/modules/orders/module.ts");
 const reportsModule = join("example/modules/reports/module.ts");
+
+// The repository this stub lives in, not the starter's copy -- run() below
+// resolves "npx solarsql"/"npx tsc" straight to node + these entry points
+// instead of a shell npx lookup, so the stub's own execution never depends
+// on shell command resolution (the wall the starter's bin shims exist for).
+const root = resolve(import.meta.dirname, "../..");
+const cliPath = join(root, "src/build/cli.ts");
+
+// Turns the command text an agent would type into node + a real entry
+// point. Only the two forms below appear in this file's fixes.
+function commandArgs(command: string): [string, string[]] {
+  if (command === "npx tsc --noEmit") return tscArgs(root, ["--noEmit"]);
+  if (command.startsWith("npx solarsql ")) return [process.execPath, [cliPath, ...command.slice("npx solarsql ".length).split(" ")]];
+  throw new Error(`stub run: unrecognized command ${JSON.stringify(command)}`);
+}
 
 // A stub has no real conversation turns; one per tool call it makes is a
 // reasonable stand-in, present so metrics.ts's turns field is never null
@@ -48,12 +64,15 @@ function write(filePath: string, content: string): void {
   emit({ type: "assistant", message: { content: [{ type: "tool_use", name: "Write", input: { file_path: join(process.cwd(), filePath) } }] } });
 }
 
-// Runs the same command line the skill or the build's own "next:" line
-// names, through a shell -- the same way a real agent's Bash tool would.
+// Reports the same command line the skill or the build's own "next:" line
+// names -- the text an agent's Bash tool would show and metrics.ts pins on
+// -- but runs it as node + a real entry point (commandArgs above), not
+// through a shell, so the stub's result never depends on shell resolution.
 function run(command: string): { status: number; output: string } {
   turns++;
   emit({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command } }] } });
-  const result = spawnSync(command, { shell: true, cwd: process.cwd(), encoding: "utf8" });
+  const [cmd, args] = commandArgs(command);
+  const result = spawnSync(cmd, args, { cwd: process.cwd(), encoding: "utf8" });
   const output = (result.stdout ?? "") + (result.stderr ?? "");
   const isError = result.status !== 0;
   emit({ type: "user", message: { content: [{ type: "tool_result", is_error: isError, content: output.slice(0, 2000) }] } });
