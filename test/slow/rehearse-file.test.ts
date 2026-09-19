@@ -95,3 +95,31 @@ test('rehearsal snapshots a one-row database quickly, plain and WAL', async t =>
     assert.ok(backupMs !== undefined && backupMs < 2000, `${mode} backup phase took ${backupMs} ms`);
   }
 });
+
+test('rehearsal preserves implicit row identities across the snapshot step, plain and WAL (ADR 0063/0068)', async t => {
+  // vacuum into (ADR 0121) rewrites the file; SQLite's own VACUUM docs warn
+  // rowids of a table with no INTEGER PRIMARY KEY "may" change, so this
+  // checks a table with a gap-and-reorder-prone rowid sequence, not just one
+  // row, plus an AUTOINCREMENT table's sqlite_sequence counter.
+  for (const mode of ['plain', 'wal'] as const) {
+    const dir = mkdtempSync(join(tmpdir(), `solarsql-rehearsal-rowid-${mode}-`));
+    t.after(() => rmSync(dir, {recursive:true,force:true}));
+    const path = join(dir,'source.sqlite');
+    const db = new DatabaseSync(path);
+    if (mode === 'wal') db.exec('pragma journal_mode = wal');
+    db.exec('create table t(value text)');
+    db.exec("insert into t(rowid,value) values (1,'a'),(5,'b'),(42,'c')");
+    db.exec('create table seq_check(id integer primary key autoincrement, v text)');
+    db.exec("insert into seq_check(v) values ('x'),('y')");
+    db.exec('delete from seq_check where id = 1');
+    db.close();
+    const report = await rehearse(path,'select 1', {
+      assertions: {
+        rowidsPreserved: "select group_concat(rowid) = '1,5,42' from t",
+        sequencePreserved: "select seq = 2 from sqlite_sequence where name = 'seq_check'",
+      },
+    });
+    assert.equal(report.ok,true,JSON.stringify(report));
+    assert.deepEqual(report.assertions,['rowidsPreserved','sequencePreserved']);
+  }
+});

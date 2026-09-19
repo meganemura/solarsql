@@ -22,6 +22,8 @@ The `backup` phase name is unchanged: it still names "the step that produces the
 
 `node spike/11-backup-lifecycle.ts` and the reproduction described above, on Node 26.7.0, macOS: the same six-call sequence that took 54.4 s total with `backup()` took 11-14 ms total with `vacuum into`, plain and WAL alike. `test/slow/rehearse-file.test.ts` adds a test asserting the `backup` phase (read from the diagnostics channel) finishes in under 2,000 ms for a one-row database, both plain and WAL, source connection closed before `rehearse()` runs; the file's two pre-existing tests are unchanged in behavior and now run in single-digit milliseconds instead of 30-46 s and 8-16 s.
 
+SQLite's own VACUUM documentation warns that VACUUM "may change the rowids of rows in a table that has no explicit INTEGER PRIMARY KEY," which matters here because rehearsal's contract preserves implicit row identities (ADR 0063/0068); a `t(value text)` table with rowids `1,5,42` (a gap, not a dense run) and a `seq_check` AUTOINCREMENT table's `sqlite_sequence` counter after a delete both came through `vacuum into` unchanged, plain and WAL alike, so `test/slow/rehearse-file.test.ts` now asserts `group_concat(rowid) = '1,5,42'` and the preserved `sqlite_sequence` value through `checks.assertions` as a permanent regression guard.
+
 A variant table, from the same reproduction harness (six sequential `rehearse()` calls, no `console.log` between them, WAL source with an earlier same-process writer already closed):
 
 | Variant | Backup/snapshot step, six calls |
