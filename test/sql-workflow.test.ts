@@ -11,7 +11,7 @@ import { pathToFileURL } from 'node:url';
 import { analyzeSchema } from '../src/build/analyze.ts';
 import { queries } from '../src/index.ts';
 import { node } from '../src/node.ts';
-import { fixtureDir, librarySpecifier, specifier } from './fixture-dir.ts';
+import { fixtureDir, librarySpecifier, specifier, tscArgs } from './fixture-dir.ts';
 
 const root = resolve(import.meta.dirname, '..');
 const schema = `create table accounts(name text not null) strict;
@@ -62,7 +62,8 @@ type Equal<A,B> = (<T>()=>T extends A?1:2) extends (<T>()=>T extends B?1:2) ? tr
 type Assert<T extends true> = T;
 export type Report = Assert<Equal<Row<typeof q.report>, {name:string;total:number|null}>>;
 `);
-  const compiled = spawnSync(join(root,'node_modules/.bin/tsc'),['--ignoreConfig','--noEmit','--strict','--skipLibCheck','--target','esnext','--module','nodenext','--allowImportingTsExtensions',join(dir,'consumer.ts')],{encoding:'utf8',timeout:30_000});
+  const [tscCmd, tscCmdArgs] = tscArgs(root,['--ignoreConfig','--noEmit','--strict','--skipLibCheck','--target','esnext','--module','nodenext','--allowImportingTsExtensions',join(dir,'consumer.ts')]);
+  const compiled = spawnSync(tscCmd,tscCmdArgs,{encoding:'utf8',timeout:30_000});
   assert.equal(compiled.status,0,compiled.stdout+compiled.stderr);
   const db = new DatabaseSync(database);
   db.exec(schema);

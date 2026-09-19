@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { analyzeSchema } from '../../src/build/analyze.ts';
 import { workerMiniflare } from '../worker.ts';
 import { parseJson } from '../../src/runtime/plan.ts';
-import { fixtureDir, librarySpecifier } from '../fixture-dir.ts';
+import { fixtureDir, librarySpecifier, tscArgs } from '../fixture-dir.ts';
 import { test as property } from '@hegeldev/hegel';
 import * as gs from '@hegeldev/hegel/generators';
 
@@ -57,7 +57,8 @@ export const params:Params<typeof q.query>={':id':1,'@id':'two',other:3};
 // @ts-expect-error SQLite gives @id a text contract.
 export const wrong:Params<typeof q.query>={':id':1,'@id':2,other:3};
 `);
-  const typed=spawnSync(join(root,'node_modules/.bin/tsc'),['--ignoreConfig','--noEmit','--strict','--skipLibCheck','--target','esnext','--module','nodenext','--allowImportingTsExtensions',join(dir,'consumer.ts')],{encoding:'utf8',timeout:30_000});
+  const [tscCmd,tscCmdArgs]=tscArgs(root,['--ignoreConfig','--noEmit','--strict','--skipLibCheck','--target','esnext','--module','nodenext','--allowImportingTsExtensions',join(dir,'consumer.ts')]);
+  const typed=spawnSync(tscCmd,tscCmdArgs,{encoding:'utf8',timeout:30_000});
   assert.equal(typed.status,0,typed.stdout+typed.stderr);
   writeFileSync(join(dir,'execute.mjs'),`
 import assert from 'node:assert/strict';
@@ -105,7 +106,8 @@ export function check(value:JsonValue):JsonValue{return value;}
 // @ts-expect-error Binary storage does not describe decoded JSON.
 export const wrong:JsonValue=new Uint8Array();
 `);
-  const typed=spawnSync(join(root,'node_modules/.bin/tsc'),['--ignoreConfig','--noEmit','--strict','--skipLibCheck','--target','esnext','--module','nodenext','--allowImportingTsExtensions',join(dir,'consumer.ts')],{encoding:'utf8',timeout:30_000});
+  const [tscCmd,tscCmdArgs]=tscArgs(root,['--ignoreConfig','--noEmit','--strict','--skipLibCheck','--target','esnext','--module','nodenext','--allowImportingTsExtensions',join(dir,'consumer.ts')]);
+  const typed=spawnSync(tscCmd,tscCmdArgs,{encoding:'utf8',timeout:30_000});
   assert.equal(typed.status,0,typed.stdout+typed.stderr);
   writeFileSync(join(dir,'execute.mjs'),`
 import assert from 'node:assert/strict';
@@ -152,7 +154,8 @@ export const row:Row<typeof q.query>={value:new Uint8Array(),n:7,text:'example',
 export const wrong:Row<typeof q.query>={value:'00ff',n:7,text:'example',ordered:null};
 export function serialize(rows:Row<typeof q.query>[]){return rows.map(r=>({bytes:Array.from(r.value),typed:r.value instanceof Uint8Array,n:r.n,text:r.text,ordered:r.ordered}));}
 `);
-  const typed=spawnSync(join(root,'node_modules/.bin/tsc'),['--ignoreConfig','--noEmit','--strict','--skipLibCheck','--target','esnext','--module','nodenext','--allowImportingTsExtensions',join(dir,'consumer.ts')],{encoding:'utf8',timeout:30_000});
+  const [tscCmd,tscCmdArgs]=tscArgs(root,['--ignoreConfig','--noEmit','--strict','--skipLibCheck','--target','esnext','--module','nodenext','--allowImportingTsExtensions',join(dir,'consumer.ts')]);
+  const typed=spawnSync(tscCmd,tscCmdArgs,{encoding:'utf8',timeout:30_000});
   assert.equal(typed.status,0,typed.stdout+typed.stderr);
   writeFileSync(join(dir,'execute.mjs'),`
 import assert from 'node:assert/strict';

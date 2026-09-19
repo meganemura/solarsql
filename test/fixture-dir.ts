@@ -27,3 +27,12 @@ export function specifier(dir: string, target: string): string {
 export function librarySpecifier(dir: string): string {
   return specifier(dir, join(root, "src/index.ts"));
 }
+
+// node_modules/.bin/tsc is a shim (a .cmd wrapper on Windows); spawnSync
+// without shell: true can't run it and fails ENOENT, and shell: true would
+// change how Windows quotes the arguments and hide a real ENOENT. Running
+// tsc's own entry point through node itself works the same on every
+// platform.
+export function tscArgs(projectRoot: string, args: string[]): [string, string[]] {
+  return [process.execPath, [join(projectRoot, "node_modules/typescript/bin/tsc"), ...args]];
+}

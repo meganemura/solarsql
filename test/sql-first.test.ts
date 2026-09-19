@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { build, migration } from "../src/build/build.ts";
 import { stockSchema } from "../spike/10-sql-scopes.ts";
-import { fixtureDir, librarySpecifier, specifier } from "./fixture-dir.ts";
+import { fixtureDir, librarySpecifier, specifier, tscArgs } from "./fixture-dir.ts";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -55,7 +55,8 @@ export type Detail = Assert<Equal<Row<typeof stockQueries.details>, { sku: Id<"e
     target: "esnext", module: "nodenext", strict: true, noEmit: true,
     allowImportingTsExtensions: true, skipLibCheck: true, types: ["node"],
   }, files: ["consumer.ts"] }));
-  const typed = spawnSync(join(root, "node_modules/.bin/tsc"), ["-p", join(dir, "tsconfig.json")], { encoding: "utf8", timeout: 30_000 });
+  const [tscCmd, tscCmdArgs] = tscArgs(root, ["-p", join(dir, "tsconfig.json")]);
+  const typed = spawnSync(tscCmd, tscCmdArgs, { encoding: "utf8", timeout: 30_000 });
   assert.ifError(typed.error);
   assert.equal(typed.status, 0, typed.stdout + typed.stderr);
 
@@ -131,7 +132,8 @@ export type References = Assert<Equal<Row<typeof q.refs>, {numeric_ref: number |
 newId<Row<typeof q.counters>['id']>();
 newId<Id<'names'>>();
 `);
-  const compiled = spawnSync(join(root, "node_modules/.bin/tsc"), ['--ignoreConfig', '--noEmit', '--strict', '--skipLibCheck', '--target', 'esnext', '--module', 'nodenext', '--allowImportingTsExtensions', join(dir, 'consumer.ts')], { encoding: 'utf8', timeout: 30_000 });
+  const [compiledCmd, compiledArgs] = tscArgs(root, ['--ignoreConfig', '--noEmit', '--strict', '--skipLibCheck', '--target', 'esnext', '--module', 'nodenext', '--allowImportingTsExtensions', join(dir, 'consumer.ts')]);
+  const compiled = spawnSync(compiledCmd, compiledArgs, { encoding: 'utf8', timeout: 30_000 });
   assert.equal(compiled.status, 0, compiled.stdout + compiled.stderr);
   writeFileSync(join(dir, 'execute.mjs'), `
 import assert from 'node:assert/strict';
@@ -184,7 +186,8 @@ export type Checked = Assert<Equal<Generated[${JSON.stringify(sql)}]['row'], {
       target: "esnext", module: "nodenext", strict: true, noEmit: true,
       allowImportingTsExtensions: true, skipLibCheck: true, types: ["node"],
     }, files: ["consumer.ts"] }));
-    const typed = spawnSync(join(root, "node_modules/.bin/tsc"), ["-p", join(dir, "tsconfig.json")], { encoding: "utf8", timeout: 30_000 });
+    const [tscCmd, tscCmdArgs] = tscArgs(root, ["-p", join(dir, "tsconfig.json")]);
+    const typed = spawnSync(tscCmd, tscCmdArgs, { encoding: "utf8", timeout: 30_000 });
     assert.ifError(typed.error);
     assert.equal(typed.status, 0, typed.stdout + typed.stderr);
   } finally { engine.close(); }

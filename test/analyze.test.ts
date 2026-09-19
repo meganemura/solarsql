@@ -10,7 +10,7 @@ import { join, resolve } from "node:path";
 import { Engine } from '../src/build/facts.ts';
 import { Typer } from '../src/build/typegen.ts';
 import { analyzeDatabase, analyzeSchema } from "../src/build/analyze.ts";
-import { fixtureDir, librarySpecifier, specifier } from "./fixture-dir.ts";
+import { fixtureDir, librarySpecifier, specifier, tscArgs } from "./fixture-dir.ts";
 
 const root = resolve(import.meta.dirname, "..");
 // analyzeSchema/analyzeDatabase's `library` argument only ever lands in a
@@ -41,7 +41,8 @@ export type Legacy = Assert<Equal<Row<typeof q.legacy>, {n:SqlValue;label:SqlVal
 export type Item = Assert<Equal<Row<typeof q.items>, {n:number;label:string|null}>>;
 export type Parameter = Assert<Equal<Params<typeof q.items>, {n:number}>>;
 `);
-  const typed = spawnSync(join(root, 'node_modules/.bin/tsc'), ['--ignoreConfig','--noEmit','--strict','--skipLibCheck','--target','esnext','--module','nodenext','--allowImportingTsExtensions',join(dir,'consumer.ts')], {encoding:'utf8',timeout:30_000});
+  const [tscCmd, tscCmdArgs] = tscArgs(root, ['--ignoreConfig','--noEmit','--strict','--skipLibCheck','--target','esnext','--module','nodenext','--allowImportingTsExtensions',join(dir,'consumer.ts')]);
+  const typed = spawnSync(tscCmd, tscCmdArgs, {encoding:'utf8',timeout:30_000});
   assert.equal(typed.status,0,typed.stdout+typed.stderr);
   writeFileSync(join(dir, 'execute.mjs'), `
 import assert from 'node:assert/strict';
@@ -137,7 +138,8 @@ type Assert<T extends true> = T;
 export type Item = Assert<Equal<Row<typeof q.item>, {id:number;value:string|null}>>;
 export type Legacy = Assert<Equal<Row<typeof q.legacy>, {value:SqlValue}>>;
 `);
-  const typed = spawnSync(join(root, 'node_modules/.bin/tsc'), ['--ignoreConfig','--noEmit','--strict','--skipLibCheck','--target','esnext','--module','nodenext','--allowImportingTsExtensions',join(dir,'consumer.ts')], {encoding:'utf8',timeout:30_000});
+  const [tscCmd, tscCmdArgs] = tscArgs(root, ['--ignoreConfig','--noEmit','--strict','--skipLibCheck','--target','esnext','--module','nodenext','--allowImportingTsExtensions',join(dir,'consumer.ts')]);
+  const typed = spawnSync(tscCmd, tscCmdArgs, {encoding:'utf8',timeout:30_000});
   assert.ifError(typed.error);
   assert.equal(typed.status, 0, typed.stdout + typed.stderr);
   writeFileSync(join(dir, 'execute.mjs'), `
@@ -310,7 +312,8 @@ type Assert<T extends true> = T;
 export type Result = Assert<Equal<Row<typeof q.byId>,{id:number}>>;
 export type Input = Assert<Equal<Params<typeof q.byId>,{id:number}>>;
 `);
-  const result = spawnSync(join(root,'node_modules/.bin/tsc'), ['--ignoreConfig','--noEmit','--strict','--skipLibCheck','--target','esnext','--module','nodenext','--allowImportingTsExtensions',join(dir,'consumer.ts')], {encoding:'utf8',timeout:30_000});
+  const [tscCmd, tscCmdArgs] = tscArgs(root, ['--ignoreConfig','--noEmit','--strict','--skipLibCheck','--target','esnext','--module','nodenext','--allowImportingTsExtensions',join(dir,'consumer.ts')]);
+  const result = spawnSync(tscCmd, tscCmdArgs, {encoding:'utf8',timeout:30_000});
   assert.equal(result.status,0,result.stdout+result.stderr);
 });
 

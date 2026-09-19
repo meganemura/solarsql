@@ -8,6 +8,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { checkDiscovery } from "../cli-discovery.ts";
+import { tscArgs } from "../fixture-dir.ts";
 
 const root = resolve(import.meta.dirname, "../..");
 
@@ -229,7 +230,8 @@ test("npm pack, install, and run the CLI from node_modules", { timeout: 180_000 
     assert.match(tested.stdout, /^ℹ pass 1$/m);
     // tsc and @types/node from this repository, so the check needs no network.
     symlinkSync(join(root, "node_modules/@types"), join(consumer, "node_modules/@types"), "dir");
-    const typed = spawnSync(join(root, "node_modules/.bin/tsc"), ["--noEmit", "-p", join(consumer, "tsconfig.json")], { cwd: consumer, encoding: "utf8" });
+    const [tscCmd, tscCmdArgs] = tscArgs(root, ["--noEmit", "-p", join(consumer, "tsconfig.json")]);
+    const typed = spawnSync(tscCmd, tscCmdArgs, { cwd: consumer, encoding: "utf8" });
     assert.equal(typed.status, 0, typed.stdout + typed.stderr);
     // A second init in the same project is refused, and changes nothing.
     const again = spawnSync(cli, ["init", "orders"], { cwd: consumer, encoding: "utf8" });
