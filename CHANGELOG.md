@@ -4,6 +4,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Changed: `options.observe`'s `meta` now arrives on a Durable Object too, with `rows_read` and `rows_written`, the same names D1 already reports. `EngineMeta.duration` is now optional: a Durable Object has no server-side timing to report, so its meta omits `duration` instead of reporting a false zero. A caller that read `meta.duration` as a plain `number` needs to handle the missing case now.
 - Fixed: `migrate()`'s pre-existing-violation check now tells a pre-existing violation apart from a new one on a table whose primary key is a single INTEGER column declared with AUTOINCREMENT, instead of always blaming the named file; a plain `integer primary key`, a composite primary key, and WITHOUT ROWID still always blame the named file.
 - Fixed: `migrate()`'s pre-existing-violation check no longer misreports a violation as newly introduced when an unrelated rebuild of that violation's own table renumbers SQLite's internal foreign-key id; it now identifies a foreign key by the parent table and the referencing and referenced column names instead.
 - Fixed: `migrate()` skips its pre-loop `pragma foreign_key_check` when every listed migration file is already applied, so an already-migrated Durable Object no longer pays a full-database scan on each activation.
