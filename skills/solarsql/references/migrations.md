@@ -140,6 +140,80 @@ A file written by hand can change data or schema; its resulting schema must matc
 Name it in the sequence, such as `0005_backfill.sql`, and the next build rewrites `index.ts`.
 Test a manual rebuild with representative related rows before deployment; the build compares schemas on empty databases.
 
+## An existing D1 database
+
+A database that already has tables, made by hand or by another tool, has no migration history yet. `wrangler d1 migrations` has `create`, `list`, and `apply` only (wrangler 4.127.1); there is no baseline command. Adopt the database this way:
+
+1. Export the deployed DDL:
+
+   ```sh
+   npx wrangler d1 export <database> --remote --no-data --output schema.sql
+   ```
+
+   This command fails with `cannot export databases with Virtual Tables (fts5)` when the database already has an FTS5 search table. Read that schema by another means first, such as `select sql from sqlite_schema`, and write its search table into `module.ts` by hand.
+
+2. Write `module.ts` by hand from `schema.sql`, one module per owner, following the STRICT and primary-key rules in `schema.md`. Match `schema.sql` exactly for now, including a table that is not STRICT; do that rebuild as a later migration, not inside the baseline. `wrangler d1 export` writes its own `d1_migrations` table into `schema.sql` once a database has applied a migration; a database with no history yet has none. Omit `d1_migrations` from `module.ts` regardless: it is wrangler's bookkeeping table, not a declared one.
+
+3. Build the project:
+
+   ```sh
+   npx solarsql build
+   ```
+
+   The build also declares `solarsql_assert`, a table and trigger every solarsql schema carries; `schema.sql` never has it. Expect this one difference in the check below.
+
+4. Generate the baseline file:
+
+   ```sh
+   npx solarsql migration initial
+   ```
+
+5. Apply the generated file to an empty database:
+
+   ```sh
+   sqlite3 check.sqlite < migrations/0001_initial.sql
+   ```
+
+6. Load `schema.sql` into its own database, so it can be compared the same way as `check.sqlite`:
+
+   ```sh
+   sqlite3 schema.sqlite < schema.sql
+   ```
+
+7. Compare the two schemas. Both sides drop any `sqlite_`-prefixed object (an autoindex, or `sqlite_sequence` from AUTOINCREMENT: SQLite names and orders these the same way on both databases, so dropping them from both sides keeps the comparison symmetric). `check.sqlite` also drops `solarsql_assert` and its trigger (the one difference from step 3); `schema.sqlite` also drops `d1_migrations` (present once the exported database has history):
+
+   ```sh
+   diff <(sqlite3 check.sqlite "select sql from sqlite_schema where name not in ('solarsql_assert', 'solarsql_assert_check') and name not like 'sqlite_%' order by name") <(sqlite3 schema.sqlite "select sql from sqlite_schema where name not in ('d1_migrations') and name not like 'sqlite_%' order by name")
+   ```
+
+8. `d1_migrations` does not exist on a database with no history. Create it, with no files pending, so the next step's insert has a table to write to:
+
+   ```sh
+   npx wrangler d1 migrations apply <database> --remote
+   ```
+
+9. Record the baseline file as applied, without running it. `d1_migrations` has `id` (`INTEGER PRIMARY KEY AUTOINCREMENT`), `name` (`TEXT UNIQUE`), and `applied_at` (`TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL`); the insert needs only `name`:
+
+   ```sh
+   npx wrangler d1 execute <database> --remote --command "insert into d1_migrations (name) values ('0001_initial.sql')"
+   ```
+
+10. Confirm nothing is pending; `apply` matches by name, not by content:
+
+    ```sh
+    npx wrangler d1 migrations list <database> --remote
+    ```
+
+11. Check the project once more:
+
+    ```sh
+    npx solarsql build --check
+    ```
+
+    It passes. The next schema change gets `0002_...`, generated and applied the usual way.
+
+This path cannot prove that every replica of the deployed schema equals the one declared in `module.ts`, only the one `schema.sql` captured. It also cannot prove what `d1_migrations`'s history was before the baseline: that history is now the baseline file, trusted, not verified.
+
 ## Applying
 
 On D1, wrangler applies the files and records each in `d1_migrations`:
