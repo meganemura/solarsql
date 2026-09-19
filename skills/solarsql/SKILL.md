@@ -31,7 +31,7 @@ Load the reference of the step before you edit.
 4. **Add a command**: a key in `commands(generated, { ... })` with `plan`, asserts, and `returns`, then `npx solarsql build`. Plans, asserts, results by `kind` with the rows the plan changed, and what a plan may touch: [references/commands.md](references/commands.md).
 5. **Run it**: `d1(env.DB)`, `durable(ctx.storage)`, or `node(db)`; `db.all`, `db.first`, `db.run`, `db.batch`; `Row` and `Params` outside the module; the tables a query or a command reads, in `meta.reads`; the observe hook; ids; a module's test: [references/running.md](references/running.md).
 6. **Read a build message**: the message names the fix. The table of messages: [references/build.md](references/build.md).
-7. **Deploy the example** and run its steps on remote D1 and a Durable Object: [references/deploy.md](references/deploy.md).
+7. **Develop locally** with wrangler and a Miniflare test, then **deploy the example** and run its steps on remote D1 and a Durable Object: [references/deploy.md](references/deploy.md).
 
 After an edit, complete the [verification workflow](references/build.md#verification-after-an-edit).
 
