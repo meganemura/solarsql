@@ -1,0 +1,4 @@
+# The build and the migration generator write LF. Tests compare committed
+# generated files, migration .sql files, and fixtures byte for byte against
+# fresh output, so a CRLF checkout on Windows fails them.
+* text=auto eol=lf
