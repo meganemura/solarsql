@@ -4,6 +4,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Added: `npx solarsql query <module>.<catalog>.<name> --database <file.sqlite> [--params json]` runs one catalog query against a local SQLite file and prints its rows as one JSON array on stdout; a `commands(...)` entry is refused, naming `db.run` (ADR 0124).
 - Added: `inspect`'s `result.inspection.operations` entries now carry `plan` for a SELECT, VALUES, or WITH-prefixed read statement (`null` for a write): `EXPLAIN QUERY PLAN`'s own rows, the tables it scans in full, the tables and indexes it searches, and whether a sort or a group needed a temporary B-tree (ADR 0122).
 - Added: failureClass(error), exported from the package root, sorts a thrown engine error into transient (outcome not_applied or unknown), permanent, or unclassified, from the error text D1, a Durable Object, and SQLite document; retry stays the caller's decision (ADR 0120).
 - Added: rehearsal now reports each table's columns (`columns.before`/`columns.after`) and fails with `SCHEMA_SHAPE_CHANGED` on an unexpected dropped table, dropped column, or changed column type; a new `checks.json` field, `expected`, names an intentional one (ADR 0119).

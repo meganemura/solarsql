@@ -7,6 +7,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { migration } from "../../src/build/build.ts";
 
 const root = resolve(import.meta.dirname, "../..");
@@ -672,4 +673,53 @@ test('rehearsal deadlines stop native SQL and remove snapshots while preserving 
     assert.equal(invalid.result.status, 1);
     assert.match(invalid.report.diagnostics[0].message, /requires an integer/);
   }
+});
+
+test('query runs a catalog query against a local database, and refuses a command, an unknown name, and a missing option', async (t) => {
+  const f = fixture(t);
+  const dbPath = join(f.dir, 'query.sqlite');
+  const { migrations } = await import(pathToFileURL(join(f.dir, 'example/migrations/index.ts')).href) as { migrations: readonly { name: string; sql: string }[] };
+  const { migrate } = await import(pathToFileURL(join(f.dir, 'src/node.ts')).href) as { migrate: (db: DatabaseSync, files: readonly { name: string; sql: string }[]) => string[] };
+  const raw = new DatabaseSync(dbPath);
+  migrate(raw, migrations);
+  raw.exec("insert into customers (id, name, email) values ('c1', 'Ada', 'ada@example.com')");
+  raw.exec("insert into orders (id, customer_id, status, note) values ('o1', 'c1', 'draft', 'first')");
+  raw.exec("insert into order_lines (id, order_id, sku, qty, price) values ('l1', 'o1', 'sku', 1, 9.5)");
+  raw.close();
+
+  const byId = f.run('query', 'orders.orderQueries.byId', '--database', dbPath, '--params', '{"id":"o1"}');
+  assert.equal(byId.status, 0, byId.stderr);
+  assert.deepEqual(JSON.parse(byId.stdout), [{ id: 'o1', customer_id: 'c1', status: 'draft', note: 'first' }]);
+
+  const byCustomer = f.run('query', 'orders.orderQueries.byCustomer', '--database', dbPath, '--params', '{"customer_id":"c1"}');
+  assert.equal(byCustomer.status, 0, byCustomer.stderr);
+  assert.deepEqual(JSON.parse(byCustomer.stdout), [{ id: 'o1', status: 'draft' }]);
+
+  // withLines' `lines` column is JSON text in SQLite; the adapter decodes it,
+  // so it arrives as an array, not a string to parse again.
+  const withLines = f.run('query', 'orders.orderQueries.withLines', '--database', dbPath, '--params', '{"id":"o1"}');
+  assert.equal(withLines.status, 0, withLines.stderr);
+  const rows = JSON.parse(withLines.stdout) as { lines: unknown }[];
+  assert.deepEqual(rows[0]!.lines, [{ id: 'l1', sku: 'sku', qty: 1, price: 9.5 }]);
+
+  const missingParam = f.run('query', 'orders.orderQueries.byId', '--database', dbPath);
+  assert.equal(missingParam.status, 2, missingParam.stdout);
+  assert.match(missingParam.stderr, /missing parameter: "id"/);
+  assert.match(missingParam.stderr, /byId/);
+
+  const unknown = f.run('query', 'orders.orderQueries.doesNotExist', '--database', dbPath, '--params', '{"id":"o1"}');
+  assert.equal(unknown.status, 2, unknown.stdout);
+  assert.match(unknown.stderr, /no query named "doesNotExist"/);
+
+  const command = f.run('query', 'orders.orderCommands.place', '--database', dbPath, '--params', '{}');
+  assert.equal(command.status, 2, command.stdout);
+  assert.match(command.stderr, /db\.run/);
+
+  const noDatabase = f.run('query', 'orders.orderQueries.byId', '--params', '{"id":"o1"}');
+  assert.equal(noDatabase.status, 2, noDatabase.stdout);
+  assert.match(noDatabase.stderr, /--database is required/);
+
+  // A write reaching the read-only handle needs no test of its own: every
+  // catalog query is a SELECT (ADR 0045), and node:sqlite's own `readOnly:
+  // true` would refuse a write before solarsql code ran at all.
 });

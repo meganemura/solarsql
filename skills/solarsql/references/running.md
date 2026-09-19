@@ -67,6 +67,8 @@ A caller that picks a data source by table, or drops a cache by table, reads it 
 
 A caller that keeps its own reference to a session made with `withSession(...)` can call `.getBookmark()` on that reference directly, after passing the same object into `d1()` -- `d1()` never takes ownership of it. That bookmark is how a caller builds read-your-writes consistency across two requests: read it after the first request's call, and pass it into the next request's own `withSession(bookmark)`. solarsql does not wrap `getBookmark()` on `D1Like` or `Database`, since the caller already holds what it needs.
 
+To run a catalog query from the shell, `npx solarsql query ...` (build.md).
+
 A caller can also reach past the generated queries and commands and run raw SQL directly against the underlying binding, one line per target:
 
 - D1: `const rows = (await env.DB.prepare(sql).all()).results;` -- D1's `.all()` resolves to `{ success, meta, results }`, not a plain array; take `.results` for the rows. Cloudflare also ships a CLI that runs a raw statement with no application code at all: `npx wrangler d1 execute <database> --command "..."`.

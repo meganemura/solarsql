@@ -14,6 +14,7 @@ npx solarsql init <module> [dir]
 npx solarsql build [--timeout-ms 30000] [solarsql.config.ts]
 npx solarsql build --check [--timeout-ms 30000] [solarsql.config.ts]
 npx solarsql migration <name> [--intent changes.json] [--timeout-ms 30000] [solarsql.config.ts]
+npx solarsql query <module>.<catalog>.<name> --database <file.sqlite> [--params '{"id":"1"}'] [--timeout-ms 30000] [solarsql.config.ts]
 ```
 
 ## init
@@ -38,13 +39,22 @@ Invalid schema, SQL, or module boundaries still fail the build.
 `build --check` and `migration <name>` exit 1 for a blocked migration.
 A successful build does not establish that the change is ready to deploy.
 
-The CLI runs `build`, `build --check`, and `migration` in a direct worker with a 30,000 millisecond deadline.
+The CLI runs `build`, `build --check`, `migration`, and `query` in a direct worker with a 30,000 millisecond deadline.
 Use `--timeout-ms <positive integer>` to set a different finite deadline.
 The parent validates every command option before the worker imports the project.
 On expiry, it stops the direct worker and reports the expired budget with a recovery action.
 The command does not make claims about application-owned child processes.
 Generated files and `migrations/index.ts` replace their old contents atomically.
 Review a timed-out migration directory before you remove a retained `.solarsql-generation.lock`.
+
+## query
+
+`query <module>.<catalog>.<name> --database <file.sqlite>` runs one catalog query and prints its rows as one JSON array on stdout, exit 0.
+`<module>` is a directory basename of `solarsql.config.ts`'s `modules`, `<catalog>` an exported `queries(...)` const, `<name>` its entry key.
+It imports the project in the same direct worker as `build`, so application code runs under the same conditions; use `--timeout-ms` the same way.
+`--database` opens read-only; `--params` takes a JSON object keyed by the generated parameter names, the same object `db.all` takes (queries.md).
+A missing or extra key fails with the adapter's own message (ADR 0088); a `commands(...)` entry is refused, naming `db.run`.
+Every other error, including a missing `--database`, exits 2 with one line on stderr naming the query or the option.
 
 ## Verification after an edit
 
@@ -122,6 +132,12 @@ Shared SQL reports all its catalog locations.
 | `requires an integer` | pass `--timeout-ms` a positive integer, at most 2147483647 |
 | `exists. init is for a project without one` | init never writes over a file; add a module by hand ([schema.md](schema.md)) |
 | `migrations/ exists` | init never writes over a project with a migration history; add a module by hand ([schema.md](schema.md)) |
+| `query name must be <module>.<catalog>.<name>` | pass the module directory's basename, the exported catalog const, and the entry key, joined by dots |
+| `no module named` | check `<module>` against `solarsql.config.ts`'s `modules` |
+| `no query catalog named` / `no query named` | check `<catalog>` and `<name>` against the module's `module.ts` |
+| `is a command, not a query. Run a command through db.run` | commands are out of scope for `query`; call `db.run` from application code instead |
+| `missing parameter` / `unexpected parameter` | fix `--params`' JSON object to match the query's own declared keys (ADR 0088) |
+| `--database is required` / `--database <file>:` | pass `--database <file.sqlite>`; the second form also carries the engine's own open failure |
 
 A statement that does not prepare fails with the engine's own message, such as `no such column: x`, under the module and the statement.
 

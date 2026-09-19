@@ -14,6 +14,7 @@ import { readMigrationIntent, type MigrationIntent } from "./migration-intent.ts
 import type { DropIntent, Rename, RenameRepair } from "./migration.ts";
 import { announceWorkerDone, isCliWorker, isReportWorker, printReport, runHuman, runMachine, runRehearsalProcess } from "./machine.ts";
 import { protectInputs, writeGeneratedFile } from "./output.ts";
+import { parseQueryTarget, runQuery } from "./query.ts";
 import { shellArgument } from "./shell.ts";
 import { BuildError } from "./typegen.ts";
 
@@ -29,10 +30,11 @@ const usage = `usage:
   solarsql inspect [--timeout-ms 30000] [solarsql.config.ts]        JSON contracts, accesses and freshness; writes no build artifacts
   solarsql build --json [--timeout-ms 30000] [solarsql.config.ts]   machine-readable generation result (combine with --check)
   solarsql migration <name> [--intent changes.json] [--timeout-ms 30000] [solarsql.config.ts]
+  solarsql query <module>.<catalog>.<name> --database <file.sqlite> [--params '{"id":"1"}'] [--timeout-ms 30000] [solarsql.config.ts]
   solarsql init <module> [dir]                  writes solarsql.config.ts and modules/<module>/, then builds and writes the first migration`;
 
 function discovery(argv: string[]): number | undefined {
-  const commands = ["analyze", "build", "rehearse", "inspect", "migration", "init"];
+  const commands = ["analyze", "build", "rehearse", "inspect", "migration", "query", "init"];
   const [command, ...rest] = argv;
   const help = command === "help" || argv.some(arg => arg === "--help" || arg === "-h");
   const version = command === "--version" || command === "-v";
@@ -126,6 +128,39 @@ function migrationArguments(args: string[]): { name: string; configPath: string;
   }
   if (paths.length < 1 || paths.length > 2) throw new BuildError("Use solarsql migration <name> [--intent changes.json] [solarsql.config.ts].");
   return { name: paths[0]!, configPath: paths[1] ?? "solarsql.config.ts", intent: intentPath ? readMigrationIntent(intentPath) : { drops: [], renames: [] } };
+}
+
+function queryArguments(args: string[]): { target: string; database: string; params: Record<string, unknown>; configPath: string } {
+  const paths: string[] = [];
+  let database: string | undefined;
+  let paramsJson: string | undefined;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!;
+    if (arg === "--database") {
+      const value = args[++index];
+      if (!value) throw new BuildError("--database requires one file path.");
+      database = value;
+    } else if (arg === "--params") {
+      const value = args[++index];
+      if (!value) throw new BuildError("--params requires one JSON object.");
+      paramsJson = value;
+    } else if (arg.startsWith("--")) {
+      throw new BuildError(`Unknown query option ${arg}.`);
+    } else {
+      paths.push(arg);
+    }
+  }
+  if (paths.length < 1 || paths.length > 2) throw new BuildError("Use solarsql query <module>.<catalog>.<name> --database <file> [--params json] [solarsql.config.ts].");
+  if (!database) throw new BuildError("--database is required.");
+  let params: Record<string, unknown> = {};
+  if (paramsJson !== undefined) {
+    let parsed: unknown;
+    try { parsed = JSON.parse(paramsJson); }
+    catch { throw new BuildError("--params requires valid JSON."); }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new BuildError("--params requires a JSON object.");
+    params = parsed as Record<string, unknown>;
+  }
+  return { target: paths[0]!, database, params, configPath: paths[1] ?? "solarsql.config.ts" };
 }
 
 function intentAction(drops: readonly DropIntent[], renames: readonly Rename[], configArgument: string): string {
@@ -230,6 +265,17 @@ async function main(argv: string[]): Promise<number> {
     console.log("migrations are current");
     return 0;
   }
+  if (command === "query") {
+    try {
+      const { target, database, params, configPath } = queryArguments(rest);
+      const rows = await runQuery(configPath, parseQueryTarget(target), database, params);
+      await printReport(rows);
+      return 0;
+    } catch (e) {
+      console.error(`error: ${e instanceof Error ? e.message : String(e)}`);
+      return 2;
+    }
+  }
   if (command === "migration") {
     const { name, configPath, intent } = migrationArguments(rest);
     const result = await migration(configPath, name, intent);
@@ -282,6 +328,22 @@ try {
       if (worker.args[0] === "build") buildArguments(worker.args.slice(1));
       else migrationArguments(worker.args.slice(1));
       return runHuman(import.meta.filename, worker.args, worker.timeoutMs);
+    })()
+    : args[0] === "query" && !isReportWorker() && !isCliWorker()
+    ? await (async () => {
+      // A bad option fails here, in the parent, before any project import;
+      // it reports the same way main()'s own query branch does (exit 2,
+      // one stderr line), not the exit-1 path the outer catch below uses
+      // for every other command's BuildError.
+      try {
+        const worker = deadlineArguments(args);
+        queryArguments(worker.args.slice(1));
+        return await runHuman(import.meta.filename, worker.args, worker.timeoutMs);
+      } catch (e) {
+        if (!(e instanceof BuildError)) throw e;
+        console.error(`error: ${e.message}`);
+        return 2;
+      }
     })()
     : await main(args));
   if (isCliWorker()) await announceWorkerDone(code);

@@ -135,6 +135,7 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0120](adr/0120-a-thrown-engine-error-classifies-as-transient-or-permanent.md) | A thrown engine error classifies as transient or permanent |
 | [0122](adr/0122-inspect-carries-the-query-plan.md) | Inspect carries the query plan |
 | [0123](adr/0123-migrate-names-the-file-that-introduced-a-foreign-key-violation.md) | `migrate()` names the file that introduced a foreign-key violation |
+| [0124](adr/0124-a-catalog-query-runs-from-the-shell.md) | A catalog query runs from the shell |
 
 ## Measurements
 
