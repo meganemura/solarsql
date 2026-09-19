@@ -44,7 +44,7 @@ If you want to cite an internal document, write its substance in place instead.
 
 - `npm test` runs the in-process files directly under `test/` (node:sqlite only, 582 tests, about 9 seconds). `npm run test:all` adds two more directories: `test/slow/` (`cli.test.ts`, `cli-discovery.test.ts`, and `pack.test.ts`, which spawn `tsc`, `npm pack`, and the CLI as child processes; `rehearse-file.test.ts`, whose two tests go through `rehearse()`'s on-disk backup) and `test/miniflare/` (workerd); together about 112 seconds, though the two added directories vary with machine load. CI runs `npm run test:all`.
 - `npm run typecheck` runs `tsc --noEmit` over `src/`, `test/`, `example/`, and `spike/`.
-- `.github/workflows/ci.yml` runs the tests, the typecheck, and the example's `build --check` on Node 24 and 26, for every push and pull request to main.
+- `.github/workflows/ci.yml` runs the tests, the typecheck, and the example's `build --check` on Node 24 and 26, on ubuntu, macOS, and Windows, for every push and pull request to main.
 - `npm run build` emits `dist/` from `src/`. Only the pack test needs it.
 - `node src/build/cli.ts build example/solarsql.config.ts` builds the example from the source.
 - `solarsql init <module>` starts a project; it needs the installed package, so `test/slow/pack.test.ts` is where it runs.
