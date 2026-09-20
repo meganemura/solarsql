@@ -10,6 +10,7 @@ import { join, resolve } from "node:path";
 import { build, migration, StatementFailures } from "../src/build/build.ts";
 import { BuildError } from "../src/build/typegen.ts";
 import { nextMigrationFile, withMigrationLock, writeNewMigration } from "../src/build/migration-files.ts";
+import { tscArgs } from "./fixture-dir.ts";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -293,6 +294,50 @@ describe("solarsql build", () => {
   });
 
   describe("ADR 0127: a plan may include another module's command", () => {
+    test("an included SqlValue parameter stays broad for its owner and narrows for the including command", async () => {
+      const dir = copy();
+      try {
+        const orders = join(dir, "example/modules/orders/module.ts");
+        writeFileSync(orders, readFileSync(orders, "utf8").replace(
+          "export const orderCommands = commands(generated, {",
+          'export const orderCommands = commands(generated, {\n  untypedCustomer: { plan: ["select 1 where :customer_id"] },',
+        ));
+        const customers = join(dir, "example/modules/customers/module.ts");
+        writeFileSync(customers, readFileSync(customers, "utf8").replace(
+          `plan: [orderCommands.deleteByCustomer, "delete from customers where id = :customer_id"],`,
+          `plan: [orderCommands.untypedCustomer, "delete from customers where id = :customer_id"],`,
+        ));
+
+        await build(join(dir, "example/solarsql.config.ts"));
+        const ownerGenerated = readFileSync(join(dir, "example/modules/orders/solarsql.generated.ts"), "utf8");
+        assert.match(ownerGenerated, /"select 1 where :customer_id": \{\n    params: \{ customer_id: SqlValue \};/);
+
+        const consumer = join(dir, "example/include-param-types.ts");
+        writeFileSync(consumer, `
+import type { Params, SqlValue } from "../src/index.ts";
+import { customerCommands } from "./modules/customers/public.ts";
+import type { CustomersId } from "./modules/customers/public.ts";
+import { orderCommands } from "./modules/orders/public.ts";
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
+type Assert<T extends true> = T;
+export type OwnerParameter = Assert<Equal<Params<typeof orderCommands.untypedCustomer>, { customer_id: SqlValue }>>;
+const ownerAcceptsNumber: Params<typeof orderCommands.untypedCustomer> = { customer_id: 1 };
+const includingAcceptsCustomerId: Params<typeof customerCommands.remove> = { customer_id: "customer" as CustomersId };
+// @ts-expect-error The including plan's customer delete narrows the shared parameter.
+const includingRejectsNumber: Params<typeof customerCommands.remove> = { customer_id: 1 };
+void ownerAcceptsNumber;
+void includingAcceptsCustomerId;
+void includingRejectsNumber;
+`);
+        const [tsc, args] = tscArgs(root, ["--ignoreConfig", "--noEmit", "--strict", "--skipLibCheck", "--target", "esnext", "--module", "nodenext", "--allowImportingTsExtensions", consumer]);
+        const typed = spawnSync(tsc, args, { encoding: "utf8", timeout: 30_000 });
+        assert.ifError(typed.error);
+        assert.equal(typed.status, 0, typed.stdout + typed.stderr);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     test("customers.remove expands orders.deleteByCustomer in place, with its own statements typed under orders", async () => {
       const dir = copy();
       try {

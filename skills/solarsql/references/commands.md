@@ -132,6 +132,19 @@ export const customerCommands = commands(generated, {
 The general form: `exists (select 1 from <including table> where id = :id and <column> = :<included param>)`.
 The build prints one line for each included-command parameter that no statement or assert of the including module names: `note: parameter :x of the included command <name> is not named by any statement or assert of module <m>`. The line is a report, not a refusal.
 
+### Parameter types stay with their owner
+
+The generated declaration of an included command stays stable in its owner module.
+The build writes that declaration before it checks modules that include the command, so a later plan cannot rewrite an owner parameter from `SqlValue` to a narrower type.
+The owner command remains usable by itself with the type its own SQL establishes.
+
+An including command still combines the included parameter with its own statements and asserts.
+If one of those uses gives the shared name a narrower type, the including command requires that narrower type.
+
+If the owner command must require the narrower type when called directly, make a typed use in the owner's SQL, such as a comparison to its table column.
+If only an including command needs the narrower type, keep the owner parameter broad and add the type-bearing use in that including plan.
+When one statement must serve commands that need incompatible types, give the statement a type of its own or split it into separate statements.
+
 ## Bulk writes
 
 Many rows come in one array parameter and one statement: `insert ... select ... from json_each(:rows)` for inserts, `update ... where id in (select value ->> 'id' from json_each(:rows))` for updates, and `changes() = json_array_length(:rows)` as the assert that every id was known.

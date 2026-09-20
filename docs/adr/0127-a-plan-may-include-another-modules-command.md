@@ -38,4 +38,17 @@ It also moves the checks the build does on a plan (parameter types, asserts, own
 - A Miniflare test is the claim: a failure in the included command's statement rolls back the including command's own statement on D1 and on a Durable Object, and the mirror case.
 - A nested include is refused: a command that includes another command that itself includes a command names both and stops the build with "which itself includes a command; include the inner commands directly"; an agent includes the inner commands directly instead.
 - A mutual include is impossible: the build-order rule ("must come before module ... in modules") can hold in only one direction, so module A including module B's command and module B including module A's command cannot both build.
-- A SqlValue column of an included statement that the including plan could refine stays SqlValue: the owner's generated file is already written by the time the including module types, so the refinement can only be detected, not written back. This is a real gap, open work.
+- A SqlValue column of an included statement that the including plan could refine stays SqlValue: the owner's generated file is already written by the time the including module types, so the refinement can only be detected, not written back. The addendum below records the stable owner declaration this requires.
+
+## Addendum (2026-09-20): owner declarations stay stable
+
+The owner's generated declaration stays as its own SQL types it, even when an including command has a narrower use of the same parameter.
+The including command merges those parameter types and therefore exposes the narrower shared type.
+This addendum closes the open type-refinement question above.
+
+### Alternative refused
+
+The build will not make a second pass that writes the owner file again after checking including modules.
+That pass would make an owner's public command type depend on modules that appear later in the configuration.
+Reordering otherwise valid modules could then change a public declaration without changing the owner module.
+An owner command must keep the same declaration when it builds on its own and when another module includes it.
