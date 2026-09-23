@@ -1,0 +1,21 @@
+# solarsql
+
+Typed SQL for SQLite on Cloudflare D1 / Durable Objects. The build asks the real engine what SQL returns and writes types down. Commands are transactional plans; modules own tables; observation must not change outcomes.
+
+It is not a general ORM for every database, and it is not a migration tool that skips rehearsal.
+
+Agent skill: [skills/solarsql/SKILL.md](skills/solarsql/SKILL.md)
+
+Installed package: `node_modules/solarsql/skills/solarsql/SKILL.md` (this file at `node_modules/solarsql/llms.txt`). Point AGENTS.md at that skill path after install.
+
+## Commands
+
+- `solarsql init <module> [dir]` / `solarsql init --empty [dir]` — scaffold then build
+- `solarsql build` / `build --check` / `build --json` — generate types; `--check` writes nothing
+- `solarsql migration <name>` — author a migration
+- `solarsql rehearse <database.sqlite> <change.sql> [checks.json]` — validate on a disposable snapshot
+- `solarsql inspect` — JSON contracts, accesses, freshness (no build artifacts)
+- `solarsql analyze` — schema/query generation without full module rules (see skill)
+- `solarsql query <module>.<catalog>.<name> --database <file.sqlite>` — run a built query
+
+Destructive migrations need explicit intent. Prefer skill references over pasting long ADR bodies into context.
