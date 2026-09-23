@@ -37,7 +37,7 @@ If you want to cite an internal document, write its substance in place instead.
 - Keep the inner loop synchronous and in-process: `node:sqlite` for type checks and unit tests. Use Miniflare only in CI and in opt-in tests.
 - Comments say why: the constraint, or the alternative that was refused. Each module starts with its responsibility and its boundary.
 - `.claude-team/` holds task specs, reports, library comparisons, and their experiment artifacts. It is gitignored. Do not commit or reference its contents from committed content.
-- A release follows `docs/releasing.md`. `npm publish` and a change of the repository's visibility are the owner's to run.
+- A release follows `docs/releasing.md`. Approving the `publish` environment, and a change of the repository's visibility, are the owner's to run. The publish workflow runs `npm publish`; it does not read `NPM_TOKEN`.
 - Rewriting git history, force-pushing, or otherwise mutating a remote or a published tag is the owner's to run. An existing instruction that authorizes such an action for one situation does not extend to a materially larger version of that action later (more refs, more history, or a scope the owner did not describe); name the concrete refs, commits, or tags it is about to change and any known downstream consumers (for example, published package registry metadata), and confirm that expanded scope with the owner, before running it.
 
 ## Commands
@@ -45,6 +45,7 @@ If you want to cite an internal document, write its substance in place instead.
 - `npm test` runs the in-process files directly under `test/` (node:sqlite only, 582 tests, about 9 seconds). `npm run test:all` adds two more directories: `test/slow/` (`cli.test.ts`, `cli-discovery.test.ts`, and `pack.test.ts`, which spawn `tsc`, `npm pack`, and the CLI as child processes; `rehearse-file.test.ts`, whose two tests go through `rehearse()`'s on-disk backup) and `test/miniflare/` (workerd); together about 112 seconds, though the two added directories vary with machine load. CI runs `npm run test:all`.
 - `npm run typecheck` runs `tsc --noEmit` over `src/`, `test/`, `example/`, and `spike/`.
 - `.github/workflows/ci.yml` runs the tests, the typecheck, and the example's `build --check` on Node 24 and 26, on ubuntu, macOS, and Windows, for every push and pull request to main.
+- `.github/workflows/publish.yml` runs on a `v*` tag. The steps and the trusted-publisher settings are in `docs/releasing.md`.
 - `npm run build` emits `dist/` from `src/`. Only the pack test needs it.
 - `node src/build/cli.ts build example/solarsql.config.ts` builds the example from the source.
 - `solarsql init <module>` starts a project; it needs the installed package, so `test/slow/pack.test.ts` is where it runs.
