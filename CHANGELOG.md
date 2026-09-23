@@ -4,6 +4,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+## 0.6.0 (2026-09-23)
+
 - Added: `solarsql init --empty` writes the configuration, the tsconfig, and an empty migrations index and no placeholder module.
 - Added: `solarsql init` prints a note when the existing tsconfig.json lacks `allowImportingTsExtensions`, pointing at deploy.md's "An existing Workers project".
 - Added: deploy.md documents adopting solarsql in an existing Workers project (the tsconfig flag, a second tsconfig for node tests, a local seed); migrations.md states that a database has one schema path (wrangler on D1, `migrate()` for node tests and Durable Objects).
