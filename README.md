@@ -1,5 +1,7 @@
 # solarsql
 
+[![npm version](https://img.shields.io/npm/v/solarsql)](https://www.npmjs.com/package/solarsql)
+
 A typed SQL layer for SQLite on Cloudflare, for D1 and Durable Objects.
 It is written for a coding agent that reads one module at a time, and for the human who reviews the agent's work.
 Before 1.0 a minor version may change the API; the [changelog](CHANGELOG.md) says what changed.
