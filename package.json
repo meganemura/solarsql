@@ -69,6 +69,7 @@
     "@types/node": "26.4.0",
     "miniflare": "5.20260828.0-alpha",
     "typescript": "7.0.2",
-    "wrangler": "4.127.1"
+    "wrangler": "4.127.1",
+    "archstrict": "file:../archstrict"
   }
 }
