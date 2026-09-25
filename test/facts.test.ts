@@ -3,7 +3,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { Engine } from "../src/build/facts.ts";
-import { introspect, diff } from "../src/build/migration.ts";
+import { introspect, diff, applied } from "../src/build/migration.ts";
 import { analyzeSchema } from "../src/build/analyze.ts";
 import { Typer } from "../src/build/typegen.ts";
 import * as hegel from "@hegeldev/hegel";
@@ -121,6 +121,28 @@ describe("Engine", () => {
     assert.equal(strict.strict, true);
     // A STRICT table makes its primary key NOT NULL without the words.
     assert.equal(strict.columns[0]!.notnull, true);
+  });
+
+  // Read by the join fan-out proof (typegen.ts, ADR 0136): a UNIQUE
+  // constraint or CREATE UNIQUE INDEX (not a PRIMARY KEY, already on
+  // ColumnFact.pk), not partial, every key column a plain reference (not
+  // an expression), with each key column's own collation.
+  test("uniqueIndexes: a unique index, a partial one, an expression one, and a column's own declared collation", () => {
+    const engine = new Engine([
+      `create table t (
+        id text primary key not null,
+        code text not null,
+        partial_code text,
+        nocase_code text collate nocase not null
+      )`,
+      `create unique index t_code on t(code)`,
+      `create unique index t_partial on t(partial_code) where partial_code is not null`,
+      `create unique index t_expr on t(lower(code))`,
+      `create unique index t_nocase on t(nocase_code collate binary)`,
+    ]);
+    const t = engine.table("t");
+    assert.deepEqual(new Set(t.uniqueIndexes.map((u) => JSON.stringify(u))), new Set([JSON.stringify({ columns: [{ name: "code", collation: "BINARY" }] }), JSON.stringify({ columns: [{ name: "nocase_code", collation: "BINARY" }] })]));
+    assert.deepEqual(t.columns.map((c) => [c.name, c.collation]), [["id", "BINARY"], ["code", "BINARY"], ["partial_code", "BINARY"], ["nocase_code", "NOCASE"]]);
   });
 
   test("columns: origins through aliases and views, null for expressions", () => {
@@ -360,6 +382,116 @@ describe("Engine", () => {
 
   test("prepare rejects an unknown column with the engine's message", () => {
     assert.throws(() => engine.prepare("select nope from orders"), /no such column: nope/);
+  });
+});
+
+// workerd sets these limits on every SQLite connection it opens for D1 and
+// a Durable Object (see WORKERD_LIMITS in facts.ts); node:sqlite has none
+// of them by default, so a statement that passes engine.prepare() or the
+// Engine constructor's DDL loop must also fail (or pass) the same way
+// workerd's own connection would. Each pair below pins one limit's boundary
+// on both sides -- measurements this round of work took directly.
+describe("workerd's prepare-time limits", () => {
+  const engine = new Engine(ddl);
+
+  test("a 6-term UNION ALL is refused, a 5-term one is not (compoundSelect 5)", () => {
+    const union = (n: number) => Array.from({ length: n }, (_, i) => `select ${i}`).join(" union all ");
+    assert.throws(() => engine.prepare(`select * from (${union(6)})`), /too many terms in compound select/i);
+    assert.doesNotThrow(() => engine.prepare(`select * from (${union(5)})`));
+  });
+
+  test("a 6-term UNION ALL inside a CTE is refused the same way", () => {
+    const union = (n: number) => Array.from({ length: n }, (_, i) => `select ${i} as n`).join(" union all ");
+    assert.throws(() => engine.prepare(`with u as (${union(6)}) select * from u`), /too many terms in compound select/i);
+  });
+
+  test("a 600-row VALUES builds: multi-row VALUES is exempt from compoundSelect", () => {
+    const rows = Array.from({ length: 600 }, (_, i) => `(${i})`).join(",");
+    assert.doesNotThrow(() => engine.prepare(`select * from (values ${rows})`));
+  });
+
+  test("coalesce with 128 arguments is refused, 127 is not (functionArg 127)", () => {
+    const args = (n: number) => Array.from({ length: n }, () => "null").join(",");
+    assert.throws(() => engine.prepare(`select coalesce(${args(128)})`), /too many arguments on function coalesce/);
+    assert.doesNotThrow(() => engine.prepare(`select coalesce(${args(127)})`));
+  });
+
+  test("a 101-term addition chain is refused, 100 is not (exprDepth 100)", () => {
+    const chain = (n: number) => "1" + "+1".repeat(n - 1);
+    assert.throws(() => engine.prepare(`select ${chain(101)}`), /expression tree is too large/i);
+    assert.doesNotThrow(() => engine.prepare(`select ${chain(100)}`));
+  });
+
+  test("101 result columns are refused, 100 are not (column 100)", () => {
+    const cols = (n: number) => Array.from({ length: n }, (_, i) => `1 as c${i}`).join(",");
+    assert.throws(() => engine.prepare(`select ${cols(101)}`), /too many columns in result set/);
+    assert.doesNotThrow(() => engine.prepare(`select ${cols(100)}`));
+  });
+
+  test("101 columns in a CREATE TABLE are refused, 100 are not, at the Engine constructor's own DDL loop (column 100)", () => {
+    const cols = (n: number) => Array.from({ length: n }, (_, i) => `c${i} integer`).join(",");
+    assert.throws(() => new Engine([`create table wide (${cols(101)})`]), /too many columns on wide/);
+    const built = new Engine([`create table wide (${cols(100)})`]);
+    built.close();
+  });
+
+  test("101 named parameters are refused, 100 are not (variableNumber 100)", () => {
+    const params = (n: number) => Array.from({ length: n }, (_, i) => `:p${i}`).join(",");
+    assert.throws(() => engine.prepare(`select ${params(101)}`), /too many sql variables/i);
+    assert.doesNotThrow(() => engine.prepare(`select ${params(100)}`));
+  });
+
+  test("a 100,001-byte statement is refused, a 99,990-byte one is not (sqlLength 100,000)", () => {
+    // The 99,990-byte case is the regression test for call-scoped limits: a
+    // connection-wide limit was measured and rejected because it also
+    // catches the Engine's own internal wrapper SQL (fullScans' `explain
+    // query plan`, columns()' temp-table dedup) built past 100 KB or 100
+    // columns, turning those into false build errors. A call-scoped limit
+    // leaves the wrapper calls, which run outside this one prepare(), at
+    // the connection's real (unlimited) size.
+    const padded = (bytes: number) => {
+      const prefix = "select 1 as a --";
+      return prefix + " " + "x".repeat(Math.max(0, bytes - prefix.length - 1));
+    };
+    const over = padded(100_001);
+    const under = padded(99_990);
+    assert.equal(over.length, 100_001);
+    assert.equal(under.length, 99_990);
+    assert.throws(() => engine.prepare(over), /string or blob too big/);
+    assert.doesNotThrow(() => engine.prepare(under));
+  });
+
+  test("about 30,000 EXPLAIN rows is refused with the VDBE-limit message, about 10,000 builds (vdbeOp 25,000)", () => {
+    // Single-column VALUES keeps the SQL text compact: 14,995 rows is
+    // ~30,000 EXPLAIN rows at 60,002 bytes of SQL text, well under the
+    // 100,000-byte sqlLength boundary above, so the sqlLength check never
+    // fires first. Both fixtures sit outside the 15,000-25,000 op band
+    // where node:sqlite and a Durable Object were measured to disagree
+    // (test/miniflare/prepare-limits.test.ts asserts that band is empty).
+    const values = (rows: number) => `select * from (values ${Array.from({ length: rows }, (_, i) => `(${i})`).join(",")})`;
+    const refused = values(14_995);
+    const built = values(4_995);
+    assert.throws(() => engine.prepare(refused), /workerd's compiled-instruction limit \(25000\)/);
+    assert.doesNotThrow(() => engine.prepare(built));
+  });
+
+  test("a migration file exceeding a limit is refused by applied(), the second DDL replay path outside Engine (ADR 0134)", () => {
+    const cols = (n: number) => Array.from({ length: n }, (_, i) => `c${i} integer`).join(",");
+    assert.throws(
+      () => applied([`create table wide (${cols(101)});`], ["0001_wide.sql"]),
+      /migration 0001_wide\.sql, statement 1 of 1: too many columns on wide/,
+    );
+    const db = applied([`create table wide (${cols(100)});`], ["0001_wide.sql"]);
+    db.close();
+  });
+
+  test("a caller-supplied connection's limits are unchanged after a build, on both a passing and a failing prepare", () => {
+    const db = engine.db;
+    const before = { ...db.limits };
+    engine.prepare("select 1");
+    assert.deepEqual({ ...db.limits }, before);
+    assert.throws(() => engine.prepare("select coalesce(" + Array.from({ length: 128 }, () => "null").join(",") + ")"));
+    assert.deepEqual({ ...db.limits }, before);
   });
 });
 

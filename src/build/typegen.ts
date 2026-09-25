@@ -5,7 +5,7 @@
 // Boundary: no file system, no module layout, no boundary check. build.ts
 // owns those. A shape this file cannot type becomes a BuildError with the
 // SQL and the reason.
-import { queryScope, querySources, sqliteName, unionType, unionMembers, type Cte, type Source } from "./scope.ts";
+import { onEqualities, queryScope, querySources, sqliteName, unionType, unionMembers, type Cte, type Source } from "./scope.ts";
 import { GUARD_TABLE } from "../runtime/plan.ts";
 import type { ColumnFact, Engine, OutputColumn, TableFact } from "./facts.ts";
 import { aliasMap, columnRef, findCall, isKeyword, leadingComment, namedParams, nonNullFilterAlias, paramSites, quoteIdent, returningClause, selectItems, significant, splitAtCommas, tokenize, type Token, unconditionalMatchAliases, unquote } from "./scan.ts";
@@ -426,7 +426,14 @@ export class Typer {
       if (/^(?:select|with|values)\b/i.test(expr)) {
         const inner = this.scopeRows(expr, environment, active, note, context);
         if (inner.length !== 1) throw new BuildError("a scalar subquery must return one column", sql);
-        return { ...this.nullableColumn(inner[0]!), name: out.name };
+        const shape = aggregateSelectShape(expr);
+        if (shape === "limited") throw new BuildError(NESTED_LIMIT_MESSAGE, sql);
+        // A provably one-row aggregate subquery (ADR 0132, narrowing ADR
+        // 0048's blanket "a scalar subquery adds nullability" rule) keeps
+        // the inner column's own nullability instead of widening it: count(*)
+        // is never NULL, while max(...)/sum(...) already carry "| null" from
+        // their own CAST analysis when the group can be empty.
+        return { ...(shape === "one-row" ? inner[0]! : this.nullableColumn(inner[0]!)), name: out.name };
       }
       const literal = literalType(expr);
       if (literal !== null) return { name: out.name, type: literal, json: false };
@@ -499,6 +506,16 @@ export class Typer {
     if (item && json?.kind === "object") {
       return { name: out.name, type: this.jsonObjectType(sql, json.expr, item, aliases, nullableAliases, note, false, scope), json: true };
     }
+    // A one-to-many array nested one level, `json((select
+    // json_group_array(...) ...))`, has no clean spelling as a top-level
+    // column otherwise: two sibling arrays on one parent each need their own
+    // correlated subquery (ADR 0132), since two LEFT JOINs would multiply
+    // rows. nestedJsonType returns null for anything else, so this falls
+    // through to the ordinary scalar/CAST rule below.
+    if (item) {
+      const nested = this.nestedJsonType(sql, item.expr, aliases, note, scope);
+      if (nested !== null) return { name: out.name, type: nested, json: true };
+    }
     const affinity = affinities.get(out.name) ?? "";
     // CTAS stores BLOB affinity as an empty declaration. A complete CAST
     // supplies the explicit binary type that this engine probe cannot retain.
@@ -550,10 +567,12 @@ export class Typer {
     // validates arity and ordering syntax before this structural type step.
     const body = item.expr.slice(call.open + 1, call.close);
     const tokens = significant(tokenize(body));
-    const start = isKeyword(tokens[0], "distinct") ? tokens[0]!.end : 0;
+    const isDistinct = isKeyword(tokens[0], "distinct");
+    const start = isDistinct ? tokens[0]!.end : 0;
     const order = tokens.findIndex((token, i) => token.depth === 0 && isKeyword(token, "order") && isKeyword(tokens[i + 1], "by"));
     const inner = body.slice(start, order >= 0 ? tokens[order]!.start : body.length).trim();
-    const hasFilter = /\bfilter\s*\(\s*where\b/i.test(item.expr.slice(call.close));
+    const filterText = item.expr.slice(call.close);
+    const hasFilter = /\bfilter\s*\(\s*where\b/i.test(filterText);
     const usedAliases = this.aliasesIn(inner, aliases);
     const outer = [...usedAliases].filter((a) => nullableAliases.has(a));
     if (outer.length > 0 && !hasFilter) {
@@ -563,11 +582,123 @@ export class Typer {
       );
     }
     // A FILTER clause alone does not prove that it removes the join rows.
-    const excludedAlias = nonNullFilterAlias(item.expr.slice(call.close));
+    const excludedAlias = nonNullFilterAlias(filterText);
     const insideNullable = new Set([...nullableAliases].filter((a) => a !== excludedAlias));
+
+    // DISTINCT already removes any duplicate a fan-out join would add
+    // (ADR 0136), so the refusal below does not apply to it.
+    if (!isDistinct) this.refuseJoinFanOut(sql, usedAliases, filterText, aliases);
 
     const element = jsonResultType(this.valueType(sql, inner, aliases, insideNullable, note, scope));
     return `Array<${element}>`;
+  }
+
+  // Join fan-out (ADR 0136): a json_group_array whose element or FILTER
+  // references alias set A can silently repeat a row once another joined
+  // alias B -- not in A, and not on A's own join path P back to the FROM
+  // root -- returns more than one row per group. B is safe only when it is
+  // provably at most one row per group: its own ON clause, or (for an alias
+  // no ON clause constrains, including the first FROM alias) GROUP BY,
+  // equates or lists every column of its primary key or of one of its own
+  // non-partial, non-expression unique indexes, under the same collation
+  // that key enforces. Refuses whenever this cannot be shown, the same
+  // conservative stance ADR 0047 already takes for scope resolution.
+  private refuseJoinFanOut(sql: string, elementAliases: Set<string>, filterText: string, aliases: Map<string, string | null>): void {
+    let sources: Source[];
+    try { sources = querySources(sql); } catch { return; }
+    // One FROM source alone has no other alias to multiply rows with. This
+    // also protects a bare (unqualified) element reference, like
+    // `json_group_array(name) from customers`: aliasesIn only recognizes an
+    // alias-qualified reference, so A would otherwise come up empty and
+    // wrongly demand proof for the query's only source.
+    if (sources.length <= 1) return;
+    const filterAliases = this.aliasesIn(filterText, aliases);
+    const byAlias = new Map(sources.map((s) => [sqliteName(s.alias), s]));
+    const localAliases = new Map(sources.map((s) => [sqliteName(s.alias), s.name]));
+    const A = new Set([...elementAliases, ...filterAliases].map((a) => sqliteName(a)));
+    // The walk follows each visited alias's own ON clause to its "other
+    // side". An alias reached this way while it still carries its own ON
+    // clause is exempt without its own proof (a bridge table's own row
+    // count need not be 1 per group, as long as ITS parent is safely
+    // identified in turn: the measured posts/posts_tags/tags case). An
+    // alias the walk reaches with no ON clause of its own is the walk's own
+    // terminus -- the join structure says nothing further about it -- so it
+    // still needs the same GROUP BY proof as any other unconstrained alias
+    // (the measured order_events/orders/order_lines refusal: the walk
+    // reaches "orders", proven by GROUP BY, but also reaches "order_events"
+    // this way, which GROUP BY does not cover, and is refused).
+    const reached = new Set(A);
+    const terminal = new Set<string>();
+    const queue = [...A];
+    while (queue.length) {
+      const key = queue.pop()!;
+      const src = byAlias.get(key);
+      if (!src) continue;
+      if (src.on === null) { terminal.add(key); continue; }
+      for (const ref of this.aliasesIn(src.on, localAliases)) {
+        const next = sqliteName(ref);
+        if (!reached.has(next)) { reached.add(next); queue.push(next); }
+      }
+    }
+    const groupByTokens = significant(tokenize(sql));
+    const hasGroupBy = groupByTokens.some((t, i) => t.depth === 0 && isKeyword(t, "group") && isKeyword(groupByTokens[i + 1], "by"));
+    const groupBy = groupByColumns(sql);
+    const where = whereClause(sql);
+    for (const source of sources) {
+      const key = sqliteName(source.alias);
+      if (A.has(key)) continue;
+      if (reached.has(key) && !terminal.has(key)) continue;
+      if (this.provenSingleRowPerGroup(source, groupBy.get(key) ?? new Set(), where, hasGroupBy)) continue;
+      throw new BuildError(
+        `json_group_array can repeat an element: the join through alias "${source.alias}" is not provably one row per group here, so it can multiply the aggregated rows. Move the one-to-many array into its own correlated subquery instead: json((select json_group_array(...) from <child table> where <child table>.<foreign key> = <this row's key>)).`,
+        sql,
+      );
+    }
+  }
+
+  // Whether `source`'s own rows are provably at most one per group. It has
+  // an ON clause: that clause equates every column of its primary key, or
+  // of one non-partial, non-expression unique index, with an expression
+  // that does not reference it, under that key's own collation. It has
+  // none (an alias no ON clause constrains, including the FROM root): with
+  // no GROUP BY at all, this alias is the iteration itself, not a second
+  // dimension crossed against another, so it is not a fan-out risk on its
+  // own (measured: `json_group_array(...) filter(where b.id...) from a left
+  // join b ... left join c ...`, no GROUP BY, stays accepted; a correlated
+  // `where root.id = :id` or `where root.id = outer.id`, the shape RETURNING
+  // reaches through its own detached probe, proves it the same way). With a
+  // GROUP BY that does not also regroup by this alias's own key -- the
+  // measured order_events/orders/order_lines refusal -- either GROUP BY or
+  // WHERE must equate every column of its key the same way an ON clause
+  // would. A derived table, a table-valued function, and a full-text search
+  // table (no primary key or unique index pragma reports) are never proven
+  // this way.
+  private provenSingleRowPerGroup(source: Source, groupedColumns: Set<string>, where: string | null, hasGroupBy: boolean): boolean {
+    if (source.query !== null || source.functionSql !== null || source.name === null) return false;
+    const table = this.tables.get(source.name);
+    if (!table || table.virtual) return false;
+    const pk = table.columns.filter((c) => c.pk > 0).map((c) => ({ name: sqliteName(c.name), collation: c.collation }));
+    const candidates = [pk, ...table.uniqueIndexes.map((u) => u.columns.map((c) => ({ name: sqliteName(c.name), collation: c.collation })))].filter((c) => c.length > 0);
+    if (source.on === null && !hasGroupBy) return true;
+    if (candidates.length === 0) return false;
+    const declared = new Map(table.columns.map((c) => [sqliteName(c.name), c.collation]));
+    const matches = (equalities: Map<string, string | null>): boolean =>
+      candidates.some((candidate) => candidate.every((c) => {
+        if (!equalities.has(c.name)) return false;
+        // The comparison's effective collation: an explicit COLLATE in the
+        // clause, else the column's own declared collation (SQLite's own
+        // default when neither operand writes one).
+        const effective = equalities.get(c.name) ?? declared.get(c.name) ?? "BINARY";
+        return effective === c.collation;
+      }));
+    if (source.on === null) {
+      if (candidates.some((candidate) => candidate.every((c) => groupedColumns.has(c.name)))) return true;
+      if (where === null) return false;
+      const equalities = onEqualities(where, source.alias);
+      return equalities !== null && matches(equalities);
+    }
+    const equalities = onEqualities(source.on, source.alias);
+    return equalities !== null && matches(equalities);
   }
 
   private aliasesIn(expr: string, aliases: Map<string, string | null>): Set<string> {
@@ -748,13 +879,13 @@ export class Typer {
   // fixed-point loop that resolves either lives inside sourceRows, not here.
   // The Source below stands in for a FROM-list entry that has no FROM-list
   // text in the DML statement itself, so it is built rather than found by
-  // querySources; `alias`, `join`, `using`, and `natural` are placeholders
+  // querySources; `alias`, `join`, `using`, `natural`, and `on` are placeholders
   // because sourceRows's CTE branch (through `environment`, keyed on
   // `name`) never reads them. `active` must start empty: sourceRows adds
   // `binding` to it on the first call, and a caller that pre-seeds it would
   // make sourceRows treat a non-recursive CTE as already-active recursion.
   private topLevelCteColumn(binding: Binding, column: string, topLevelEnvironment: Map<string, Binding>, note: (r: Resolved) => Resolved): Resolved | null {
-    const source: Source = { alias: binding.name, name: binding.name, schema: null, query: null, functionSql: null, join: "inner", using: [], natural: false };
+    const source: Source = { alias: binding.name, name: binding.name, schema: null, query: null, functionSql: null, join: "inner", using: [], natural: false, on: null };
     const rows = this.sourceRows(source, topLevelEnvironment, new Set(), note);
     const found = rows.find((row) => sqliteName(row.name) === sqliteName(column));
     if (!found) return null;
@@ -1064,12 +1195,23 @@ function jsonExpression(input: string): { kind: "array" | "object"; expr: string
 const AGGREGATE_FUNCTIONS = new Set(["avg", "count", "group_concat", "json_group_array", "json_group_object", "max", "min", "sum", "total"]);
 
 function isAggregateCall(expr: string): boolean {
-  const tokens = significant(tokenize(expr));
+  // A top-level aggregate scalar subquery needs an outer CAST to satisfy the
+  // "expression with no type" rule (outputColumn), so every practical
+  // example of this shape is cast(count(*) as integer), not a bare call. CAST
+  // is transparent to this check the same way it already is to castNeverNull.
+  const cast = castExpression(expr);
+  const inner = cast ? stripParens(cast.inner) : expr;
+  const tokens = significant(tokenize(inner));
   const name = tokens[0]?.type === "ident" ? tokens[0]!.text.toLowerCase() : null;
   if (!name || !AGGREGATE_FUNCTIONS.has(name)) return false;
-  const call = findCall(expr, name);
+  const call = findCall(inner, name);
   if (!call) return false;
-  return !((name === "min" || name === "max") && call.args.length >= 2);
+  if ((name === "min" || name === "max") && call.args.length >= 2) return false;
+  // Unwrapping the CAST can hide an OVER at a depth this file's own top-level
+  // scan (aggregateSelectShape's loop) does not reach, since the CAST's own
+  // parens put it one level deeper. A window function is not one-row.
+  if (cast && /\bover\b/i.test(inner.slice(call.close))) return false;
+  return true;
 }
 
 // Whether `select` provably returns exactly one row (the aggregate's own
@@ -1098,6 +1240,45 @@ function aggregateSelectShape(select: string): AggregateSelectShape | null {
     if (isKeyword(token, "limit") || isKeyword(token, "offset")) limited = true;
   }
   return limited ? "limited" : "one-row";
+}
+
+// Every alias-qualified column GROUP BY lists, by alias (a bare,
+// unqualified GROUP BY column is not counted, the scanner has no schema to
+// resolve which source it names). Used by the join fan-out proof
+// (refuseJoinFanOut, ADR 0136) for an alias no ON clause constrains.
+function groupByColumns(select: string): Map<string, Set<string>> {
+  const tokens = significant(tokenize(select));
+  const at = tokens.findIndex((t, i) => t.depth === 0 && isKeyword(t, "group") && isKeyword(tokens[i + 1], "by"));
+  const out = new Map<string, Set<string>>();
+  if (at < 0) return out;
+  const stop = new Set(["having", "window", "order", "limit", "union", "intersect", "except"]);
+  for (let i = at + 2; i < tokens.length; i++) {
+    const t = tokens[i]!;
+    if (t.depth === 0 && t.type === "ident" && stop.has(t.text.toLowerCase())) break;
+    if (t.type === "ident" && tokens[i + 1]?.text === "." && tokens[i + 2]?.type === "ident") {
+      const alias = sqliteName(unquote(t.text));
+      const column = sqliteName(unquote(tokens[i + 2]!.text));
+      if (!out.has(alias)) out.set(alias, new Set());
+      out.get(alias)!.add(column);
+      i += 2;
+    }
+  }
+  return out;
+}
+
+// A select's own top-level WHERE clause text, or null. Used by the join
+// fan-out proof (refuseJoinFanOut, ADR 0136) for a root/unconstrained
+// alias: the same equality-extraction rule as an ON clause, applied here.
+function whereClause(select: string): string | null {
+  const tokens = significant(tokenize(select));
+  const at = tokens.findIndex((t) => t.depth === 0 && isKeyword(t, "where"));
+  if (at < 0) return null;
+  const stop = new Set(["group", "having", "window", "order", "limit", "union", "intersect", "except", "returning"]);
+  let end = tokens.length;
+  for (let i = at + 1; i < tokens.length; i++) {
+    if (tokens[i]!.depth === 0 && stop.has(tokens[i]!.text.toLowerCase())) { end = i; break; }
+  }
+  return select.slice(tokens[at + 1]?.start ?? tokens[at]!.end, tokens[end]?.start ?? select.length).trim();
 }
 
 // step 3 of the ticket's remedy: an IN-subquery over the child's own primary

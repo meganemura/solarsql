@@ -20,6 +20,7 @@ const ddl = [
     note text
   )`,
   `create table order_lines (id text primary key not null, order_id text not null references orders(id), sku text not null, qty integer not null, price real)`,
+  `create table order_events (id text primary key not null, order_id text not null references orders(id), kind text not null)`,
   `create table files (id text primary key not null, size integer not null, flag integer not null check (flag in (0, 1)), total integer not null as (size * 2) stored, label text as (id || ':' || size) virtual) strict`,
   `create table tags (id text primary key not null, line_id text not null references order_lines(id), name text not null) strict`,
   `create virtual table note_search using fts5(order_id unindexed, note)`,
@@ -1759,6 +1760,197 @@ describe("a nested aggregate subquery that can return no row is typed nullable (
       "select o.id, json_object('lines', json((select json_group_array(json_object('id', l.id) order by l.id) from order_lines l where l.id in (select l2.id from order_lines l2 where l2.order_id = o.id order by l2.id limit :n)))) as data from orders o where o.id = :id";
     const a = t.analyze(remedy, "orders");
     assert.equal(a.columns.find((c) => c.name === "data")!.type, '{ "lines": Array<{ "id": OrderLinesId }> }');
+  });
+});
+
+// A top-level one-row aggregate subquery, narrowing ADR 0048's blanket rule
+// that a scalar subquery adds nullability (ADR 0048:22) and reusing
+// aggregateSelectShape (ADR 0130) to prove the one row (eki2.6). Two
+// sibling one-to-many arrays on one parent each need their own correlated
+// subquery, since two LEFT JOINs would multiply rows (ADR 0111/eki2.5).
+describe("a top-level one-row aggregate subquery is typed non-null (eki2.6, ADR 0132)", () => {
+  const t = typer();
+  const linesArray = 'Array<{ "id": OrderLinesId; "sku": string }>';
+  const eventsArray = 'Array<{ "id": OrderEventsId; "kind": string }>';
+
+  const wrappedSql = (clause = "") =>
+    `select o.id, json((select json_group_array(json_object('id', l.id, 'sku', l.sku)) from order_lines l where l.order_id = o.id${clause})) as lines, json((select json_group_array(json_object('id', e.id, 'kind', e.kind)) from order_events e where e.order_id = o.id${clause})) as events from orders o where o.id = :id`;
+  const bareSql = (clause = "") =>
+    `select o.id, (select json_group_array(json_object('id', l.id, 'sku', l.sku)) from order_lines l where l.order_id = o.id${clause}) as lines, (select json_group_array(json_object('id', e.id, 'kind', e.kind)) from order_events e where e.order_id = o.id${clause}) as events from orders o where o.id = :id`;
+
+  for (const [label, sql] of [["json(...) wrapped", wrappedSql()], ["bare, no json() wrapper", bareSql()]] as const) {
+    test(`${label}: both sibling arrays are non-null`, () => {
+      const a = t.analyze(sql, "orders");
+      assert.equal(a.columns.find((c) => c.name === "lines")!.type, linesArray);
+      assert.equal(a.columns.find((c) => c.name === "events")!.type, eventsArray);
+    });
+  }
+
+  const clauseCases: [string, string][] = [
+    ["group by", "select o.id, json((select json_group_array(json_object('id', l.id)) from order_lines l where l.order_id = o.id group by l.order_id)) as lines from orders o where o.id = :id"],
+    ["having", "select o.id, json((select json_group_array(json_object('id', l.id)) from order_lines l where l.order_id = o.id having count(*) > 0)) as lines from orders o where o.id = :id"],
+    ["over ()", "select o.id, json((select json_group_array(json_object('id', l.id)) over () from order_lines l where l.order_id = o.id)) as lines from orders o where o.id = :id"],
+  ];
+  for (const [label, sql] of clauseCases) {
+    test(`${label}: nullable`, () => {
+      const a = t.analyze(sql, "orders");
+      assert.equal(a.columns.find((c) => c.name === "lines")!.type, 'Array<{ "id": OrderLinesId }> | null');
+    });
+  }
+
+  for (const clause of [" limit 0", " limit 1 offset 1"]) {
+    test(`limit/offset ${clause.trim()}: refused, naming the IN-subquery remedy`, () => {
+      assert.throws(
+        () => t.analyze(wrappedSql(clause), "orders"),
+        (e: unknown) => e instanceof BuildError && /applies to the one aggregate row, not to the child rows/.test(e.message),
+      );
+    });
+  }
+
+  test("count(*) is non-null; max(...) and sum(...) stay | null, since the aggregate itself can be NULL for an empty group", () => {
+    const sql =
+      "select o.id, (select cast(count(*) as integer) from order_lines l where l.order_id = o.id) as line_count, (select cast(max(l.qty) as integer) from order_lines l where l.order_id = o.id) as max_qty, (select cast(sum(l.qty) as integer) from order_lines l where l.order_id = o.id) as total_qty from orders o where o.id = :id";
+    const a = t.analyze(sql, "orders");
+    assert.equal(a.columns.find((c) => c.name === "line_count")!.type, "number");
+    assert.equal(a.columns.find((c) => c.name === "max_qty")!.type, "number | null");
+    assert.equal(a.columns.find((c) => c.name === "total_qty")!.type, "number | null");
+  });
+
+  test("count(*) over () stays | null: an OVER hidden inside the CAST is still a window function, not one row", () => {
+    const sql = "select o.id, (select cast(count(*) over () as integer) from order_lines l where l.order_id = o.id) as line_count from orders o where o.id = :id";
+    const a = t.analyze(sql, "orders");
+    assert.equal(a.columns.find((c) => c.name === "line_count")!.type, "number | null");
+  });
+
+  test("count(*) with limit is refused, the same rule as the array form", () => {
+    const sql = "select o.id, (select cast(count(*) as integer) from order_lines l where l.order_id = o.id limit 1) as line_count from orders o where o.id = :id";
+    assert.throws(
+      () => t.analyze(sql, "orders"),
+      (e: unknown) => e instanceof BuildError && /applies to the one aggregate row, not to the child rows/.test(e.message),
+    );
+  });
+});
+
+// Join fan-out (eki2.7, ADR 0136): a json_group_array whose element or
+// FILTER references alias set A can silently repeat a row once another
+// joined alias, not part of A's own join path back to the FROM root,
+// returns more than one row per group.
+describe("json_group_array refuses a join that can multiply its elements (eki2.7, ADR 0136)", () => {
+  const engine = new Engine([
+    `create table customers(id text primary key not null)`,
+    `create table orders(id text primary key not null, customer_id text not null references customers(id))`,
+    `create table order_lines(id text primary key not null, order_id text not null references orders(id), sku text not null)`,
+    `create table order_events(id text primary key not null, order_id text not null references orders(id), kind text not null)`,
+    `create table posts(id text primary key not null)`,
+    `create table tags(id text primary key not null, name text not null)`,
+    `create table posts_tags(post_id text not null references posts(id), tag_id text not null references tags(id), primary key (post_id, tag_id))`,
+  ]);
+  const t = new Typer(engine, new Map());
+
+  test("two sibling arrays, a second unrelated join, refused: names the multiplying alias and the correlated-subquery remedy", () => {
+    const sql =
+      "select o.id, json_group_array(json_object('id', l.id, 'sku', l.sku)) filter (where l.id is not null) as lines, json_group_array(json_object('id', e.id, 'kind', e.kind)) filter (where e.id is not null) as events from orders o left join order_lines l on l.order_id = o.id left join order_events e on e.order_id = o.id where o.id = :id group by o.id";
+    assert.throws(
+      () => t.analyze(sql, "m"),
+      (e: unknown) => e instanceof BuildError && /"e"/.test(e.message) && /json\(\(select json_group_array/.test(e.message),
+    );
+  });
+
+  test("descendant fan-out, an unrelated child join present while grouping by the grandparent, refused", () => {
+    const sql =
+      "select c.id, json_group_array(json_object('id', o.id)) filter (where o.id is not null) as orders from customers c join orders o on o.customer_id = c.id left join order_lines l on l.order_id = o.id group by c.id";
+    assert.throws(() => t.analyze(sql, "m"), BuildError);
+  });
+
+  test("the example's withLines idiom still builds", () => {
+    const sql = "select o.id, json_group_array(json_object('id', l.id)) filter (where l.id is not null) as lines from orders o left join order_lines l on l.order_id = o.id where o.id = :id group by o.id";
+    assert.doesNotThrow(() => t.analyze(sql, "m"));
+  });
+
+  test("withLines plus a join to customers on its primary key still builds", () => {
+    const sql =
+      "select o.id, json_group_array(json_object('id', l.id)) filter (where l.id is not null) as lines from orders o left join order_lines l on l.order_id = o.id join customers c on c.id = o.customer_id where o.id = :id group by o.id";
+    assert.doesNotThrow(() => t.analyze(sql, "m"));
+  });
+
+  test("the DISTINCT variant is exempt from the check", () => {
+    const sql =
+      "select o.id, json_group_array(distinct json_object('id', l.id, 'sku', l.sku)) filter (where l.id is not null) as lines from orders o left join order_lines l on l.order_id = o.id left join order_events e on e.order_id = o.id where o.id = :id group by o.id";
+    assert.doesNotThrow(() => t.analyze(sql, "m"));
+  });
+
+  test("the bridge-table many-to-many (posts/posts_tags/tags, a composite primary key on the bridge) still builds", () => {
+    const sql =
+      "select p.id, json_group_array(json_object('id', t.id, 'name', t.name)) filter (where t.id is not null) as tags from posts p left join posts_tags pt on pt.post_id = p.id left join tags t on t.id = pt.tag_id where p.id = :id group by p.id";
+    assert.doesNotThrow(() => t.analyze(sql, "m"));
+  });
+
+  test("customers -> orders -> lines, aggregating over the grandchild, still builds", () => {
+    const sql =
+      "select c.id, json_group_array(json_object('id', l.id)) filter (where l.id is not null) as lines from customers c join orders o on o.customer_id = c.id left join order_lines l on l.order_id = o.id where c.id = :id group by c.id";
+    assert.doesNotThrow(() => t.analyze(sql, "m"));
+  });
+});
+
+// A deterministic loop over how a joined alias B, outside the aggregate's
+// own alias set, can be joined: join kind x how B is provably (or not)
+// safe. Each accepted case is measured to build; each refused case names
+// alias "b" (eki2.7, ADR 0136).
+describe("join fan-out: join kind x B's own proof shape (eki2.7, ADR 0136)", () => {
+  const engine = new Engine([
+    `create table root(id text primary key not null, flag integer not null)`,
+    `create table agg(id text primary key not null, root_id text not null references root(id), val text not null)`,
+    `create table b_pk(id text primary key not null, link text not null)`,
+    `create table b_unique(id text primary key not null, code text not null, link text not null)`,
+    `create unique index b_unique_code on b_unique(code)`,
+    `create table b_partial(id text primary key not null, code text, link text not null)`,
+    `create unique index b_partial_code on b_partial(code) where code is not null`,
+    `create table b_expr(id text primary key not null, code text not null, link text not null)`,
+    `create unique index b_expr_code on b_expr(lower(code))`,
+    `create table b_nocase(id text primary key not null, code text collate nocase not null, link text not null)`,
+    `create unique index b_nocase_code on b_nocase(code collate binary)`,
+    `create table b_plain(id text primary key not null, code text not null, link text not null)`,
+  ]);
+  const t = new Typer(engine, new Map());
+
+  const base = (b: string, on: string, join: "inner" | "left") =>
+    `select r.id, json_group_array(json_object('v', a.val)) filter (where a.id is not null) as vs from root r left join agg a on a.root_id = r.id ${join === "left" ? "left " : ""}join ${b} b on ${on} where r.id = :id group by r.id`;
+
+  const cases: [string, string, string, boolean][] = [
+    ["b on its own primary key", "b_pk", "b.id = r.flag", true],
+    ["b on a non-partial unique index", "b_unique", "b.code = r.flag", true],
+    ["b on a partial unique index", "b_partial", "b.code = r.flag", false],
+    ["b on an expression index", "b_expr", "b.code = r.flag", false],
+    ["b on a collation-mismatched unique index", "b_nocase", "b.code = r.flag", false],
+    ["b on a non-unique column", "b_plain", "b.code = r.flag", false],
+  ];
+
+  for (const join of ["inner", "left"] as const) {
+    for (const [label, table, on, accepted] of cases) {
+      test(`${join} join, ${label}: ${accepted ? "accepted" : "refused"}`, () => {
+        const sql = base(table, on, join);
+        if (accepted) assert.doesNotThrow(() => t.analyze(sql, "m"));
+        else assert.throws(() => t.analyze(sql, "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+      });
+    }
+  }
+
+  test("b used only in WHERE, not ON, is not counted as proof: refused", () => {
+    const sql =
+      "select r.id, json_group_array(json_object('v', a.val)) filter (where a.id is not null) as vs from root r left join agg a on a.root_id = r.id, b_plain b where r.id = :id and b.link = r.id group by r.id";
+    assert.throws(() => t.analyze(sql, "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("b as the FROM root, proven only by GROUP BY listing its own primary key: accepted", () => {
+    const sql =
+      "select b.id, json_group_array(json_object('v', a.val)) filter (where a.id is not null) as vs from b_plain b, agg a where b.id = :id group by b.id";
+    assert.doesNotThrow(() => t.analyze(sql, "m"));
+  });
+
+  test("b as the FROM root, GROUP BY lists a different column: refused", () => {
+    const sql =
+      "select b.code, json_group_array(json_object('v', a.val)) filter (where a.id is not null) as vs from b_plain b, agg a where b.code = :code group by b.code";
+    assert.throws(() => t.analyze(sql, "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
   });
 });
 

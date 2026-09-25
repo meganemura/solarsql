@@ -5,7 +5,7 @@
 // the affinity of an expression, and the tables a statement touches.
 // Boundary: nothing here reads SQL text beyond what scan.ts provides. Nothing
 // here produces TypeScript; typegen.ts does that from these facts.
-import { DatabaseSync, constants } from "node:sqlite";
+import { DatabaseSync, constants, type DatabaseLimits } from "node:sqlite";
 import { aliasCandidates, cteNames, definitions, isKeyword, quoteIdent, significant, tokenize, type Token, unquote } from "./scan.ts";
 
 export type ColumnFact = {
@@ -21,7 +21,20 @@ export type ColumnFact = {
   // A hidden column of a virtual table: the match target named after the
   // table, and `rank`.
   hidden: boolean;
+  // The column's own declared COLLATE, upper-cased, or "BINARY" when
+  // omitted (SQLite's own default). No pragma reports a plain column's own
+  // collation, so this is read from the column's definition text
+  // (definitions(), the same source oneOf already reads).
+  collation: string;
 };
+
+// One unique index (a UNIQUE constraint or a CREATE UNIQUE INDEX; a PRIMARY
+// KEY is tracked on ColumnFact.pk instead) that a join fan-out proof can use
+// to show an alias matches at most one row: every key column is a plain
+// column (not an expression), and the index is not partial. A partial or
+// expression-based unique index does not prove this for every row, so
+// facts.ts leaves it out here rather than have every caller re-check it.
+export type UniqueIndexFact = { columns: { name: string; collation: string }[] };
 
 // `to` is null when the REFERENCES clause omits its column list; SQLite
 // then resolves the parent key to the target table's own primary key.
@@ -39,6 +52,8 @@ export type TableFact = {
   // A STRICT table rejects a value whose storage class differs from the
   // declared type, so the generated types hold for every stored value.
   strict: boolean;
+  // Every non-partial, non-expression unique index (see UniqueIndexFact).
+  uniqueIndexes: UniqueIndexFact[];
 };
 
 export type OutputColumn = {
@@ -136,6 +151,74 @@ export function withDeniedFunctions<T>(db: DatabaseSync, fn: () => T): T {
   }
 }
 
+// workerd sets these prepare-time limits on every SQLite connection it
+// opens for D1 and a Durable Object (cloudflare/workerd
+// src/workerd/util/sqlite.c++, SqliteDatabase::setupSecurity, lines
+// 1406-1421 on main as of 2026-09-25; the same values at lines 1380-1387 in
+// the pinned v1.20260828.1). node:sqlite has none of them by default (Node
+// 26.7.0, SQLite 3.53.4: compoundSelect 500, exprDepth 1000, column 2000,
+// functionArg 1000, variableNumber 32766, sqlLength 1e9, vdbeOp
+// 250,000,000), so a statement can pass the build here and still fail
+// every call on deploy. `length`, `likePatternLength`, and `triggerDepth`
+// are left out on purpose: workerd enforces them only at run time (a row
+// write, a LIKE call, a trigger firing), never at prepare, so scoping this
+// build-time gate around them would check nothing (limits.md still lists
+// them as unchecked). `functionArg` is 127 here, matching workerd's own
+// source; the Cloudflare D1 and Durable Object limit pages instead say 32
+// (limits.md) -- this build follows the source, not the docs page, and the
+// gap is recorded in the ADR pending a remote probe.
+const WORKERD_LIMITS: Partial<DatabaseLimits> = {
+  sqlLength: 100_000,
+  column: 100,
+  exprDepth: 100,
+  compoundSelect: 5,
+  vdbeOp: 25_000,
+  functionArg: 127,
+  variableNumber: 100,
+  attach: 0,
+};
+
+// node:sqlite reports the vdbeOp limit as SQLite's own generic "out of
+// memory" (errcode 7), because SQLite's own message for
+// SQLITE_LIMIT_VDBE_OP gives no limit-specific text (measured on Node
+// 26.7.0). Renamed here so the build's own message names the limit that
+// actually fired, the same way every other WORKERD_LIMITS case already
+// does from SQLite's own message text.
+function renameVdbeOpError(e: unknown): Error {
+  const message = (e as Error).message;
+  return message === "out of memory"
+    ? new Error(`statement exceeds workerd's compiled-instruction limit (${WORKERD_LIMITS.vdbeOp})`)
+    : (e as Error);
+}
+
+// Sets workerd's prepare-time limits on `db` for the duration of `fn` only,
+// then restores the connection's own previous values in a `finally`,
+// whatever `fn` does -- the same call-scoped shape withDeniedFunctions uses
+// for the allowlist authorizer, and for the same reason: the Engine may run
+// on a caller-supplied connection (see the constructor below), so a
+// build-wide change here must never leak past the one call that needed it.
+// A connection-wide (permanent) change was measured and rejected: the
+// build's own internal wrappers (temp-table dedup at columns() time, and
+// `explain query plan`) run SQL of their own making, past 100 KB or past
+// 100 columns, and a connection-wide sqlLength or column limit turns those
+// into a false "string or blob too big" build error that names no user
+// statement. Scoping per call keeps every one of those wrapper calls
+// outside this function, running at the connection's real (node:sqlite
+// default) limits, exactly as before this ticket. Never assign Infinity:
+// DatabaseSync.limits treats that as "no limit", which would silently
+// widen a connection that had a tighter limit before this call.
+export function withWorkerdLimits<T>(db: DatabaseSync, fn: () => T): T {
+  const previous = { ...db.limits };
+  Object.assign(db.limits, WORKERD_LIMITS);
+  try {
+    return fn();
+  } catch (e) {
+    throw renameVdbeOpError(e);
+  } finally {
+    Object.assign(db.limits, previous);
+  }
+}
+
 export class Engine {
   readonly db: DatabaseSync;
 
@@ -151,7 +234,7 @@ export class Engine {
     this.db = database ?? new DatabaseSync(":memory:");
     for (const s of statements) {
       try {
-        withDeniedFunctions(this.db, () => this.db.exec(s));
+        withWorkerdLimits(this.db, () => withDeniedFunctions(this.db, () => this.db.exec(s)));
       } catch (e) {
         this.db.close();
         throw new Error(`${(e as Error).message}\n  in: ${s.replace(/\s+/g, " ").trim()}`);
@@ -201,13 +284,32 @@ export class Engine {
       oneOf: oneOfLiterals(defs?.columns.get(c.name) ?? "", c.name),
       generated: c.hidden === 2 || c.hidden === 3,
       hidden: c.hidden === 1,
+      collation: declaredCollation(defs?.columns.get(c.name) ?? ""),
     }));
     const foreignKeys = (this.db.prepare(`select "table", "from", "to" from pragma_foreign_key_list(?) order by id, seq`).all(name) as { table: string; from: string; to: string | null }[]).map((f) => ({
       table: f.table,
       from: f.from,
       to: f.to,
     }));
-    return { name, sql: ddl, virtual, columns, foreignKeys, withoutRowid: attributes.wr === 1, strict: attributes.strict === 1 };
+    const uniqueIndexes = virtual ? [] : this.uniqueIndexes(name);
+    return { name, sql: ddl, virtual, columns, foreignKeys, withoutRowid: attributes.wr === 1, strict: attributes.strict === 1, uniqueIndexes };
+  }
+
+  // Every unique index a join fan-out proof (typegen.ts, ADR 0136) can use:
+  // a UNIQUE constraint or a CREATE UNIQUE INDEX (origin 'u' or 'c'; a
+  // PRIMARY KEY is origin 'pk', already tracked on ColumnFact.pk), not
+  // partial (a partial index does not constrain every row), with every key
+  // column a plain column reference (cid >= 0; an expression key reports
+  // cid -2, measured on node:sqlite 3.53.4).
+  private uniqueIndexes(table: string): UniqueIndexFact[] {
+    const indexes = this.db.prepare(`select name from pragma_index_list(?) where "unique" = 1 and origin in ('u', 'c') and partial = 0`).all(table) as { name: string }[];
+    const out: UniqueIndexFact[] = [];
+    for (const { name: index } of indexes) {
+      const keys = this.db.prepare(`select cid, name, coll from pragma_index_xinfo(?) where key = 1 order by seqno`).all(index) as { cid: number; name: string | null; coll: string }[];
+      if (keys.some((k) => k.cid < 0 || k.name === null)) continue;
+      out.push({ columns: keys.map((k) => ({ name: k.name!, collation: k.coll.toUpperCase() })) });
+    }
+    return out;
   }
 
   // The first column of a table or a view that a statement may set. A
@@ -232,7 +334,7 @@ export class Engine {
   // a CHECK constraint's function call is denied at CREATE the same way this
   // method denies one in a query (ADR 0114).
   prepare(sql: string): void {
-    withDeniedFunctions(this.db, () => this.db.prepare(sql));
+    withWorkerdLimits(this.db, () => withDeniedFunctions(this.db, () => this.db.prepare(sql)));
   }
 
   view(name: string): { sql: string; columns: string[] } | null {
@@ -449,6 +551,15 @@ function stripRedundantIsNull(expression: readonly Token[], column: string): rea
 
 // Only a complete IN check bounds the domain. OR and permissive collations
 // can admit values beyond the listed literals; punctuation inside text is data.
+// No pragma reports a plain column's own declared COLLATE, so this reads
+// the column's own definition text the same way oneOfLiterals does. SQLite
+// defaults an undeclared collation to BINARY.
+function declaredCollation(definition: string): string {
+  const tokens = significant(tokenize(definition));
+  const at = tokens.findIndex((t) => isKeyword(t, "collate"));
+  return at < 0 ? "BINARY" : unquote(tokens[at + 1]?.text ?? "").toUpperCase();
+}
+
 function oneOfLiterals(definition: string, column: string): (string | number)[] | null {
   const tokens = significant(tokenize(definition));
   if (tokens.some((t, i) => isKeyword(t, "collate") && unquote(tokens[i + 1]?.text ?? "").toLowerCase() !== "binary")) return null;

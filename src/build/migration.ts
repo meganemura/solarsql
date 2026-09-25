@@ -9,7 +9,7 @@
 // (CREATE VIRTUAL TABLE) has no ALTER: a change drops it and creates it
 // again, and its shadow tables are the engine's own.
 import { DatabaseSync } from "node:sqlite";
-import { withDeniedFunctions } from "./facts.ts";
+import { withDeniedFunctions, withWorkerdLimits } from "./facts.ts";
 import { created, definitions, isKeyword, normalize, parseRebuildRecords, quoteIdent, redeclaredByFile, REBUILD_HEADER, renamedColumn, revivedDeclaration, searchFill, splitStatements, tokenize, triggerInsertTarget, type RebuildRecord, type Token, unknownDeclaration } from "./scan.ts";
 import { BuildError } from "./typegen.ts";
 
@@ -193,12 +193,13 @@ export function applied(files: readonly string[], names?: readonly string[]): Da
       db.exec("begin");
       for (const [j, s] of statements.entries()) {
         ordinal = j + 1;
-        // The Engine constructor (facts.ts) checks the same allowlist
-        // against the current declared schema, but never sees a migration
-        // file already written to disk: a file generated before this check
-        // existed, or edited by hand, reaches a function-call denial only
-        // here (ADR 0114).
-        withDeniedFunctions(db, () => db.exec(s));
+        // The Engine constructor (facts.ts) checks the same allowlist and
+        // the same workerd prepare-time limits against the current declared
+        // schema, but never sees a migration file already written to disk:
+        // a file generated before either check existed, or edited by hand,
+        // reaches a function-call denial (ADR 0114) or a limit refusal
+        // (ADR 0134) only here.
+        withWorkerdLimits(db, () => withDeniedFunctions(db, () => db.exec(s)));
       }
       ordinal = null;
       db.exec("commit");
