@@ -111,6 +111,7 @@ Shared SQL reports all its catalog locations.
 | `do not stabilize within 32 steps` | use CAST for the recursive expression |
 | `is the match operand of` | use it in a `<table> match :param` condition, or as the first argument of `highlight(...)`, `snippet(...)`, or `bm25(...)`, instead of selecting it directly |
 | `json_group_array over the outer join alias` | add `filter (where <alias>.<column> is not null)` |
+| `applies to the one aggregate row, not to the child rows` | put the LIMIT/OFFSET inside an IN-subquery over the child's own primary key, ordered and capped there, not on the aggregate SELECT itself: `json((select json_group_array(json_object(...) order by <id>) from <child> where <id> in (select c2.<id> from <child> c2 where <same correlation> order by c2.<id> limit :n)))` |
 | `inside json yields JSON text` | wrap the subquery in `json(...)` |
 | `inside json has no type` | use a column reference, a cast, or `json((select json_group_array(...)))` |
 | `json_object key must be a string literal` | write the key as `'name'` |

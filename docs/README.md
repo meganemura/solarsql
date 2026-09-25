@@ -142,6 +142,7 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0127](adr/0127-a-plan-may-include-another-modules-command.md) | A plan may include another module's command |
 | [0128](adr/0128-the-generated-file-imports-id-types-through-public-ts.md) | The generated file imports id types through public.ts |
 | [0129](adr/0129-the-node-floor-tracks-the-workerd-sqlite-version.md) | The Node floor tracks the workerd SQLite version |
+| [0130](adr/0130-a-nested-aggregate-subquery-that-can-return-no-row-is-typed-nullable.md) | A nested aggregate subquery that can return no row is typed nullable |
 
 ## Measurements
 

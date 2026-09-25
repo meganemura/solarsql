@@ -660,9 +660,14 @@ export class Typer {
     const isObject = shape?.kind === "object";
     if (!isArray && !isObject) return null;
     if (!wrapped) throw new BuildError(`the subquery "${expr}" inside json yields JSON text. Wrap it in json(...) so it nests as JSON, not as a string.`, sql);
+    // Whether the subquery is one of the shapes aggregateSelectShape can
+    // prove one-row for (only the array form: json_group_array is always
+    // an aggregate call, where a json_object subquery need not be).
+    const rowShape = isArray ? aggregateSelectShape(subquery) : null;
+    if (rowShape === "limited") throw new BuildError(NESTED_LIMIT_MESSAGE, sql);
     if (scope) {
       const rows = this.scopeRows(subquery, scope.environment, scope.active, note, scope);
-      return isArray ? rows[0]!.type : unionType(rows[0]!.type, "null");
+      return isArray ? (rowShape === "one-row" ? rows[0]!.type : unionType(rows[0]!.type, "null")) : unionType(rows[0]!.type, "null");
     }
     // Outer alias references become NULL, so the subquery prepares alone.
     const innerAliases = aliasMap(subquery);
@@ -689,7 +694,10 @@ export class Typer {
     // carries no CTE or recursion state of its own.
     const innerNullable = this.sourceContext(detached, new Map(), new Set(), note).context.nullable;
     const innerItem = selectItems(detached)![0]!;
-    if (isArray) return this.jsonArrayType(detached, innerItem, innerAliases, innerNullable, note);
+    if (isArray) {
+      const arrayType = this.jsonArrayType(detached, innerItem, innerAliases, innerNullable, note);
+      return rowShape === "one-row" ? arrayType : unionType(arrayType, "null");
+    }
     // A subquery with no row is NULL.
     return `${this.jsonObjectType(detached, innerItem.expr, innerItem, innerAliases, innerNullable, note, false)} | null`;
   }
@@ -1049,6 +1057,59 @@ function jsonExpression(input: string): { kind: "array" | "object"; expr: string
   }
   return null;
 }
+
+// The aggregate function names this file recognizes for aggregateSelectShape.
+// min/max also have a scalar (two-or-more-argument) form; only the
+// one-argument form is the aggregate.
+const AGGREGATE_FUNCTIONS = new Set(["avg", "count", "group_concat", "json_group_array", "json_group_object", "max", "min", "sum", "total"]);
+
+function isAggregateCall(expr: string): boolean {
+  const tokens = significant(tokenize(expr));
+  const name = tokens[0]?.type === "ident" ? tokens[0]!.text.toLowerCase() : null;
+  if (!name || !AGGREGATE_FUNCTIONS.has(name)) return false;
+  const call = findCall(expr, name);
+  if (!call) return false;
+  return !((name === "min" || name === "max") && call.args.length >= 2);
+}
+
+// Whether `select` provably returns exactly one row (the aggregate's own
+// summary row, whatever the source rows are): its select list calls an
+// aggregate function, and none of GROUP BY, HAVING, OVER, LIMIT, OFFSET, or
+// a compound operator (UNION, INTERSECT, EXCEPT) sits at its own top level.
+// GROUP BY and HAVING can drop the result to zero rows; OVER turns the call
+// into a window function, one row per source row; a compound operator adds
+// rows from another branch; LIMIT/OFFSET can drop the aggregate's own one
+// row to zero. "limited" separates that last case: the SELECT would
+// otherwise be provably one row, so its LIMIT/OFFSET has no legitimate
+// target and the caller refuses it instead of silently widening the type.
+type AggregateSelectShape = "one-row" | "many-rows" | "limited";
+
+function aggregateSelectShape(select: string): AggregateSelectShape | null {
+  const items = selectItems(select);
+  if (!items?.some((item) => isAggregateCall(item.expr))) return null;
+  const tokens = significant(tokenize(select));
+  let limited = false;
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    if (token.depth !== 0) continue;
+    if (isKeyword(token, "group") && isKeyword(tokens[i + 1], "by")) return "many-rows";
+    if (isKeyword(token, "having") || isKeyword(token, "over")) return "many-rows";
+    if (isKeyword(token, "union") || isKeyword(token, "intersect") || isKeyword(token, "except")) return "many-rows";
+    if (isKeyword(token, "limit") || isKeyword(token, "offset")) limited = true;
+  }
+  return limited ? "limited" : "one-row";
+}
+
+// step 3 of the ticket's remedy: an IN-subquery over the child's own primary
+// key reaches the same ordering and correlation as the outer query, so the
+// LIMIT caps the child rows instead of the aggregate's single result row.
+// The build already refuses the derived-table form `from (select ... limit
+// n) x` with "no such column" (a correlated reference cannot cross a
+// derived table's own FROM boundary), so this message does not offer it.
+const NESTED_LIMIT_MESSAGE =
+  `LIMIT/OFFSET applies to the one aggregate row, not to the child rows. Put the limit inside a subquery over the child rows: ` +
+  `json((select json_group_array(json_object('id', l.id) order by l.id) from order_lines l where l.id in ` +
+  `(select l2.id from order_lines l2 where l2.order_id = o.id order by l2.id limit :n)))`;
 
 // Read the outer CAST only. Comments and type-name syntax do not change
 // SQLite's conversion, and an inner CAST cannot type an enclosing operator.

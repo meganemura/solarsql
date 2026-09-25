@@ -5,6 +5,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 ## Unreleased
 
 - Changed: `engines.node` is now `^24.20.0 || >=26.7.0` (ADR 0129), and `solarsql build`, `solarsql query`, and `node()` refuse to run below it with a one-line message naming the running version and the range. Versions that no longer install, and why: 24.10.0-24.15.0, `node:sqlite` truncates TEXT at an embedded NUL and (on 24.10.0-24.11.0) a fresh-clone build fails with `ERR_MODULE_NOT_FOUND`; 24.16.0-24.19.0, `json_array(0.1+0.2)` reads `'[0.3]'` there and `'[0.30000000000000004]'` on D1 and a Durable Object; 25.x, `node:sqlite` reports SQLite 3.51.2 (NUL truncation and a scan-count drift measured on 25.6.1); 26.0.0-26.6.0, an older SQLite than 3.53.4 per Node's own changelog (not separately measured).
+- Fixed: a nested `json((select json_group_array(...) ...))` subquery under GROUP BY, HAVING, or OVER now types the array `| null`, matching an empty child set's real value (ADR 0130); LIMIT/OFFSET on that subquery is now refused, naming an IN-subquery remedy that caps the child rows instead of the aggregate's own one row.
 
 ## 0.6.0 (2026-09-23)
 

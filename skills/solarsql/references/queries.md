@@ -76,7 +76,7 @@ A BLOB cast returns `Uint8Array | null` unless the complete inner expression pro
 | `json_group_array(json_object('k', c, ...))` | `{ k: T; ... }[]`, parsed by the adapter |
 | `json_group_array(c)` | `T[]` |
 | `json_object('k', c, ...)` | `{ k: T; ... }` |
-| `json((select json_group_array(...) from child where child.parent_id = o.id))` inside a `json_object` | a nested array; without the `json()` the column holds JSON text |
+| `json((select json_group_array(...) from child where child.parent_id = o.id))` inside a `json_object` | a nested array; without the `json()` the column holds JSON text; `\| null` when GROUP BY, HAVING, or OVER sits on the subquery, since then it can return no row (LIMIT/OFFSET on that subquery is refused instead; [build.md](build.md)) |
 | `VALUES` | union of all row types by column position |
 | `UNION` or `UNION ALL` | union of branch types by column position (ADR 0048) |
 | `INTERSECT` or `EXCEPT` | the left input's types (ADR 0048) |

@@ -1694,6 +1694,74 @@ describe("RETURNING + a nested one-to-many JSON value, across LEFT, RIGHT, and F
   });
 });
 
+// A nested `json((select json_group_array(...) ...))` subquery returns
+// exactly one row (its own aggregate summary row) only when nothing at its
+// own top level can change that count. GROUP BY and HAVING can drop it to
+// zero rows; OVER turns the call into a window function, one row per
+// source row; LIMIT/OFFSET can drop the guaranteed one row to zero, so the
+// build refuses it instead of silently typing the array nullable. Each
+// case runs through both branches nestedJsonType has: the scoped branch (a
+// plain SELECT) and the detached branch (RETURNING, which prepares the
+// subquery on its own with outer aliases replaced by NULL).
+describe("a nested aggregate subquery that can return no row is typed nullable (eki2.2)", () => {
+  const t = typer();
+  const scopedSql = (clause: string, over = "") =>
+    `select o.id, json_object('lines', json((select json_group_array(json_object('id', l.id))${over} from order_lines l where l.order_id = o.id${clause}))) as data from orders o where o.id = :id`;
+  const detachedSql = (clause: string, over = "") =>
+    `update orders set note = note where id = :id returning id, json_object('lines', json((select json_group_array(json_object('id', l.id))${over} from order_lines l where l.order_id = orders.id${clause}))) as data`;
+
+  const cases: [string, string, string, boolean][] = [
+    ["no clause", "", "", false],
+    ["group by", " group by l.order_id", "", true],
+    ["having", " having count(*) > 0", "", true],
+    ["over ()", "", " over ()", true],
+  ];
+
+  for (const [label, clause, over, expectNullable] of cases) {
+    const arrayType = 'Array<{ "id": OrderLinesId }>';
+    const expected = expectNullable ? `{ "lines": ${arrayType} | null }` : `{ "lines": ${arrayType} }`;
+
+    test(`scoped branch, ${label}: ${expectNullable ? "nullable" : "non-null"}`, () => {
+      const a = t.analyze(scopedSql(clause, over), "orders");
+      assert.equal(a.columns.find((c) => c.name === "data")!.type, expected);
+    });
+
+    test(`detached branch (RETURNING), ${label}: ${expectNullable ? "nullable" : "non-null"}`, () => {
+      const a = t.analyze(detachedSql(clause, over), "orders");
+      assert.equal(a.columns.find((c) => c.name === "data")!.type, expected);
+    });
+  }
+
+  const limitedCases: [string, string][] = [
+    ["limit 0", " limit 0"],
+    ["limit 1 offset 1", " limit 1 offset 1"],
+    ["limit 2 (a no-op cap)", " limit 2"],
+  ];
+
+  for (const [label, clause] of limitedCases) {
+    test(`scoped branch, ${label}: refused, naming the IN-subquery remedy`, () => {
+      assert.throws(
+        () => t.analyze(scopedSql(clause), "orders"),
+        (e: unknown) => e instanceof BuildError && /applies to the one aggregate row, not to the child rows/.test(e.message) && /where l\.id in \(select l2\.id from order_lines l2/.test(e.message),
+      );
+    });
+
+    test(`detached branch (RETURNING), ${label}: refused, naming the IN-subquery remedy`, () => {
+      assert.throws(
+        () => t.analyze(detachedSql(clause), "orders"),
+        (e: unknown) => e instanceof BuildError && /applies to the one aggregate row, not to the child rows/.test(e.message),
+      );
+    });
+  }
+
+  test("the named IN-subquery remedy builds non-null", () => {
+    const remedy =
+      "select o.id, json_object('lines', json((select json_group_array(json_object('id', l.id) order by l.id) from order_lines l where l.id in (select l2.id from order_lines l2 where l2.order_id = o.id order by l2.id limit :n)))) as data from orders o where o.id = :id";
+    const a = t.analyze(remedy, "orders");
+    assert.equal(a.columns.find((c) => c.name === "data")!.type, '{ "lines": Array<{ "id": OrderLinesId }> }');
+  });
+});
+
 test("origin columns retain NULL from views, query scopes, scalar subqueries, and wildcard joins", () => {
   const engine = new Engine([
     "create table a(id integer primary key not null) strict",
