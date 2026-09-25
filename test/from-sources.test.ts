@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { build, migration, StatementFailures } from "../src/build/build.ts";
 import { fixtureDir, librarySpecifier } from "./fixture-dir.ts";
 
@@ -45,7 +46,7 @@ test("select o.id, j.value from orders o, json_each(o.tags) j builds, and return
   const written = await migration(config, "shop");
   assert.ok(written.filename);
 
-  const { shopQueries } = await import(resolve(dir, "shop/module.ts"));
+  const { shopQueries } = await import(pathToFileURL(resolve(dir, "shop/module.ts")).href);
   const { node } = await import("../src/node.ts");
   const db = new DatabaseSync(":memory:");
   db.exec(readFileSync(resolve(dir, "migrations", written.filename!), "utf8"));
@@ -74,7 +75,7 @@ test("a FROM-clause subquery reading an earlier FROM item's column is refused, n
     assert.match(message, /FROM-clause subquery/);
     assert.match(message, /does not see another item of the same FROM list/);
     assert.doesNotMatch(message, /no such column/);
-    assert.match(message, /\n\s*at: .*shop\/module\.ts/);
+    assert.match(message, /\n\s*at: .*shop[\\/]module\.ts/);
     return true;
   });
 });
