@@ -173,8 +173,10 @@ export class Typer {
     try {
       this.engine.prepare(sql);
     } catch (e) {
-      throw new BuildError((e as Error).message, sql);
+      throw new BuildError(this.correlatedFromSubqueryRefusal(sql) ?? (e as Error).message, sql);
     }
+    const chained = this.chainedJsonEachKeyRefusal(sql, names);
+    if (chained) throw new BuildError(chained, sql);
     const aliases = aliasMap(sql);
     const select = isSelect(sql);
     const outputs = this.engine.columns(sql);
@@ -249,10 +251,23 @@ export class Typer {
     return result;
   }
 
-  private sourceRows(source: ReturnType<typeof querySources>[number], environment: Map<string, Binding>, active: Set<Binding | string>, note: (r: Resolved) => Resolved, matched = false): ScopeColumn[] {
+  private sourceRows(source: ReturnType<typeof querySources>[number], environment: Map<string, Binding>, active: Set<Binding | string>, note: (r: Resolved) => Resolved, matched = false, siblings?: Map<string, ScopeColumn[]>): ScopeColumn[] {
     if (source.query) return this.scopeRows(source.query, environment, active, note);
     if (source.functionSql) {
-      return this.engine.columns(this.scopeProbe(`select * from ${source.functionSql}`, environment)).map((column) => ({ name: column.name, type: "SqlValue", json: false }));
+      // A table-valued function's argument can name an earlier FROM
+      // source's column (json_each(o.tags), json_each(o.value -> 'lines')):
+      // SQLite resolves that reference at run time (measured on node:sqlite,
+      // local D1, and a local Durable Object all running it). The probe
+      // below only needs the function's own output
+      // columns, so an outer reference is replaced with `null` (the same
+      // detach detachedProbe already does for a parent query's alias)
+      // instead of being carried into the probe, which would need the
+      // earlier source's own FROM text prepended and reintroduce a
+      // "column resolved against the wrong alias" failure. This also covers a non-JSON table-valued function, such as
+      // pragma_table_info(t.name), with no separate fixed-column table.
+      const probe = `select * from ${source.functionSql}`;
+      const detached = siblings ? this.detachSiblingReferences(probe, siblings) : probe;
+      return this.engine.columns(this.scopeProbe(detached, environment)).map((column) => ({ name: column.name, type: "SqlValue", json: false }));
     }
     const name = source.name!;
     const binding = source.schema === null ? environment.get(sqliteName(name)) : undefined;
@@ -346,6 +361,97 @@ export class Typer {
     return this.scopeProbe(sql, context.environment);
   }
 
+  // A table-valued function's own arguments (sourceRows, above) can qualify
+  // a column with an alias already resolved earlier in the same FROM list
+  // (json_each(o.tags), pragma_table_info(t.name)). The engine only needs
+  // the function's output columns here, so that reference is replaced with
+  // `null`, the same substitution detachedProbe makes for a parent query's
+  // alias; `siblings` differs from detachedProbe's `context.parent` in that
+  // it walks the sources of this same FROM list, not an enclosing query.
+  private detachSiblingReferences(sql: string, siblings: Map<string, ScopeColumn[]>): string {
+    const tokens = significant(tokenize(sql));
+    const replacements: { start: number; end: number }[] = [];
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i]!;
+      if (token.type !== "ident" || tokens[i + 1]?.text !== "." || tokens[i + 2]?.type !== "ident") continue;
+      if (siblings.has(sqliteName(unquote(token.text)))) {
+        replacements.push({ start: token.start, end: tokens[i + 2]!.end });
+        i += 2;
+      }
+    }
+    for (const replacement of replacements.reverse()) sql = sql.slice(0, replacement.start) + "null" + sql.slice(replacement.end);
+    return sql;
+  }
+
+  // A FROM-clause subquery that qualifies a column with an earlier FROM
+  // item's own alias (`from orders o, (select ... from
+  // order_lines l where l.order_id = o.id) x`) fails prepare with SQLite's
+  // own "no such column" message: unlike a scalar or EXISTS subquery, which
+  // SQLite correlates to the enclosing query, a FROM-clause subquery is its
+  // own closed scope (measured 2026-09-25 on node:sqlite, local D1, and a
+  // local Durable Object: all three refuse it identically). This turns that
+  // one shape's engine message into a message that names the rule, and
+  // leaves every other "no such column" failure (a genuine typo, an
+  // unknown table) as the engine's own message. It must not contain the
+  // words "no such column" itself: columnsHint (build.ts) appends a
+  // "columns of <table>" hint to any message that does, which is
+  // misleading here because the reader's fix is not to pick a different
+  // column.
+  private correlatedFromSubqueryRefusal(sql: string): string | null {
+    if (!isSelect(sql)) return null;
+    let sources: ReturnType<typeof querySources>;
+    try { sources = querySources(sql); } catch { return null; }
+    for (let i = 0; i < sources.length; i++) {
+      const source = sources[i]!;
+      if (!source.query) continue;
+      const earlier = new Map(sources.slice(0, i).map((s) => [sqliteName(s.alias), s.alias]));
+      if (earlier.size === 0) continue;
+      const tokens = significant(tokenize(source.query));
+      for (let j = 0; j + 2 < tokens.length; j++) {
+        if (tokens[j]!.type !== "ident" || tokens[j + 1]!.text !== "." || tokens[j + 2]!.type !== "ident") continue;
+        const original = earlier.get(sqliteName(unquote(tokens[j]!.text)));
+        if (original === undefined) continue;
+        return `the FROM-clause subquery aliased ${quoteIdent(source.alias)} reads ${original}.${unquote(tokens[j + 2]!.text)}, a column of the earlier FROM item ${quoteIdent(original)}. SQLite runs a FROM-clause subquery as its own closed scope: it does not see another item of the same FROM list. Move the condition into a JOIN's own ON clause, or write it as a scalar or EXISTS subquery in the SELECT list or WHERE clause, either of which SQLite does correlate to the enclosing query.`;
+      }
+    }
+    return null;
+  }
+
+  // A second, unmet symptom of the same rule: a nested `json_each(:orders)
+  // o, json_each(o.value -> 'lines') l` (one json_each reading a bound
+  // parameter's array, a second reading `.value` of the first's own
+  // element) now prepares, since sourceRows (above) can type the second
+  // source's own output columns. But its parameter type still comes from
+  // scan.ts's jsonKeys, which scans the whole SQL text for `alias.value ->>
+  // 'k'` with no per-alias scope: every such key it finds, from every
+  // json_each in the statement, lands on the one bound parameter, so
+  // `:orders` would type with sku/qty/price as its own top-level keys
+  // instead of nested under `lines` (measured on a patched copy with only
+  // sourceRows's fix: readonly { id, sku, qty, price }[]). Fixing that scope
+  // gap is scan.ts's own change (out of this file's ownership; tracked as a
+  // follow-up), so this refuses the shape instead of typing it wrong.
+  private chainedJsonEachKeyRefusal(sql: string, names: readonly string[]): string | null {
+    const params = new Set(names);
+    let sources: ReturnType<typeof querySources>;
+    try { sources = querySources(sql); } catch { return null; }
+    const paramAliases = new Set<string>();
+    for (const source of sources) {
+      if (!source.functionSql) continue;
+      const bound = /^\s*(?:json_each|json_tree)\s*\(\s*:([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*$/i.exec(source.functionSql);
+      if (bound && params.has(bound[1]!)) { paramAliases.add(sqliteName(source.alias)); continue; }
+      const tokens = significant(tokenize(source.functionSql));
+      for (let j = 0; j + 2 < tokens.length; j++) {
+        if (tokens[j]!.type !== "ident" || tokens[j + 1]!.text !== "." || tokens[j + 2]!.type !== "ident") continue;
+        if (sqliteName(unquote(tokens[j + 2]!.text)) !== "value") continue;
+        const alias = sqliteName(unquote(tokens[j]!.text));
+        if (paramAliases.has(alias)) {
+          return `json_each/json_tree ${quoteIdent(source.alias)} reads ${unquote(tokens[j]!.text)}.value, the element of a json_each/json_tree bound to a named parameter. A key read from ${quoteIdent(source.alias)}'s own rows (${unquote(tokens[j]!.text)}.value ->> '...') cannot yet be typed as nested under the parameter's element; every such key would land on the parameter's own top level instead. Give the child rows a second array parameter instead, with the parent id repeated on each child, and read it from its own json_each.`;
+        }
+      }
+    }
+    return null;
+  }
+
   private sourceContext(sql: string, environment: Map<string, Binding>, active: Set<Binding | string>, note: (r: Resolved) => Resolved, parent?: ScopeContext): { context: ScopeContext; aliases: Map<string, string | null> } {
     let sources: ReturnType<typeof querySources>;
     try { sources = querySources(sql); } catch (error) { throw new BuildError(`query scope: ${(error as Error).message}`, sql); }
@@ -354,7 +460,7 @@ export class Typer {
     const matchedAliases = new Set([...unconditionalMatchAliases(sql)].map(sqliteName));
     for (const source of sources) {
       const alias = sqliteName(source.alias);
-      const rows = this.sourceRows(source, environment, active, note, matchedAliases.has(alias));
+      const rows = this.sourceRows(source, environment, active, note, matchedAliases.has(alias), context.rows);
       const common = new Set((source.natural ? rows.filter((column) => !column.hidden && context.visible.some((left) => sqliteName(left.name) === sqliteName(column.name))).map((column) => column.name) : source.using).map(sqliteName));
       const before = context.visible;
       if (source.join === "right" || source.join === "full") {
@@ -1285,8 +1391,9 @@ function whereClause(select: string): string | null {
 // key reaches the same ordering and correlation as the outer query, so the
 // LIMIT caps the child rows instead of the aggregate's single result row.
 // The build already refuses the derived-table form `from (select ... limit
-// n) x` with "no such column" (a correlated reference cannot cross a
-// derived table's own FROM boundary), so this message does not offer it.
+// n) x` with correlatedFromSubqueryRefusal's own message (a FROM-clause
+// subquery cannot read another FROM item's column), so this message does
+// not offer it.
 const NESTED_LIMIT_MESSAGE =
   `LIMIT/OFFSET applies to the one aggregate row, not to the child rows. Put the limit inside a subquery over the child rows: ` +
   `json((select json_group_array(json_object('id', l.id) order by l.id) from order_lines l where l.id in ` +

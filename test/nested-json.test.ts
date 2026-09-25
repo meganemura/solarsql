@@ -30,7 +30,7 @@ test("the inner array is an array, not a string", async () => {
 // A GROUP BY inside the nested subquery types the array `| null`: an empty
 // child set gives zero grouped rows, so no aggregate row at all. The plain
 // form (no GROUP BY) keeps a guaranteed one row, so it stays a non-null
-// empty array for the same empty child set (eki2.2).
+// empty array for the same empty child set.
 test("a GROUP BY subquery decodes null for an empty child set; the plain form decodes an empty array", async () => {
   const raw = new DatabaseSync(":memory:");
   raw.exec(`
@@ -78,8 +78,8 @@ test("the IN-subquery remedy for capping child rows returns at most n children a
   assert.deepEqual((await node(raw).first(q.capped, { id: "o2", n: 2 }))?.data, { lines: [] });
 });
 
-// Two one-to-many arrays on one parent, each its own correlated subquery
-// (eki2.6): a single LEFT JOIN per child would multiply rows once a second
+// Two one-to-many arrays on one parent, each its own correlated subquery:
+// a single LEFT JOIN per child would multiply rows once a second
 // child joins in, so the top-level, non-null spelling is
 // `json((select json_group_array(...) ...))` for each array, per ADR 0132.
 test("two sibling one-to-many arrays on one parent decode empty arrays, not null, for a parent with no children", async () => {
@@ -107,7 +107,7 @@ test("two sibling one-to-many arrays on one parent decode empty arrays, not null
 });
 
 // The build refuses the join-based spelling of the same two sibling arrays
-// (eki2.7, ADR 0136): two LEFT JOINs on one order, one per FILTER-guarded
+// (ADR 0136): two LEFT JOINs on one order, one per FILTER-guarded
 // json_group_array, multiply each array by the other's own row count. This
 // measures the actual duplication the refusal above prevents an agent from
 // shipping.

@@ -504,6 +504,41 @@ describe("Typer.analyze", () => {
     assert.throws(() => t.analyze("select nope from orders", "orders"), (e: unknown) => e instanceof BuildError && /no such column: nope/.test(e.message));
   });
 
+  // SQLite runs a FROM-clause subquery as its own closed
+  // scope (measured on node:sqlite, local D1, and a local Durable Object:
+  // all three refuse this identically), unlike a scalar or EXISTS
+  // subquery. The engine's own "no such column" message does not say that;
+  // this names the rule instead, and must not repeat "no such column" (the
+  // build's columnsHint appends a misleading "columns of ..." hint to any
+  // message that does).
+  test("a FROM-clause subquery correlated to an earlier FROM item is refused, naming the rule", () => {
+    assert.throws(
+      () => t.analyze("select o.id, x.id as lid from orders o, (select id from order_lines l where l.order_id = o.id limit 2) x", "orders"),
+      (e: unknown) => e instanceof BuildError && /FROM-clause subquery/.test(e.message) && /does not see another item of the same FROM list/.test(e.message) && !/no such column/.test(e.message),
+    );
+  });
+
+  // A second symptom of the same rule: json_each(o.tags) (an earlier FROM
+  // source's own column) now prepares (sourceRows, typegen.ts), but a
+  // json_each reading another json_each's own `.value` still cannot type
+  // its keys as nested under the bound parameter's element -- scan.ts's
+  // jsonKeys has no per-alias scope (out of this file's ownership) -- so
+  // this refuses that one shape instead of typing it wrong.
+  test("a json_each reading another json_each's own element is refused, naming the workaround", () => {
+    const sql = `insert into order_lines (id, order_id, sku, qty, price)
+      select l.value ->> 'id', o.value ->> 'id', l.value ->> 'sku', l.value ->> 'qty', l.value ->> 'price'
+      from json_each(:orders) o, json_each(o.value -> 'lines') l`;
+    assert.throws(() => t.analyze(sql, "orders"), (e: unknown) => e instanceof BuildError && /second array parameter/.test(e.message));
+  });
+
+  test("json_each reading an earlier FROM source's own column types its output SqlValue", () => {
+    const a = t.analyze("select o.id, j.value as tag from orders o, json_each(o.note) j", "orders");
+    assert.deepEqual(a.columns, [
+      { name: "id", type: "OrdersId", json: false },
+      { name: "tag", type: "SqlValue", json: false },
+    ]);
+  });
+
   test("an assert predicate as its composed statement", () => {
     const a = t.analyze(assertStatement("has_lines", "exists (select 1 from order_lines where order_id = :id)"), "orders");
     assert.equal(a.returnsRows, false);
@@ -1704,7 +1739,7 @@ describe("RETURNING + a nested one-to-many JSON value, across LEFT, RIGHT, and F
 // case runs through both branches nestedJsonType has: the scoped branch (a
 // plain SELECT) and the detached branch (RETURNING, which prepares the
 // subquery on its own with outer aliases replaced by NULL).
-describe("a nested aggregate subquery that can return no row is typed nullable (eki2.2)", () => {
+describe("a nested aggregate subquery that can return no row is typed nullable", () => {
   const t = typer();
   const scopedSql = (clause: string, over = "") =>
     `select o.id, json_object('lines', json((select json_group_array(json_object('id', l.id))${over} from order_lines l where l.order_id = o.id${clause}))) as data from orders o where o.id = :id`;
@@ -1765,10 +1800,10 @@ describe("a nested aggregate subquery that can return no row is typed nullable (
 
 // A top-level one-row aggregate subquery, narrowing ADR 0048's blanket rule
 // that a scalar subquery adds nullability (ADR 0048:22) and reusing
-// aggregateSelectShape (ADR 0130) to prove the one row (eki2.6). Two
+// aggregateSelectShape (ADR 0130) to prove the one row. Two
 // sibling one-to-many arrays on one parent each need their own correlated
-// subquery, since two LEFT JOINs would multiply rows (ADR 0111/eki2.5).
-describe("a top-level one-row aggregate subquery is typed non-null (eki2.6, ADR 0132)", () => {
+// subquery, since two LEFT JOINs would multiply rows (ADR 0111).
+describe("a top-level one-row aggregate subquery is typed non-null (ADR 0132)", () => {
   const t = typer();
   const linesArray = 'Array<{ "id": OrderLinesId; "sku": string }>';
   const eventsArray = 'Array<{ "id": OrderEventsId; "kind": string }>';
@@ -1831,11 +1866,11 @@ describe("a top-level one-row aggregate subquery is typed non-null (eki2.6, ADR 
   });
 });
 
-// Join fan-out (eki2.7, ADR 0136): a json_group_array whose element or
+// Join fan-out (ADR 0136): a json_group_array whose element or
 // FILTER references alias set A can silently repeat a row once another
 // joined alias, not part of A's own join path back to the FROM root,
 // returns more than one row per group.
-describe("json_group_array refuses a join that can multiply its elements (eki2.7, ADR 0136)", () => {
+describe("json_group_array refuses a join that can multiply its elements (ADR 0136)", () => {
   const engine = new Engine([
     `create table customers(id text primary key not null)`,
     `create table orders(id text primary key not null, customer_id text not null references customers(id))`,
@@ -1895,8 +1930,8 @@ describe("json_group_array refuses a join that can multiply its elements (eki2.7
 // A deterministic loop over how a joined alias B, outside the aggregate's
 // own alias set, can be joined: join kind x how B is provably (or not)
 // safe. Each accepted case is measured to build; each refused case names
-// alias "b" (eki2.7, ADR 0136).
-describe("join fan-out: join kind x B's own proof shape (eki2.7, ADR 0136)", () => {
+// alias "b" (ADR 0136).
+describe("join fan-out: join kind x B's own proof shape (ADR 0136)", () => {
   const engine = new Engine([
     `create table root(id text primary key not null, flag integer not null)`,
     `create table agg(id text primary key not null, root_id text not null references root(id), val text not null)`,
