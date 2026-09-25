@@ -1,6 +1,6 @@
 # ADR 0028: Dynamic SQL is static SQL with typed parameters
 
-Status: accepted (2026-09-06)
+Status: accepted (2026-09-06). Its paging row is partially superseded by ADR 0131 for a page that always walks forward; `limit :limit offset :offset` remains the idiom for a jump to page N or a parameter-chosen sort.
 
 ## Context
 

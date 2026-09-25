@@ -33,6 +33,7 @@ The build finds the type from where the parameter sits. One parameter may sit in
 |---|---|
 | `where c = :p`, `c < :p`, `:p = c`, `c like :p`, `t match :p` | the type of the column `c` |
 | `where (c1, c2) = (:p1, :p2)`, or the same with the two sides swapped | the type of `c1`, `c2`, by position, not by side; `\| null` when the comparison reaches a LEFT, RIGHT, or FULL JOIN's null-producing side, the same as `c1 = :p1 and c2 = :p2` |
+| `where (c1, c2) < (:p1, :p2)`, or `>`, `<=`, `>=` in place of `<` | the type of `c1`, `c2`, by position, the same as `=` above (a row-value comparison; the keyset paging recipe below) |
 | `insert into t (c) values (:p)`, or any later row of a multi-row `values (:p), (:p2), ...` | the type of `t.c` |
 | `update t set c = :p` | the type of `t.c` |
 | `update t set (c1, c2) = (:p1, :p2)` | the type of `t.c1`, `t.c2`, by position, not by declaration order |
@@ -68,6 +69,7 @@ A BLOB cast returns `Uint8Array | null` unless the complete inner expression pro
 | a column of a table, or `t.*` | the declared type ([schema.md](schema.md)); `\| null` when an outer join can omit its source |
 | a column through a view, CTE, or derived table | its defining query's type, including its nullability and JSON shape (ADR 0048) |
 | a scalar SELECT | its single output type, with `\| null` for an empty result |
+| a scalar SELECT that is provably one row: `count(*)`, or `json_group_array(...)` with no GROUP BY, HAVING, OVER, LIMIT, OFFSET, or compound operator | its single output type, never null, since it always returns its one row (ADR 0130) |
 | a string, number, or NULL literal | the literal's type |
 | a BLOB literal, such as `x'00ff'` or `X''` | `Uint8Array` |
 | an expression: `count(*)`, `sum(x)`, `a + b`, `bm25(t)`, a window function, a `case` | needs `cast(... as integer \| real \| text \| blob)`; the build refuses it without one |
@@ -98,9 +100,11 @@ An ordinary BLOB query returns `Uint8Array`; an explicit TEXT conversion inside 
 These clauses change the result values and order; they retain the inferred element type.
 SQLite validates combinations with FILTER and OVER.
 
-A `json_group_array` over the null-producing side of a `left join`, a `right join`, or a `full join` needs `filter (where l.id is not null)`, or a parent with no children gets one null element (ADR 0011, ADR 0111). `coalesce(..., '[]')` gives the empty array.
+A `json_group_array` over the null-producing side of a `left join`, a `right join`, or a `full join` needs `filter (where l.id is not null)`, or a parent with no children gets one null element (ADR 0011, ADR 0111). The FILTER alone gives `[]` for a parent with no children; `json_group_array` never returns NULL as a plain aggregate.
 Only an exact `filter (where alias.column is not null)` removes that alias's outer nullability from the generated array element type (ADR 0047).
 Other predicates retain conservative nullability; filtering one alias does not narrow another alias.
+
+A `json_group_array` over a second joined alias, not the array's own parent chain, is refused unless that alias is provably one row per group (its own unique key, or GROUP BY). Move it into its own correlated subquery.
 
 Each catalog query contains one SELECT or VALUES statement, optionally preceded by WITH.
 The build refuses writes and multiple statements in a query entry; put writes in command plan items.
@@ -135,7 +139,32 @@ select id, status from orders order by case :sort when 'id' then id when 'status
 -- a sort direction chosen by a parameter, typed "asc" | "desc"
 select id from orders order by case :dir when 'asc' then id end asc, case :dir when 'desc' then id end desc
 
--- paging
+-- keyset paging: a page that always walks forward from the last row it saw.
+-- Rules: every key column is NOT NULL, the last key column is unique, and
+-- every key column sorts in the same direction. This is the default for a
+-- growing feed or an export; it costs the same rows_read at any depth.
+select id from orders order by id limit :limit                      -- first page
+select id from orders where id > :after order by id limit :limit    -- next page: :after is the last id of the previous page
+
+-- keyset paging, descending: a same-direction key needs a second named
+-- query, not a :dir parameter (row-value comparison tests one direction).
+select id from orders where id < :before order by id desc limit :limit
+
+-- keyset paging, composite key: use the row-value form ((c1, c2) > (:p1, :p2)),
+-- not the expanded OR form (c1 > ?1 or (c1 = ?1 and c2 > ?2)), which disables
+-- the index the way an optional filter does. Needs an index on (c1, c2);
+-- customer_id is NOT NULL and id is unique, so the pair sorts without ties.
+create index orders_customer_id_id on orders (customer_id, id)
+select id from orders where (customer_id, id) > (:after_customer_id, :after_id) order by customer_id, id limit :limit
+
+-- do not write (:after is null or id > :after) to make one query serve the
+-- first page and later pages: the OR disables the index and reads like OFFSET.
+
+-- paging by page number, or by a chosen sort: OFFSET reads and bills every
+-- skipped row (D1 bills scanned rows; see limits.md), and can skip or
+-- repeat rows when rows are inserted or deleted between calls, because it
+-- counts position, not identity. Keyset paging above cannot serve either
+-- need; keep OFFSET for them.
 select id from orders order by id limit :limit offset :offset
 
 -- a pattern; no index serves LIKE, and the build reports the scan
@@ -153,9 +182,20 @@ select c.id,
   filter (where o.id is not null) as orders
 from customers c left join orders o on o.customer_id = c.id
 where c.id = :id group by c.id
+
+-- two one-to-many arrays on one parent: one correlated subquery per child,
+-- not two LEFT JOINs, which would multiply rows (every order line paired
+-- with every order note, for instance)
+select c.id,
+  json((select json_group_array(json_object('id', o.id)) from orders o where o.customer_id = c.id)) as orders,
+  json((select json_group_array(json_object('id', p.id)) from payments p where p.customer_id = c.id)) as payments
+from customers c
+where c.id = :id
 ```
 
 Fragments and string composition are not part of solarsql: a query is one static text, and the types follow the text.
+
+`newId()` (running.md) makes UUID v7 ids, which sort by creation time within one isolate. Across isolates they sort by millisecond only, since each isolate keeps its own counter (ADR 0016). A keyset walk over `id` alone gives a strict creation-order walk only when one isolate wrote every row; a walk that must stay in exact creation order across isolates needs a second key column.
 
 ## What the build reports
 

@@ -89,6 +89,14 @@ export const orderQueries = queries(generated, {
     from order_search join orders o on o.id = order_search.order_id
     where order_search match :query
     order by rank`,
+  firstPage: `
+    -- Keyset paging, first page: id is the primary key, so no separate
+    -- index is needed. See queries.md's paging recipe.
+    select id from orders order by id limit :limit`,
+  nextPage: `
+    -- Keyset paging, next page: :after is the last id of the previous
+    -- page. No OFFSET, so the cost does not grow with the page number.
+    select id from orders where id > :after order by id limit :limit`,
 });
 
 export const orderCommands = commands(generated, {

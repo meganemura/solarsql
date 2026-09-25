@@ -109,6 +109,16 @@ export type Generated = {
     params: { query: string };
     row: { id: OrdersId; status: "draft" | "confirmed"; note: string | null; score: number | null };
   };
+  /** Keyset paging, first page: id is the primary key, so no separate index is needed. See queries.md's paging recipe. */
+  "\n    -- Keyset paging, first page: id is the primary key, so no separate\n    -- index is needed. See queries.md's paging recipe.\n    select id from orders order by id limit :limit": {
+    params: { limit: number };
+    row: { id: OrdersId };
+  };
+  /** Keyset paging, next page: :after is the last id of the previous page. No OFFSET, so the cost does not grow with the page number. */
+  "\n    -- Keyset paging, next page: :after is the last id of the previous\n    -- page. No OFFSET, so the cost does not grow with the page number.\n    select id from orders where id > :after order by id limit :limit": {
+    params: { after: OrdersId; limit: number };
+    row: { id: OrdersId };
+  };
 };
 
 export const generated: Meta<Generated> = {
@@ -135,4 +145,6 @@ export const generated: Meta<Generated> = {
   "\n    -- Orders of one customer, with an optional status and a chosen order.\n    select id, status, note from orders\n    where customer_id = :customer_id and (:status is null or status = :status)\n    order by case :sort when 'id' then id when 'status' then status end\n    limit :limit offset :offset": { params: ["customer_id", "status", "sort", "limit", "offset"], encode: [], json: [], reads: ["orders"] },
   "\n    -- Orders whose note matches a pattern. No index serves LIKE, so this\n    -- reads the table in full, and the build reports it.\n    select id, status, note from orders where note like :pattern order by id": { params: ["pattern"], encode: [], json: [], reads: ["orders"] },
   "\n    -- Orders whose note matches a full-text query, best match first.\n    select o.id, o.status, o.note, cast(bm25(order_search) as real) as score\n    from order_search join orders o on o.id = order_search.order_id\n    where order_search match :query\n    order by rank": { params: ["query"], encode: [], json: [], reads: ["order_search", "orders"] },
+  "\n    -- Keyset paging, first page: id is the primary key, so no separate\n    -- index is needed. See queries.md's paging recipe.\n    select id from orders order by id limit :limit": { params: ["limit"], encode: [], json: [], reads: ["orders"] },
+  "\n    -- Keyset paging, next page: :after is the last id of the previous\n    -- page. No OFFSET, so the cost does not grow with the page number.\n    select id from orders where id > :after order by id limit :limit": { params: ["after", "limit"], encode: [], json: [], reads: ["orders"] },
 };
