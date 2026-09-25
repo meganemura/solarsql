@@ -3,11 +3,11 @@
   "testRunner": "tap",
   "tap": {
     "testFiles": [
-      "test/id.test.ts"
+      "test/!(stale).test.ts"
     ]
   },
   "mutate": [
-    "src/runtime/id.ts"
+    "src/**/*.ts"
   ],
   "coverageAnalysis": "perTest",
   "reporters": [
@@ -24,5 +24,10 @@
     "dist"
   ],
   "tsconfigFile_comment": "TypeScript 7 has no JS API, so Stryker cannot parse tsconfig.json to rewrite its paths. The tsconfig has no extends or references, so the rewrite has nothing to change; naming a file that does not exist skips it.",
-  "tsconfigFile": "stryker-skip-tsconfig-rewrite.json"
+  "tsconfigFile": "stryker-skip-tsconfig-rewrite.json",
+  "disableTypeChecks_comment": "The default, true, adds @ts-nocheck to every TypeScript file in the sandbox, which makes the build test see the committed generated files as changed. Only the instrumented files need it.",
+  "disableTypeChecks": "src/**/*.ts",
+  "incremental": true,
+  "incrementalFile": "reports/stryker-incremental.json",
+  "tap_comment": "stale.test.ts checks tsc results. The instrumented src has @ts-nocheck and changed inferred types, so that test fails in the sandbox for reasons outside the mutant. Plain npm test still runs it."
 }

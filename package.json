@@ -62,7 +62,8 @@
     "prepublishOnly": "npm run build",
     "test": "node --test \"test/*.test.ts\"",
     "test:all": "node --test \"test/**/*.test.ts\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:mutation": "stryker run"
   },
   "devDependencies": {
     "@hegeldev/hegel": "0.4.5",
