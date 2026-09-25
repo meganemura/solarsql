@@ -1,7 +1,7 @@
 # Rehearse a migration with existing data
 
 Rehearse a proposed migration before you deploy it, whenever a target database already has rows.
-It proves the migration applies to a snapshot of that data without losing rows, breaking a query's shape, or failing an assertion; it does not prove a remote D1 database or a Durable Object accepts the same SQL.
+It proves the migration applies to a snapshot of that data, and reports what changed row by row (see `result.rows` below); it does not, on its own, fail the rehearsal for a lost or changed row -- add an assertion for that. It does not prove a remote D1 database or a Durable Object accepts the same SQL.
 
 ```sh
 npx solarsql rehearse local.sqlite proposed.sql checks.json
@@ -9,8 +9,10 @@ npx solarsql rehearse local.sqlite proposed.sql checks.json
 
 The command opens the source read-only and uses `vacuum into` to write a disposable snapshot, including committed WAL data (ADR 0121).
 It applies the proposed SQL to the snapshot in one transaction and checks database integrity and foreign keys.
-It blocks database attachments. It deletes the snapshot on completion or failure.
-The versioned JSON result includes before/after row counts, before/after column lists, completed checks, and failure diagnostics. Exit 1 indicates failure.
+The proposed SQL and every check run under an authorizer that blocks database attachments; only after they have all run does the command attach its own before-copy, under its own narrower authorizer, to compute `result.rows` (ADR 0139). It deletes the snapshot and the before-copy on completion or failure.
+The versioned JSON result includes before/after row counts, before/after column lists, a per-table row diff, completed checks, and failure diagnostics. Exit 1 indicates failure.
+
+`result.rows` reports, per table, how many rows were inserted, deleted, and updated, by primary key, against a before-copy taken with the working connection's own `vacuum into` (ADR 0139). A row is "updated" when a common column's value or storage class differs (`upper()` on a `COLLATE NOCASE` column, or an integer retyped to a real, both count). Matching is by primary key and by column name, case-insensitively; a `NOCASE` primary key matches keys case-insensitively. A table with no primary key, or whose primary-key columns changed, reports `{ "compared": false, "reason": "..." }` instead of counts. A virtual table (for example, an FTS5 table) and its own shadow tables never appear in `result.rows`. A table present on only one side (dropped, or newly created) does not appear either -- see `result.columns` for that.
 
 `result.columns.before` and `result.columns.after` list, per table, each column's `name`, declared `type`, `notnull`, and `pk`, read from `pragma_table_xinfo`. After the migration runs and the database passes its integrity and foreign-key checks, the command compares the two lists. A table present before and missing after, a column present before and missing after (matched by name, case-insensitive), or a column whose type differs (case-insensitive) is a finding. An added table or an added column is never a finding. The comparison does not detect a rename: a rename shows up as one dropped column and one added column.
 
@@ -94,6 +96,8 @@ Use `--timeout-ms 120000` when the workload needs a larger finite budget.
 A deadline produces exit 1 and `REHEARSAL_TIMEOUT` after the parent removes its snapshots.
 Inspect the workload before increasing the budget. The source database remains unchanged.
 This deadline applies to the CLI; the in-process `rehearse` function does not cancel the snapshot statement.
+
+The read-only open of the source database waits out a lock another connection holds (a `wrangler dev` D1 file or a Durable Object file, both WAL mode), for up to `min(5000, --timeout-ms - 1000)` ms (ADR 0140). A lock that outlasts the wait fails with `SNAPSHOT_FAILED`, naming the source path and "locked"; retry the command.
 
 ## Rehearse against a D1 export
 

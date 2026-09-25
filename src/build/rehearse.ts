@@ -1,11 +1,16 @@
 // Responsibility: rehearse one SQL transition on a disposable database snapshot.
 // Boundary: local SQLite evidence only; this does not deploy or certify data meaning.
+// rehearseSnapshot() also takes its own synchronous VACUUM INTO copy (ADR
+// 0139), so it is no longer filesystem-free the way a pure in-memory
+// property test would be; every filesystem call it makes is synchronous, so
+// a caller driving it from a property test still needs no async scheduling.
 import { constants, DatabaseSync } from 'node:sqlite';
 import { channel } from 'node:diagnostics_channel';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { namedParams, namedSlots, quoteIdent, significant, splitStatements, tokenize } from './scan.ts';
+import { busyTimeoutMs, isLockError, lockMessage } from './lock-timeout.ts';
 import { catalogStatement } from './statements.ts';
 
 const lifecycle = channel('solarsql.rehearse');
@@ -26,6 +31,7 @@ export type ExpectedRetype = { table: string; column: string };
 export type RehearsalExpected = { dropped?: ExpectedDrop[]; retyped?: ExpectedRetype[] };
 export type RehearsalChecks = { queries?: Record<string, string>; assertions?: Record<string, string>; cases?: Record<string, RehearsalCase>; expected?: RehearsalExpected };
 export type RehearsalColumn = { name: string; type: string; notnull: 0 | 1; pk: number };
+export type RowDiff = { compared: true; inserted: number; deleted: number; updated: number } | { compared: false; reason: string };
 export type RehearsalResult = {
   version: 1;
   ok: boolean;
@@ -33,6 +39,7 @@ export type RehearsalResult = {
   before: Record<string, number>;
   after: Record<string, number>;
   columns: { before: Record<string, RehearsalColumn[]>; after: Record<string, RehearsalColumn[]> };
+  rows: Record<string, RowDiff>;
   queries: string[];
   assertions: string[];
   cases: string[];
@@ -219,15 +226,126 @@ function healthy(db: DatabaseSync): void {
   if (db.prepare('pragma foreign_key_check').all().length > 0) throw new Error('SQLite foreign_key_check failed');
 }
 
-export async function rehearse(database: string, sql: string, checks: RehearsalChecks = {}): Promise<RehearsalResult> {
+// A fixed schema name for the before-copy's own ATTACH, so the row-diff
+// authorizer (below) can allow SQLITE_DETACH by name without trusting any
+// value the proposed SQL or checks.json could have chosen.
+const BEFORE_SCHEMA = 'solarsql_rehearse_before';
+
+// ATTACH's own authorizer callback sees the resolved literal text of its
+// filename argument, not a bound parameter's value (`?` reports null;
+// measured on node:sqlite 3.53.4) -- unlike `vacuum into ?` above, which
+// only ever runs its own statement, never one an authorizer must recognize
+// by argument. The path this module builds (a mkdtemp() directory joined
+// with a fixed filename) never contains a single quote in practice, but
+// the escape is applied anyway, matching the same convention
+// test/slow/rehearse-file.test.ts already uses for an ATTACH literal.
+function sqlString(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+// pragma_table_list's own `type` distinguishes an ordinary table ('table')
+// from a virtual table ('virtual', e.g. an FTS5 table) and that virtual
+// table's own shadow tables ('shadow', e.g. FTS5's own *_data, *_idx). Row
+// diffing skips both: a virtual table has no ordinary row storage to VACUUM
+// INTO copy meaningfully, and a shadow table is that virtual table's own
+// implementation detail, not a table an agent wrote.
+function tableTypes(db: DatabaseSync): Map<string, string> {
+  return new Map(db.prepare("select name, type from pragma_table_list where schema = 'main'").all().map(r => [String(r.name).toLowerCase(), String(r.type)]));
+}
+
+type ColumnPair = { after: string; before: string };
+
+// undefined when either side has no primary key, the two sides don't have
+// the same number of primary-key columns, or a primary-key column's own
+// name (case-insensitive) has no match on the other side -- any of which
+// is a "changed PK" the row diff cannot join on.
+function pkPairs(beforeColumns: RehearsalColumn[], afterColumns: RehearsalColumn[]): ColumnPair[] | undefined {
+  const beforePk = beforeColumns.filter(c => c.pk > 0);
+  const afterPk = afterColumns.filter(c => c.pk > 0);
+  if (beforePk.length === 0 || afterPk.length === 0 || beforePk.length !== afterPk.length) return undefined;
+  const beforeByLower = new Map(beforePk.map(c => [c.name.toLowerCase(), c]));
+  const pairs: ColumnPair[] = [];
+  for (const afterColumn of afterPk) {
+    const match = beforeByLower.get(afterColumn.name.toLowerCase());
+    if (!match) return undefined;
+    pairs.push({ after: afterColumn.name, before: match.name });
+  }
+  return pairs;
+}
+
+// Every non-primary-key column present on both sides, matched by name,
+// case-insensitively; a column present on only one side already shows up
+// as a schemaShapeFindings drop (or is simply new) and plays no part here.
+function commonColumns(beforeColumns: RehearsalColumn[], afterColumns: RehearsalColumn[], pk: ColumnPair[]): ColumnPair[] {
+  const pkAfterNames = new Set(pk.map(p => p.after.toLowerCase()));
+  const beforeByLower = new Map(beforeColumns.map(c => [c.name.toLowerCase(), c]));
+  const pairs: ColumnPair[] = [];
+  for (const afterColumn of afterColumns) {
+    const lower = afterColumn.name.toLowerCase();
+    if (pkAfterNames.has(lower)) continue;
+    const match = beforeByLower.get(lower);
+    if (match) pairs.push({ after: afterColumn.name, before: match.name });
+  }
+  return pairs;
+}
+
+// Inserted: primary key present after, absent before. Deleted: the reverse.
+// Updated: primary key in both, and at least one common column differs --
+// `IS NOT ... COLLATE BINARY` catches a value change even across a NOCASE
+// or other non-binary column collation (ADR 0139: measured, plain `IS NOT`
+// alone misses an upper() rewrite on a COLLATE NOCASE column), and
+// `typeof(a) IS NOT typeof(b)` catches a storage-class change (e.g.
+// integer 1 -> real 1.0, or TEXT -> INTEGER) `IS NOT` alone treats as
+// equal. The primary-key join itself uses no COLLATE override, so it runs
+// under the column's own declared collation and can use its index; a
+// NOCASE primary key therefore matches keys case-insensitively here too.
+function diffTable(db: DatabaseSync, table: string, beforeTable: string, pk: ColumnPair[], nonPk: ColumnPair[]): { inserted: number; deleted: number; updated: number } {
+  const mainTable = `main.${quoteIdent(table)}`;
+  const beforeTableRef = `${quoteIdent(BEFORE_SCHEMA)}.${quoteIdent(beforeTable)}`;
+  const pkJoin = pk.map(p => `a.${quoteIdent(p.after)} = b.${quoteIdent(p.before)}`).join(' and ');
+  const inserted = Number(db.prepare(`select count(*) as n from ${mainTable} a where not exists (select 1 from ${beforeTableRef} b where ${pkJoin})`).get()!.n);
+  const deleted = Number(db.prepare(`select count(*) as n from ${beforeTableRef} b where not exists (select 1 from ${mainTable} a where ${pkJoin})`).get()!.n);
+  let updated = 0;
+  if (nonPk.length > 0) {
+    const changed = nonPk.map(c => `(a.${quoteIdent(c.after)} is not b.${quoteIdent(c.before)} collate binary or typeof(a.${quoteIdent(c.after)}) is not typeof(b.${quoteIdent(c.before)}))`).join(' or ');
+    updated = Number(db.prepare(`select count(*) as n from ${mainTable} a join ${beforeTableRef} b on ${pkJoin} where ${changed}`).get()!.n);
+  }
+  return { inserted, deleted, updated };
+}
+
+// Every table present (by name, case-insensitively) both before and after,
+// excluding a virtual or shadow table on either side.
+function diffAllTables(
+  db: DatabaseSync,
+  before: Record<string, number>, after: Record<string, number>,
+  beforeColumns: Record<string, RehearsalColumn[]>, afterColumns: Record<string, RehearsalColumn[]>,
+  beforeTypes: Map<string, string>, afterTypes: Map<string, string>,
+): Record<string, RowDiff> {
+  const beforeByLower = new Map(Object.keys(before).map(name => [name.toLowerCase(), name]));
+  const rows: Record<string, RowDiff> = {};
+  for (const table of Object.keys(after)) {
+    const beforeTable = beforeByLower.get(table.toLowerCase());
+    if (beforeTable === undefined) continue;
+    const lower = table.toLowerCase();
+    if (beforeTypes.get(lower) !== 'table' || afterTypes.get(lower) !== 'table') continue;
+    const pk = pkPairs(beforeColumns[beforeTable] ?? [], afterColumns[table] ?? []);
+    if (!pk) { rows[table] = { compared: false, reason: 'no primary key, or a changed primary key' }; continue; }
+    const nonPk = commonColumns(beforeColumns[beforeTable] ?? [], afterColumns[table] ?? [], pk);
+    rows[table] = { compared: true, ...diffTable(db, table, beforeTable, pk, nonPk) };
+  }
+  return rows;
+}
+
+export async function rehearse(database: string, sql: string, checks: RehearsalChecks = {}, effectiveTimeoutMs = 30_000): Promise<RehearsalResult> {
   const dir = mkdtempSync(join(tmpdir(), 'solarsql-rehearse-'));
   let source: DatabaseSync | undefined;
   let copy: DatabaseSync | undefined;
   const stage = 'SNAPSHOT_FAILED';
-  const result: RehearsalResult = { version: 1, ok: false, sql, before: {}, after: {}, columns: { before: {}, after: {} }, queries: [], assertions: [], cases: [], diagnostics: [] };
+  const timeout = busyTimeoutMs(effectiveTimeoutMs);
+  const result: RehearsalResult = { version: 1, ok: false, sql, before: {}, after: {}, columns: { before: {}, after: {} }, rows: {}, queries: [], assertions: [], cases: [], diagnostics: [] };
   try {
     let end = phase('open-source');
-    source = new DatabaseSync(database, { readOnly: true });
+    source = new DatabaseSync(database, { readOnly: true, timeout });
     end();
     const path = join(dir, 'snapshot.sqlite');
     end = phase('backup');
@@ -255,7 +373,7 @@ export async function rehearse(database: string, sql: string, checks: RehearsalC
     end();
     return report;
   } catch (e) {
-    result.diagnostics.push({code:stage, message:e instanceof Error ? e.message : String(e)});
+    result.diagnostics.push({code:stage, message: isLockError(e) ? lockMessage(database, timeout) : e instanceof Error ? e.message : String(e)});
   } finally {
     if (copy?.isOpen) {
       const end = phase('close-copy');
@@ -275,10 +393,23 @@ export async function rehearse(database: string, sql: string, checks: RehearsalC
 // synchronous and allows property tests without filesystem scheduling.
 export function rehearseSnapshot(db: DatabaseSync, sql: string, checks: RehearsalChecks = {}): RehearsalResult {
   let stage = 'CHECKS_INVALID';
-  const result: RehearsalResult = { version: 1, ok: false, sql, before: {}, after: {}, columns: { before: {}, after: {} }, queries: [], assertions: [], cases: [], diagnostics: [] };
+  const result: RehearsalResult = { version: 1, ok: false, sql, before: {}, after: {}, columns: { before: {}, after: {} }, rows: {}, queries: [], assertions: [], cases: [], diagnostics: [] };
+  // Own temp directory, separate from rehearse()'s own snapshot directory:
+  // this one holds only the row diff's before-copy, created and removed
+  // inside this call regardless of which caller (rehearse(), or a direct
+  // in-process caller) supplied `db` (ADR 0139).
+  const diffDir = mkdtempSync(join(tmpdir(), 'solarsql-rehearse-diff-'));
+  const beforeCopyPath = join(diffDir, 'before.sqlite');
   try {
     // A misspelled check must fail, rather than silently approve less evidence.
     validateChecks(checks);
+    // The before-copy is taken before any authorizer exists: a deny-all
+    // authorizer (installed next) denies VACUUM INTO too, since it performs
+    // its own internal SQLITE_ATTACH (measured: "authorization denied",
+    // action 24). No proposed SQL has run yet, so `db` is still exactly the
+    // state the caller supplied.
+    stage = 'BEFORE_COPY_FAILED';
+    db.prepare('vacuum into ?').run(beforeCopyPath);
     // Prevent a migration from reaching the original database through ATTACH
     // or directing SQLite temporary files to a caller-selected directory.
     db.setAuthorizer((action, arg) => {
@@ -290,6 +421,7 @@ export function rehearseSnapshot(db: DatabaseSync, sql: string, checks: Rehearsa
     healthy(db);
     result.before = counts(db);
     result.columns.before = columns(db, Object.keys(result.before));
+    const beforeTypes = tableTypes(db);
     const old = new Map<string, string>();
     for (const [name, query] of Object.entries(checks.queries ?? {})) {
       const statement = db.prepare(catalogStatement(query, 'read'));
@@ -314,6 +446,7 @@ export function rehearseSnapshot(db: DatabaseSync, sql: string, checks: Rehearsa
     healthy(db);
     result.after = counts(db);
     result.columns.after = columns(db, Object.keys(result.after));
+    const afterTypes = tableTypes(db);
     stage = 'SCHEMA_SHAPE_CHANGED';
     {
       const findings = schemaShapeFindings(result.columns.before, result.columns.after);
@@ -345,6 +478,19 @@ export function rehearseSnapshot(db: DatabaseSync, sql: string, checks: Rehearsa
       if (rows.length !== 1 || Object.keys(rows[0]!).length !== 1 || Object.values(rows[0]!)[0] !== 1) throw new Error(`Assertion ${name} must return one row and one value equal to 1`);
       result.assertions.push(name);
     }
+    // Last, after every check: the proposed SQL and every check above have
+    // already run under the deny-all authorizer, so this narrower one (ATTACH
+    // only for the exact before-copy path, DETACH only for the reserved
+    // schema) never governs a statement this call did not itself generate.
+    stage = 'ROW_DIFF_FAILED';
+    db.setAuthorizer((action, arg) => {
+      if (action === constants.SQLITE_ATTACH) return arg === beforeCopyPath ? constants.SQLITE_OK : constants.SQLITE_DENY;
+      if (action === constants.SQLITE_DETACH) return arg === BEFORE_SCHEMA ? constants.SQLITE_OK : constants.SQLITE_DENY;
+      if (action === constants.SQLITE_PRAGMA && ['writable_schema', 'temp_store_directory', 'data_store_directory'].includes((arg ?? '').toLowerCase())) return constants.SQLITE_DENY;
+      return constants.SQLITE_OK;
+    });
+    db.exec(`attach database ${sqlString(beforeCopyPath)} as ${quoteIdent(BEFORE_SCHEMA)}`);
+    result.rows = diffAllTables(db, result.before, result.after, result.columns.before, result.columns.after, beforeTypes, afterTypes);
     // finally's rollback only undoes an open transaction, so every check
     // must run before commit for a failed check to undo the migration.
     stage = 'MIGRATION_FAILED';
@@ -354,7 +500,20 @@ export function rehearseSnapshot(db: DatabaseSync, sql: string, checks: Rehearsa
     result.diagnostics.push({code:stage, message:e instanceof Error ? e.message : String(e)});
   } finally {
     if (db.isTransaction) db.exec('rollback');
+    // DETACH cannot run inside an open transaction ("database ... is
+    // locked"), so rollback runs first. The authorizer is cleared before
+    // the attempt (rather than kept at the ATTACH-stage's narrow allowance)
+    // so a run that never reached that stage still gets SQLite's own "no
+    // such database" for a schema that was never attached, instead of an
+    // authorization denial that would mask it; no proposed SQL runs after
+    // this point, so nothing is exposed by clearing it early.
     db.setAuthorizer(null);
+    try { db.exec(`detach ${quoteIdent(BEFORE_SCHEMA)}`); }
+    catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      if (!message.includes('no such database')) result.diagnostics.push({ code: 'DETACH_FAILED', message });
+    }
+    rmSync(diffDir, { recursive: true, force: true });
   }
   return result;
 }

@@ -5,6 +5,7 @@ import { realpathSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { Engine } from "./facts.ts";
 import { emitGenerated } from "./emit.ts";
+import { busyTimeoutMs, isLockError, lockMessage } from "./lock-timeout.ts";
 import { created, splitStatements } from "./scan.ts";
 import { catalogStatement } from "./statements.ts";
 import { BuildError, Typer } from "./typegen.ts";
@@ -21,9 +22,16 @@ export function analyzeSchema(schema: string, catalog: unknown, library = "solar
   } finally { engine.close(); }
 }
 
-export function analyzeDatabase(database: string, catalog: unknown, library = "solarsql") {
+export function analyzeDatabase(database: string, catalog: unknown, library = "solarsql", effectiveTimeoutMs = 5000) {
   const path = realpathSync(database);
-  const engine = new Engine([], new DatabaseSync(path, { readOnly: true }));
+  const timeout = busyTimeoutMs(effectiveTimeoutMs);
+  let engine: Engine;
+  try {
+    engine = new Engine([], new DatabaseSync(path, { readOnly: true, timeout }));
+  } catch (e) {
+    if (isLockError(e)) throw new BuildError(lockMessage(path, timeout));
+    throw e;
+  }
   try {
     // The first schema read fixes the WAL view for every subsequent engine probe.
     // Temporary affinity probes remain local to this connection.
@@ -32,6 +40,9 @@ export function analyzeDatabase(database: string, catalog: unknown, library = "s
     const schemaVersion = engine.db.prepare("pragma schema_version").get()!.schema_version;
     const schemaHash = createHash("sha256").update(JSON.stringify(schema)).digest("hex");
     return { ...analyzeCatalog(engine, catalog, library), source: { kind: "database" as const, path, schemaVersion, schemaHash } };
+  } catch (e) {
+    if (isLockError(e)) throw new BuildError(lockMessage(path, timeout));
+    throw e;
   } finally { engine.close(); }
 }
 

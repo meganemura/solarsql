@@ -7,6 +7,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
+import { readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { rehearseSnapshot } from '../src/build/rehearse.ts';
 import { diff, introspect, open } from '../src/build/migration.ts';
 import { quoteIdent } from '../src/build/scan.ts';
@@ -426,6 +428,155 @@ test('a rebuild that keeps every column reports ok and equal before/after column
       assert.equal(result.ok, true, JSON.stringify(result));
       assert.deepEqual(result.columns.before, result.columns.after);
       assert.deepEqual(result.columns.before.cols!.map(c => c.name).slice(1).sort(), names.slice().sort());
+    } finally { db.close(); }
+  });
+});
+
+// ADR 0139: rehearsal reports rows inserted, updated, and deleted per
+// table, by primary key, against a before-copy taken with the working
+// connection's own VACUUM INTO.
+test('rows reports 0/0/0 for a leaf rebuild that changes no data', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table customers(id integer primary key, name text) strict; insert into customers values (1,'a'),(2,'b'),(3,'c')");
+    const result = rehearseSnapshot(db, 'alter table customers add column note text');
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows, { customers: { compared: true, inserted: 0, deleted: 0, updated: 0 } });
+  } finally { db.close(); }
+});
+
+test('rows reports updated for a value rewrite that keeps the same rows', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table customers(id integer primary key, name text) strict; insert into customers values (1,'a'),(2,'B')");
+    const result = rehearseSnapshot(db, 'update customers set name = upper(name)');
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows, { customers: { compared: true, inserted: 0, deleted: 0, updated: 1 } });
+  } finally { db.close(); }
+});
+
+test('rows reports deleted for a lost row', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table customers(id integer primary key, name text) strict; insert into customers values (1,'a'),(2,'b'),(3,'c')");
+    const result = rehearseSnapshot(db, "delete from customers where id = 3");
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows, { customers: { compared: true, inserted: 0, deleted: 1, updated: 0 } });
+  } finally { db.close(); }
+});
+
+test('rows compares over the columns a rebuild kept, without throwing on a dropped column', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table t(id integer primary key, keep text, drop_me text) strict; insert into t values (1,'k','d')");
+    const rebuild = 'create table t_new(id integer primary key, keep text) strict; insert into t_new select id, keep from t; drop table t; alter table t_new rename to t;';
+    const result = rehearseSnapshot(db, rebuild, { expected: { dropped: [{ table: 't', column: 'drop_me' }] } });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 0 } });
+  } finally { db.close(); }
+});
+
+test('rows reports updated for a note column moving to and from NULL', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table t(id integer primary key, note text); insert into t values (1,null),(2,'kept'),(3,null)");
+    const result = rehearseSnapshot(db, "update t set note = 'filled' where note is null");
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 2 } });
+  } finally { db.close(); }
+});
+
+test('rows skips a table with no primary key, and every table of an FTS5 virtual table', () => {
+  {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec("create table t(a integer, b text); insert into t values (1,'x')");
+      const result = rehearseSnapshot(db, "insert into t values (2,'y')");
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.deepEqual(result.rows, { t: { compared: false, reason: 'no primary key, or a changed primary key' } });
+    } finally { db.close(); }
+  }
+  {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec("create virtual table docs using fts5(body); insert into docs(body) values ('hello')");
+      const result = rehearseSnapshot(db, "insert into docs(body) values ('world')");
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.deepEqual(result.rows, {});
+    } finally { db.close(); }
+  }
+});
+
+test('rows reports a changed primary key as not compared', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table t(id integer primary key, name text) strict; insert into t values (1,'a')");
+    const rebuild = 'create table t_new(id integer, name text, primary key (id, name)) strict; insert into t_new select id, name from t; drop table t; alter table t_new rename to t;';
+    const result = rehearseSnapshot(db, rebuild);
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows, { t: { compared: false, reason: 'no primary key, or a changed primary key' } });
+  } finally { db.close(); }
+});
+
+test('rows reports updated for upper() on a COLLATE NOCASE column and for a retyped storage class', () => {
+  {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec("create table t(id integer primary key, name text collate nocase) strict; insert into t values (1,'abc'),(2,'def')");
+      const result = rehearseSnapshot(db, "update t set name = upper(name) where id = 1");
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 1 } });
+    } finally { db.close(); }
+  }
+  {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec('create table t(id integer primary key, n); insert into t values (1,1)');
+      const result = rehearseSnapshot(db, 'update t set n = 1.0 where id = 1', { expected: { retyped: [] } });
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 1 } });
+    } finally { db.close(); }
+  }
+});
+
+test('proposed SQL cannot use ATTACH or DETACH, including while the row diff\'s own attachment exists', () => {
+  const attempts = ["attach database ':memory:' as x", 'detach main'];
+  for (const attempt of attempts) {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec('create table t(id integer primary key) strict');
+      const result = rehearseSnapshot(db, attempt);
+      assert.equal(result.ok, false, attempt);
+      assert.match(result.diagnostics[0]!.message, /not authorized/);
+    } finally { db.close(); }
+  }
+});
+
+test('the row diff leaves no file behind, on success or on a migration failure', () => {
+  for (const sql of ['alter table t add column note text', 'insert into t values (1)']) {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec('create table t(id integer primary key) strict; insert into t values (2)');
+      rehearseSnapshot(db, sql);
+    } finally { db.close(); }
+  }
+  const leftover = readdirSync(tmpdir()).filter(name => name.startsWith('solarsql-rehearse-diff-'));
+  assert.deepEqual(leftover, []);
+});
+
+test('a Hegel property: a no-op rebuild always reports 0/0/0 for every random row set', async () => {
+  const { test: property } = await import('@hegeldev/hegel');
+  const gs = await import('@hegeldev/hegel/generators');
+  property(tc => {
+    const rows = tc.draw(gs.arrays(gs.tuples(gs.integers({ minValue: 1, maxValue: 1000 }), gs.text({ maxSize: 20 })), { minSize: 0, maxSize: 20 }));
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec('create table t(id integer primary key, v text) strict');
+      const insert = db.prepare('insert or ignore into t values (:id, :v)');
+      for (const [id, v] of rows) insert.run({ id, v });
+      const result = rehearseSnapshot(db, 'alter table t add column note text');
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 0, updated: 0 });
     } finally { db.close(); }
   });
 });

@@ -13,6 +13,7 @@ import { pathToFileURL } from "node:url";
 import type { Entry, Query } from "../index.ts";
 import { node } from "../node.ts";
 import { load } from "./build.ts";
+import { busyTimeoutMs, isLockError, lockMessage } from "./lock-timeout.ts";
 import { BuildError } from "./typegen.ts";
 
 export type QueryTarget = { module: string; catalog: string; name: string };
@@ -51,19 +52,20 @@ async function resolveQuery(configPath: string, target: QueryTarget): Promise<Qu
 }
 
 // Open the database read-only, resolve the query, and run it. The database
-// path names itself in a failed open, the same way the CLI's other options
-// name themselves on a bad value.
-export async function runQuery(configPath: string, target: QueryTarget, databasePath: string, params: Record<string, unknown>): Promise<unknown[]> {
+// path names itself in a failed open or a failed run alike -- both used to
+// share one try, but only the open did; a lock that fired once the query
+// ran (rather than at open) reported with no path.
+export async function runQuery(configPath: string, target: QueryTarget, databasePath: string, params: Record<string, unknown>, effectiveTimeoutMs = 30_000): Promise<unknown[]> {
   const query = await resolveQuery(configPath, target);
-  let db: DatabaseSync;
+  const timeout = busyTimeoutMs(effectiveTimeoutMs);
+  let db: DatabaseSync | undefined;
   try {
-    db = new DatabaseSync(databasePath, { readOnly: true });
-  } catch (e) {
-    throw new BuildError(`--database ${databasePath}: ${e instanceof Error ? e.message : String(e)}`);
-  }
-  try {
+    db = new DatabaseSync(databasePath, { readOnly: true, timeout });
     return await node(db).all(query, params);
+  } catch (e) {
+    if (isLockError(e)) throw new BuildError(lockMessage(databasePath, timeout));
+    throw new BuildError(`--database ${databasePath}: ${e instanceof Error ? e.message : String(e)}`);
   } finally {
-    db.close();
+    db?.close();
   }
 }
