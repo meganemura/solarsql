@@ -12,6 +12,7 @@ import { analyzeDatabase, analyzeSchema } from "./analyze.ts";
 import { rehearse } from "./rehearse.ts";
 import { build, migration, StatementFailures } from "./build.ts";
 import { init, initEmpty } from "./init.ts";
+import { nodeVersionError } from "../runtime/node-version.ts";
 import { readMigrationIntent, type MigrationIntent } from "./migration-intent.ts";
 import type { DropIntent, Rename, RenameRepair } from "./migration.ts";
 import { announceWorkerDone, isCliWorker, isReportWorker, printReport, runHuman, runMachine, runRehearsalProcess } from "./machine.ts";
@@ -356,7 +357,16 @@ const machineBuild = args[0] === "inspect" || (args[0] === "build" && args.inclu
 const humanBuild = args[0] === "build" || args[0] === "migration";
 try {
   // Discovery must precede worker dispatch and application configuration imports.
-  const code = discovery(args) ?? (args[0] === "rehearse" && !isReportWorker()
+  const discovered = discovery(args);
+  // Skip the Node floor for help and version: they answer without a project.
+  if (discovered === undefined) {
+    const versionError = nodeVersionError(process.versions.node);
+    if (versionError) {
+      console.error(versionError);
+      process.exit(1);
+    }
+  }
+  const code = discovered ?? (args[0] === "rehearse" && !isReportWorker()
     ? await runRehearsalProcess(import.meta.filename, args, rehearsalArguments(args.slice(1)).timeoutMs)
     : machineBuild && !isReportWorker()
     ? await (() => {

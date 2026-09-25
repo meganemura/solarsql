@@ -77,7 +77,7 @@ The package ships it; in a project, point AGENTS.md at `node_modules/solarsql/sk
 
 ## Requirements
 
-Node 24.10 or later runs the build, because it needs `DatabaseSync.setAuthorizer()` of node:sqlite. The tests of this repository run on Node 24 and 26.
+Node `^24.20.0 || >=26.7.0` runs the build: node:sqlite must report the SQLite that the release tests against in Miniflare (ADR 0129). The tests of this repository run on Node 24 and 26, and on each line's floor.
 On 2026-09-19, node:sqlite (Node 26.7.0) reported SQLite 3.53.4 and workerd (miniflare 5.20260828.0-alpha) reported SQLite 3.53.4.
 TypeScript 5.8 or later: the tsconfig `init` writes sets `erasableSyntaxOnly`, which is the syntax Node's type stripping runs, and reads the imports with a `.ts` extension that the stripping needs (`allowImportingTsExtensions` under `noEmit`, or `rewriteRelativeImportExtensions` when tsc emits).
 

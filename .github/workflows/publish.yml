@@ -27,14 +27,14 @@ jobs:
           # package cache is a write path from other workflows.
           package-manager-cache: false
 
-      - name: Require Node 24.10 and npm 11.5.1
+      - name: Require Node 24.20 and npm 11.5.1
         run: |
           node --version
           npm --version
           node <<'EOF'
           const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
-          if (nodeMajor !== 24 || nodeMinor < 10) {
-            console.error(`Node ${process.versions.node} is not Node 24.10 or later on the 24 line`);
+          if (nodeMajor !== 24 || nodeMinor < 20) {
+            console.error(`Node ${process.versions.node} is not Node 24.20 or later on the 24 line`);
             process.exit(1);
           }
           const {execSync} = require("node:child_process");

@@ -10,8 +10,13 @@ import type { DatabaseSync } from "node:sqlite";
 import type { AdapterOptions, Database } from "./index.ts";
 import { durable, migrate as migrateStorage, type MigrationFile, type MigrationOptions, type StorageLike } from "./durable.ts";
 import { namedSlots } from "./build/scan.ts";
+import { nodeVersionError } from "./runtime/node-version.ts";
 
 export function node(db: DatabaseSync, options: AdapterOptions = {}): Database {
+  // Checked once here, at construction, so solarsql query and any script
+  // that builds a Database through node() are covered without a second check.
+  const versionError = nodeVersionError(process.versions.node);
+  if (versionError) throw new Error(versionError);
   return durable(storageOf(db), options);
 }
 

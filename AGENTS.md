@@ -15,7 +15,7 @@ Commands are verbs on a noun, and a command is a plan: a list of statements and 
 Rows are plain values with no methods and no callbacks.
 Types come from the real engine at build time, and a stale type fails to compile.
 
-The library is in `src/`: `index.ts` (the API), `d1.ts`, `durable.ts`, and `node.ts` (the adapters; the third is for tests and scripts), `build/` (the CLI, the scanner, the engine facts, the type generator, the migration diff), `runtime/plan.ts` (what the build and the adapters share), and `runtime/id.ts` (UUID v7).
+The library is in `src/`: `index.ts` (the API), `d1.ts`, `durable.ts`, and `node.ts` (the adapters; the third is for tests and scripts), `build/` (the CLI, the scanner, the engine facts, the type generator, the migration diff), `runtime/plan.ts` (what the build and the adapters share), `runtime/id.ts` (UUID v7), and `runtime/node-version.ts` (the Node floor check, ADR 0129).
 A module is three files: `module.ts` (its tables, indexes, search tables, views, triggers, queries, and commands), `public.ts` (what other modules may import), and `solarsql.generated.ts` (written by the build).
 The example project in `example/` is the one the tests run.
 
@@ -44,7 +44,7 @@ If you want to cite an internal document, write its substance in place instead.
 
 - `npm test` runs the in-process files directly under `test/` (node:sqlite only, 582 tests, about 9 seconds). `npm run test:all` adds two more directories: `test/slow/` (`cli.test.ts`, `cli-discovery.test.ts`, and `pack.test.ts`, which spawn `tsc`, `npm pack`, and the CLI as child processes; `rehearse-file.test.ts`, whose two tests go through `rehearse()`'s on-disk backup) and `test/miniflare/` (workerd); together about 112 seconds, though the two added directories vary with machine load. CI runs `npm run test:all`.
 - `npm run typecheck` runs `tsc --noEmit` over `src/`, `test/`, `example/`, and `spike/`.
-- `.github/workflows/ci.yml` runs the tests, the typecheck, and the example's `build --check` on Node 24 and 26, on ubuntu, macOS, and Windows, for every push and pull request to main.
+- `.github/workflows/ci.yml` runs the tests, the typecheck, and the example's `build --check` on Node 24 and 26, on ubuntu, macOS, and Windows, and on each line's floor (24.20.0 and 26.7.0, ubuntu only), for every push and pull request to main.
 - `.github/workflows/publish.yml` runs on a `v*` tag. The steps and the trusted-publisher settings are in `docs/releasing.md`.
 - `npm run build` emits `dist/` from `src/`. Only the pack test needs it.
 - `node src/build/cli.ts build example/solarsql.config.ts` builds the example from the source.
