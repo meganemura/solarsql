@@ -12,7 +12,12 @@ nodeFs.linkSync = () => {
   // Block the call stack itself, not just the event loop: a timer (like
   // setInterval) returns immediately, letting writeNewMigration's finally
   // block delete the temporary file before the parent's kill can land.
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+  // The wait has a limit, and the process exits when it runs out: if the
+  // parent test process dies first (a test runner that bails or times
+  // out), no kill arrives, and an unbounded wait would leave this process
+  // blocked forever.
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60_000);
+  process.exit(1);
 };
 const { writeNewMigration } = await import("../../src/build/migration-files.ts");
 const [, , dir, filename, sql] = process.argv;
