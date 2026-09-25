@@ -31,9 +31,15 @@ export function newId<I extends Id<string>>(): I {
 
 // One entry of the generated map: the parameters a statement takes and the
 // row it returns. A statement that returns no rows has an empty row type.
+// `returning` marks a DELETE ... RETURNING plan item (ADR 0136): the build
+// sets it to the literal `true` only there, so PlanRows below can find a
+// command's row source by type alone, in place of `returns`. Every other
+// entry omits it, which `unknown extends ...` below reads the same as
+// `false`.
 export type Entry = {
   params: Record<string, unknown>;
   row: Record<string, unknown>;
+  returning?: true;
 };
 
 export type GeneratedMap = Record<string, Entry>;
@@ -42,7 +48,10 @@ export type GeneratedMap = Record<string, Entry>;
 // in the order SQLite numbers them, the parameters the adapter encodes as
 // JSON text (arrays for json_each), the columns that hold JSON text, and
 // the tables of the schema the statement reads, sorted (ADR 0041), for a
-// caller that routes or invalidates by table.
+// caller that routes or invalidates by table. `returning`, present only on
+// a DELETE ... RETURNING entry (ADR 0136), lets commands() find a command's
+// row source at construction without reading SQL text, the way `json`
+// already lets an adapter find a JSON column without reading it.
 // The optional `__types` member carries the type map for inference only and
 // never holds a value.
 export type Meta<G extends GeneratedMap> = {
@@ -51,10 +60,11 @@ export type Meta<G extends GeneratedMap> = {
     encode: readonly (keyof G[K]["params"] & string)[];
     json: readonly (keyof G[K]["row"] & string)[];
     reads: readonly string[];
+    returning?: true;
   };
 } & { readonly __types?: G };
 
-export type StatementMeta = { params: readonly string[]; encode: readonly string[]; json: readonly string[]; reads: readonly string[] };
+export type StatementMeta = { params: readonly string[]; encode: readonly string[]; json: readonly string[]; reads: readonly string[]; returning?: true };
 
 // --- schema -------------------------------------------------------------------
 
@@ -201,7 +211,17 @@ type ItemParams<G extends GeneratedMap, I> = I extends { __params?: infer PP } ?
 export type PlanParams<G extends GeneratedMap, P extends PlanShape<G>> = Simplify<
   UnionToIntersection<ItemParams<G, P["plan"][number]> | EntryParams<G, P["returns"]>>
 >;
-export type PlanRows<G extends GeneratedMap, P extends PlanShape<G>> = P["returns"] extends keyof G ? G[P["returns"]]["row"] : never;
+// The key of the plan's own DELETE ... RETURNING item, when it has one
+// (ADR 0136). Only a plain string plan item can match: `PlanItemSql` maps
+// an included Command to `never`, the same "included item contributes
+// nothing of its own" rule ItemParams above already follows for `__params`,
+// so an included command's own row source never competes with the
+// including command's `returns` or its own row-source item.
+type PlanItemSql<I> = I extends string ? I : never;
+type ReturningKey<G extends GeneratedMap, Items> = Items extends infer I ? (PlanItemSql<I> extends infer K extends keyof G ? (G[K] extends { returning: true } ? K : never) : never) : never;
+export type PlanRows<G extends GeneratedMap, P extends PlanShape<G>> = P["returns"] extends keyof G
+  ? G[P["returns"]]["row"]
+  : ReturningKey<G, P["plan"][number]> extends infer K extends keyof G ? G[K]["row"] : never;
 // An included command's own assert names join the plan's own, the rule ADR
 // 0127 gives asserts; a plain statement key contributes none. Reads the
 // phantom `__asserts` field for the same reason ItemParams reads `__params`
@@ -227,6 +247,14 @@ export type Command<G extends GeneratedMap, P extends PlanShape<G>> = {
   returns: string | null;
   meta: { statements: readonly StatementMeta[]; returns: StatementMeta | null; asserts: readonly string[] };
   included: readonly PlanInclusion[];
+  // The index into `plan`/`meta.statements` of this command's own DELETE
+  // ... RETURNING item, when it has one and `returns` does not (ADR 0136).
+  // null when the command has no row source, or when `returns` is the row
+  // source instead. An adapter reads rows from this item's own reply in
+  // place of running `returns`. Only a plain, non-included item of this
+  // command's own plan is ever a candidate: an included command's row
+  // source is dropped, the same rule ADR 0127 gives an included `returns`.
+  returningIndex: number | null;
   readonly __generated?: G;
   readonly __plan?: P;
   // Computed once, here, for a command included in another module's plan
@@ -264,6 +292,13 @@ export function commands<G extends GeneratedMap, const C extends Record<string, 
     const statements: StatementMeta[] = [];
     const asserts: string[] = [];
     const included: PlanInclusion[] = [];
+    // Set only from a plain item of this command's own plan (never from an
+    // included command's own items, spliced in above): ADR 0136 gives an
+    // included row-source item the same treatment ADR 0127 already gives
+    // an included `returns`, dropped rather than surfaced here. The build
+    // refuses a command with more than one candidate, so the first one
+    // found is the only one there is.
+    let returningIndex: number | null = null;
     for (const item of rawPlan) {
       if (isIncludedCommand(item)) {
         const from = plan.length;
@@ -273,8 +308,10 @@ export function commands<G extends GeneratedMap, const C extends Record<string, 
         included.push({ name: item.name, from, to: plan.length, ...(item.included.length > 0 ? { nested: true } : {}) });
         continue;
       }
+      const meta = metaOf(generated, typeof item === "string" ? item : item.predicate);
+      if (meta.returning && returningIndex === null) returningIndex = plan.length;
       plan.push(item);
-      statements.push(metaOf(generated, typeof item === "string" ? item : item.predicate));
+      statements.push(meta);
       if (typeof item !== "string") asserts.push(item.name);
     }
     entries[name] = {
@@ -284,6 +321,7 @@ export function commands<G extends GeneratedMap, const C extends Record<string, 
       returns: shape.returns ?? null,
       meta: { statements, returns: shape.returns ? metaOf(generated, shape.returns) : null, asserts },
       included,
+      returningIndex: shape.returns ? null : returningIndex,
     };
   }
   return { kind: "commands", entries, ...entries } as unknown as Commands<G, C>;

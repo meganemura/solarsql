@@ -15,7 +15,7 @@ import { Engine, type Access, type OutputColumn, type PlanRow } from "./facts.ts
 import { applied, diff, introspect, open, type DropIntent, type Rename, type RenameRepair } from "./migration.ts";
 import type { MigrationIntent } from "./migration-intent.ts";
 import { migrationSequence, nextMigrationFile, withMigrationLock, writeNewMigration } from "./migration-files.ts";
-import { created, definitions, indexTarget, isKeyword, quoteIdent, significant, tokenize, triggerTarget, unquote, type RebuildRecord } from "./scan.ts";
+import { aliasCandidates, created, definitions, indexTarget, isKeyword, quoteIdent, returningClause, significant, tokenize, triggerTarget, unquote, type RebuildRecord } from "./scan.ts";
 import { sqliteName } from "./scope.ts";
 import { shellArgument } from "./shell.ts";
 import { writeGeneratedFile } from "./output.ts";
@@ -617,8 +617,15 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
         schemaFailed[schemaFailed.length - 1]!.message += `\n  statements of module ${m.name} not checked until its schema builds`;
         continue;
       }
-      const entries: { key: string; analysis: Analysis }[] = [];
+      const entries: { key: string; analysis: Analysis; returning: boolean }[] = [];
       const used = new Set<string>();
+      // A DELETE (or WITH ... DELETE) plan item with RETURNING is the one
+      // write whose rows the adapter keeps (ADR 0136): its reply already
+      // holds the deleted rows, so commands() can use it as the command's
+      // row source in place of `returns`. Recorded per key so emitGenerated
+      // can mark the entry and checkCommands can refuse a command that
+      // pairs it with a second row source.
+      const returningKeys = new Set<string>();
       const typeStarted = performance.now();
       let moduleFailed = false;
       for (const [key, sql] of m.statements) {
@@ -629,12 +636,24 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
           }
           analysis = typer.analyze(sql, m.name);
           // A plan item's own rows are never collected at run time; only a
-          // command's `returns` clause is. A write plan item with its own
+          // command's `returns` clause, or (ADR 0136) a DELETE item's own
+          // RETURNING reply, is. Any other write plan item with its own
           // RETURNING clause would silently drop that data, so refuse it
           // here. A select/values plan item is unaffected: it is a
           // documented, valid plan item on its own terms.
           if (!m.readStatements.has(key) && !isSelect(sql) && analysis.returnsRows) {
-            throw new BuildError("A plan item's RETURNING clause is discarded at run time. Move the read into the command's `returns` field instead.", sql);
+            const target = engine.accesses(sql).find((access) => access.action === "insert" || access.action === "update" || access.action === "delete");
+            if (target?.action !== "delete") {
+              throw new BuildError("A plan item's RETURNING clause is discarded at run time. Move the read into the command's `returns` field instead.", sql);
+            }
+            // A subquery in the RETURNING list that reads the delete's own
+            // target table sees the table mid-delete: SQLite documents that
+            // value as indeterminate (lang_returning.html section 2.2), so
+            // it is refused rather than typed as if it were stable.
+            if (target.table && returningReadsTargetTable(sql, target.table)) {
+              throw new BuildError(`the RETURNING clause reads ${quoteIdent(target.table)} again in a subquery, while a row of it is being deleted. Its value there is indeterminate. Read it before the DELETE instead.`, sql);
+            }
+            returningKeys.add(key);
           }
           checkBoundary(engine, m, owner, configDir, sql);
         } catch (error) {
@@ -646,7 +665,7 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
         }
         for (const b of analysis.brands) used.add(b);
         if (analysis.scans.length > 0) scans.push({ module: m.name, sql: key, tables: analysis.scans });
-        entries.push({ key, analysis });
+        entries.push({ key, analysis, returning: returningKeys.has(key) });
       }
       if (moduleFailed) continue;
       const typeMs = performance.now() - typeStarted;
@@ -906,6 +925,25 @@ function isReferencingKey(engine: Engine, m: Module, owner: Map<string, Module>,
   return engine.table(table).foreignKeys.some((f) => f.from === column && owner.get(f.table) === m);
 }
 
+// Whether a DELETE's own RETURNING list contains a subquery that reads the
+// delete's own target table again (lang_returning.html section 2.2: that
+// value is indeterminate, since rows are being removed as the statement
+// runs). aliasCandidates walks every FROM/JOIN/UPDATE/INSERT-target entry at
+// any depth inside the clause text, so a subquery nested inside another
+// subquery inside RETURNING is caught the same way a top-level one is. A
+// bare column reference in RETURNING (`returning id, value`) never appears
+// here: it has no FROM/JOIN entry of its own, only a subquery does.
+function returningReadsTargetTable(sql: string, table: string): boolean {
+  const clause = returningClause(sql);
+  if (!clause) return false;
+  for (const candidates of aliasCandidates(clause).values()) {
+    for (const candidate of candidates) {
+      if (candidate !== null && sqliteName(candidate) === sqliteName(table)) return true;
+    }
+  }
+  return false;
+}
+
 // Rules a plan must follow: one type per parameter name across the plan,
 // and changes() only right after the statement it measures. A parameter
 // the build could not place in one statement (SqlValue) takes the type,
@@ -921,8 +959,26 @@ function isReferencingKey(engine: Engine, m: Module, owner: Map<string, Module>,
 // command runs is typically typed by its own column already, and a plan
 // that still needs cross-module refinement can give the statement its own
 // type or split it, the existing remedy this function already offers.
-function checkCommands(m: Module, entries: readonly { key: string; analysis: Analysis }[], entriesByModule: ReadonlyMap<string, ReadonlyMap<string, Analysis>>, notes: BuildResult["notes"]): void {
+function checkCommands(m: Module, entries: readonly { key: string; analysis: Analysis; returning: boolean }[], entriesByModule: ReadonlyMap<string, ReadonlyMap<string, Analysis>>, notes: BuildResult["notes"]): void {
   const byKey = new Map(entries.map((e) => [e.key, e.analysis]));
+  const returningKeys = new Set(entries.filter((e) => e.returning).map((e) => e.key));
+  // ADR 0136: a command's row source is `returns`, or its own DELETE ...
+  // RETURNING plan item, never both, and never two such items. An included
+  // command's own row source is not a candidate here: ADR 0127 already
+  // drops an included item's `returns`, and an included row-source item
+  // follows the same rule (its rows run as an ordinary write and are
+  // dropped), so it never competes with the including command's own source.
+  for (const c of m.commands) {
+    const own = c.plan.filter((_, i) => !c.included.some((r) => i >= r.from && i < r.to));
+    const ownReturningKeys = own.map((item) => (typeof item === "string" ? item : item.predicate)).filter((key) => returningKeys.has(key));
+    const sources = [...(c.returns ? [c.returns] : []), ...ownReturningKeys];
+    if (sources.length > 1) {
+      throw withLocations(
+        new BuildError(`command ${m.name}.${c.name} has more than one row source: ${sources.join(", ")}. A command has at most one of \`returns\` or a DELETE ... RETURNING plan item.`),
+        [`${join(m.dir, "module.ts")}: command ${c.catalog}.${c.name}`, ...sources.flatMap((key) => m.statementUses.get(key) ?? [])],
+      );
+    }
+  }
   // A command whose included range's owner module itself failed to type
   // (schema or statement failure) is skipped here: that failure is already
   // in the build's own failures list, and this command's own checks would

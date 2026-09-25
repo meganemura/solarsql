@@ -43,6 +43,17 @@ export function catalogStatement(sql: string, role: "read" | "plan"): string {
       ? "A query or returns must be SELECT or VALUES, optionally preceded by WITH."
       : "A plan item must be SELECT, VALUES, INSERT, UPDATE, DELETE, or REPLACE, optionally preceded by WITH.", sql);
   }
+  // ADR 0045 already refuses transaction control in a plan item because the
+  // adapter must own the transaction that gives a command its rollback
+  // guarantee (ADR 0072). INSERT OR ROLLBACK and UPDATE OR ROLLBACK end that
+  // same transaction from inside a statement the adapter cannot classify or
+  // catch (ADR 0133), so they are refused here the same way.
+  if (role === "plan" && (isKeyword(body[at], "insert") || isKeyword(body[at], "update")) && isKeyword(body[at + 1], "or") && isKeyword(body[at + 2], "rollback")) {
+    throw new BuildError(
+      "A plan item cannot use OR ROLLBACK: the adapter owns the transaction. Leave the default (ABORT) to get a failure value, or use OR IGNORE to skip a row that fails a uniqueness, NOT NULL, or CHECK constraint (not a foreign key).",
+      sql,
+    );
+  }
   // Engine probes wrap SQL in subqueries; omit the terminator and trailing comments.
   return sql.slice(0, body.at(-1)!.end);
 }

@@ -13,7 +13,11 @@ export type GeneratedInput = {
   header?: string;
   ownBrands: readonly Brand[];
   importedBrands: readonly { specifier: string; names: readonly string[] }[];
-  entries: readonly { key: string; analysis: Analysis }[];
+  // `returning` marks a DELETE ... RETURNING plan item (ADR 0136): the one
+  // write whose reply the adapter keeps. commands() reads this flag off the
+  // generated map, by key, to find a command's row source without parsing
+  // SQL text, the same way it already finds a JSON column by `json`.
+  entries: readonly { key: string; analysis: Analysis; returning: boolean }[];
 };
 
 // The second line answers the question a reader has when a type is
@@ -51,22 +55,23 @@ export function emitGenerated(input: GeneratedInput): string {
   }
   if (input.ownBrands.length > 0) lines.push("");
   lines.push("export type Generated = {");
-  for (const { key, analysis } of input.entries) {
+  for (const { key, analysis, returning } of input.entries) {
     if (analysis.doc) lines.push(`  /** ${analysis.doc.replace(/\*\//g, "* /").replace(/\n/g, " ")} */`);
     lines.push(`  ${JSON.stringify(key)}: {`);
     lines.push(`    params: ${object(analysis.params.map((p) => `${ident(p.name)}: ${p.type}`))};`);
     lines.push(`    row: ${object(analysis.columns.map((c) => `${ident(c.name)}: ${c.type}`))};`);
+    if (returning) lines.push(`    returning: true;`);
     lines.push("  };");
   }
   lines.push("};");
   lines.push("");
   lines.push("export const generated: Meta<Generated> = {");
-  for (const { key, analysis } of input.entries) {
+  for (const { key, analysis, returning } of input.entries) {
     const params = analysis.params.map((p) => JSON.stringify(p.name)).join(", ");
     const encode = analysis.params.filter((p) => p.encode).map((p) => JSON.stringify(p.name)).join(", ");
     const json = analysis.columns.filter((c) => c.json).map((c) => JSON.stringify(c.name)).join(", ");
     const reads = analysis.reads.map((t) => JSON.stringify(t)).join(", ");
-    lines.push(`  ${JSON.stringify(key)}: { params: [${params}], encode: [${encode}], json: [${json}], reads: [${reads}] },`);
+    lines.push(`  ${JSON.stringify(key)}: { params: [${params}], encode: [${encode}], json: [${json}], reads: [${reads}]${returning ? ", returning: true" : ""} },`);
   }
   lines.push("};");
   lines.push("");

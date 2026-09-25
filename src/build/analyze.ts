@@ -44,7 +44,9 @@ function analyzeCatalog(engine: Engine, catalog: unknown, library: string) {
     if (["kind", "entries", "__proto__"].includes(name)) throw new BuildError(`Query name "${name}" is reserved. Choose another catalog name.`, sql);
     try {
       const statement = catalogStatement(sql, "read");
-      return { name, key: sql, analysis: typer.analyze(statement, "schema"), origins: engine.columns(statement), accesses: engine.accesses(statement) };
+      // A catalog entry is always role "read" (catalogStatement above), so
+      // it can never be the DELETE ... RETURNING shape ADR 0136 marks.
+      return { name, key: sql, analysis: typer.analyze(statement, "schema"), origins: engine.columns(statement), accesses: engine.accesses(statement), returning: false as const };
     } catch (e) {
       if (e instanceof BuildError) e.locations.push(`queries.${name}`);
       throw e;

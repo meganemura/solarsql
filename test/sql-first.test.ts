@@ -172,7 +172,7 @@ test("CHECK-derived generated rows compile with their stored SQLite types", asyn
     const sql = "select * from values_table";
     const analysis = new Typer(engine, new Map()).analyze(sql, "values");
     writeFileSync(join(dir, "generated.ts"), emitGenerated({
-      library: join(root, "src/index.ts"), module: "values", ownBrands: [], importedBrands: [], entries: [{ key: sql, analysis }],
+      library: join(root, "src/index.ts"), module: "values", ownBrands: [], importedBrands: [], entries: [{ key: sql, analysis, returning: false }],
     }));
     writeFileSync(join(dir, "consumer.ts"), `
 import type { Generated } from './generated.ts';

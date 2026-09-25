@@ -82,12 +82,23 @@ export function d1(binding: D1Like, options: AdapterOptions = {}): Database {
           const value = (results[i]?.meta as { changes?: unknown } | undefined)?.changes;
           return sum + (typeof value === "number" && Number.isFinite(value) ? value : 0);
         }, 0);
-        if (command.returns === null) return { ok: true, rows: [], changes } as CommandResult<C>;
-        // The returns reply sits right after the plan's own statements,
-        // whether or not a cleanup delete follows it.
-        const returnsReply = results[command.plan.length];
-        const rows = parseJson((returnsReply?.results ?? []) as Record<string, unknown>[], command.meta.returns!.json, "d1");
-        return { ok: true, rows, changes } as CommandResult<C>;
+        if (command.returns !== null) {
+          // The returns reply sits right after the plan's own statements,
+          // whether or not a cleanup delete follows it.
+          const returnsReply = results[command.plan.length];
+          const rows = parseJson((returnsReply?.results ?? []) as Record<string, unknown>[], command.meta.returns!.json, "d1");
+          return { ok: true, rows, changes } as CommandResult<C>;
+        }
+        // ADR 0136: with no `returns`, a marked DELETE ... RETURNING plan
+        // item is the command's row source. D1's batch() replies one
+        // D1Result per statement, in order, so that item's own reply
+        // already holds the rows the DELETE returned.
+        if (command.returningIndex !== null) {
+          const reply = results[command.returningIndex];
+          const rows = parseJson((reply?.results ?? []) as Record<string, unknown>[], command.meta.statements[command.returningIndex]!.json, "d1");
+          return { ok: true, rows, changes } as CommandResult<C>;
+        }
+        return { ok: true, rows: [], changes } as unknown as CommandResult<C>;
       }, (r) => outcomeOf(r as { ok: boolean; kind?: string; assert?: string })),
   };
 }

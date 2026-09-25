@@ -99,16 +99,23 @@ export function durable(storage: StorageLike, options: AdapterOptions = {}): Dat
         try {
           const out = storage.transactionSync(() => {
             let changes = 0;
+            let returningRows: Record<string, unknown>[] | null = null;
             const hasAssert = command.plan.some((item) => typeof item !== "string");
             command.plan.forEach((item, i) => {
               const sql = typeof item === "string" ? item : assertStatement(item.name, item.predicate, token);
               const before = totalChanges(storage, cursors);
               const cursor = storage.sql.exec(sql, ...bindValues(command.meta.statements[i]!, params));
-              cursor.toArray();
+              const data = cursor.toArray();
+              // ADR 0136: with no `returns`, a marked DELETE ... RETURNING
+              // plan item is the command's row source. Its own cursor
+              // already holds the rows the DELETE returned; parsed here,
+              // where the JSON column names of that one statement are at
+              // hand, instead of re-reading the cursor after the loop.
+              if (i === command.returningIndex) returningRows = parseJson(data, command.meta.statements[i]!.json);
               cursors.push(cursor);
               if (typeof item === "string") changes += totalChanges(storage, cursors) - before;
             });
-            const resultRows = command.returns === null ? [] : rows(command.returns, command.meta.returns!, params, cursors);
+            const resultRows = command.returns !== null ? rows(command.returns, command.meta.returns!, params, cursors) : (returningRows ?? []);
             // A passing assert's row has no further use once the plan and
             // its returns clause have read what they need; deleting it
             // here, after returns and still inside this transaction, keeps

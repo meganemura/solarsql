@@ -36,6 +36,35 @@ test("assert predicate cannot append a statement", () => project(`export const c
 for (const sql of ["insert into items (id, value) values ('a','b') returning id", "update items set value='x' where id='a' returning id"]) {
   test(`plan refuses ${sql}`, () => project(`export const c = commands(generated, { bad: { plan: [${JSON.stringify(sql)}] } });`, /RETURNING clause is discarded/));
 }
+
+test("plan allows a DELETE ... RETURNING item (ADR 0136)", () => project(`export const c = commands(generated, { good: { plan: ["delete from items where id = :id returning id, value"] } });`, false));
+test("plan allows a WITH ... DELETE ... RETURNING item", () => project(`export const c = commands(generated, { good: { plan: ["with x as (select 1) delete from items where id = :id returning id, value"] } });`, false));
+test("a command with `returns` and a DELETE ... RETURNING item refuses, naming both", () => project(`export const c = commands(generated, { bad: {
+  plan: ["delete from items where id = :id returning id, value"],
+  returns: "select id from items",
+} });`, /more than one row source.*select id from items.*delete from items where id = :id returning id, value/s));
+test("a command with two DELETE ... RETURNING items refuses, naming both", () => project(`export const c = commands(generated, { bad: { plan: [
+  "delete from items where id = :id returning id",
+  "delete from items where value = :value returning id",
+] } });`, /more than one row source.*delete from items where id = :id returning id.*delete from items where value = :value returning id/s));
+test("a RETURNING subquery on the DELETE's own target table refuses", () => project(`export const c = commands(generated, { bad: { plan: ["delete from items where id = :id returning id, cast((select count(*) from items) as integer)"] } });`, /indeterminate/));
+
+for (const sql of [
+  "insert or rollback into items (id, value) values ('a','b')",
+  "update or rollback items set value='x'",
+  "with x as (select 1) insert or rollback into items (id, value) values ('a','b')",
+]) {
+  test(`plan refuses ${sql}`, () => project(`export const c = commands(generated, { bad: { plan: [${JSON.stringify(sql)}] } });`, /OR ROLLBACK/));
+}
+for (const sql of [
+  "insert or ignore into items (id, value) values ('a','b')",
+  "insert or replace into items (id, value) values ('a','b')",
+  "insert or abort into items (id, value) values ('a','b')",
+  "insert or fail into items (id, value) values ('a','b')",
+  "update or ignore items set value='x'",
+]) {
+  test(`plan still allows ${sql}`, () => project(`export const c = commands(generated, { good: { plan: [${JSON.stringify(sql)}] } });`, false));
+}
 test("plan still allows a bare select with output columns", () => project(`export const c = commands(generated, { good: { plan: ["select id from items"] } });`, false));
 test("CTEs, read plans, and quoted or commented semicolons remain valid", () => project(`
 export const q = queries(generated, { good: "with x as (select id from items) select id from x; -- trailing ;" });
