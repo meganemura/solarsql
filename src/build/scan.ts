@@ -626,18 +626,30 @@ export function returningClause(sql: string): string | null {
 //   in_json: `<column> in (select value from json_each(:p))`, an array
 //   rows_json: `insert into t (c1, c2) select value ->> 'k1', value ->> 'k2' from json_each(:p)`, an array of objects
 //   json_each: `json_each(:p)` anywhere else, an array. Each `value ->> 'key'`
-//            in the same scope names a key, typed by the column it is compared
-//            with or set into. A bare `value` in an INSERT ... SELECT names the
-//            column its position gets.
+//            in the same scope, qualified with this json_each's own alias when
+//            the FROM list holds more than one table-valued function, names a
+//            key, typed by the column it is compared with or set into. A bare
+//            `value` in an INSERT ... SELECT names the column its position
+//            gets. A second json_each chained off this one's own element
+//            (`json_each(:orders) o, json_each(o.value -> 'lines') l`) names a
+//            nested key (here "lines"), typed as an array of the chained
+//            json_each's own keys, found the same way.
 //   one_of:  `case :p when 'a' ... when 'b'`, a union of the literals
 //   number:  `limit :p`, `offset :p`
+export type JsonKeyRef =
+  // A comparison, SET, or row-value site names the column directly.
+  | { alias: string | null; column: string }
+  // A key an INSERT ... SELECT's own column list names by position.
+  | { table: string; column: string }
+  // A key that is itself a chained json_each's own array of keys.
+  | { nested: { key: string; ref: JsonKeyRef | null }[] };
 export type ParamSite =
   | { kind: "compare"; alias: string | null; column: string }
   | { kind: "set"; column: string }
   | { kind: "insert"; table: string; column: string }
   | { kind: "in_json"; alias: string | null; column: string }
   | { kind: "rows_json"; table: string; keys: { key: string; column: string }[] }
-  | { kind: "json_each"; keys: { key: string; ref: { alias: string | null; column: string } | null }[]; scalar: { table: string; column: string } | null }
+  | { kind: "json_each"; keys: { key: string; ref: JsonKeyRef | null }[]; scalar: { table: string; column: string } | null }
   | { kind: "one_of"; literals: string[] }
   | { kind: "number" }
   // `:p is null`: the optional-filter idiom, so the parameter allows null.
@@ -1043,6 +1055,113 @@ function insertTarget(t: readonly Token[], i: number): number | null {
   return null;
 }
 
+// A stop word that can follow a table-valued function call without naming
+// an alias -- the same list walkAliases' own entry() checks, kept separate
+// since that one also carries FROM/JOIN-only words (e.g. "from" itself)
+// this single-call lookup never needs to skip past.
+const functionAliasStops = new Set(["on", "where", "group", "order", "left", "right", "inner", "outer", "cross", "natural", "join", "using", "limit", "full", "union", "except", "intersect", "having", "window", "set", "returning", "indexed", "not", "values", "from"]);
+
+// The alias a table-valued function call is known by: an explicit `AS a`,
+// a bare trailing identifier, or (unaliased) the function's own name --
+// SQLite's own default, which a chained call's `<name>.value` can still
+// qualify with. `close` is the index of the call's closing ")".
+function functionCallAlias(t: readonly Token[], close: number, fallback: string): string {
+  const j = close + 1;
+  if (isKeyword(t[j], "as") && t[j + 1]) return unquote(t[j + 1]!.text);
+  if (t[j] && t[j]!.type === "ident" && !functionAliasStops.has(t[j]!.text.toLowerCase())) return unquote(t[j]!.text);
+  return fallback;
+}
+
+// Every json_each/json_tree call whose sole argument reads an earlier
+// source's own array element by key (`<alias>.value -> 'k'` or `->>`),
+// paired with the alias this call is itself known by -- the edge of the
+// nested-json_each tree jsonKeys walks to type a chained array parameter
+// (`json_each(:orders) o, json_each(o.value -> 'lines') l`).
+function chainedJsonSources(t: readonly Token[]): { alias: string; parentAlias: string; parentKey: string }[] {
+  const out: { alias: string; parentAlias: string; parentKey: string }[] = [];
+  for (let i = 0; i < t.length; i++) {
+    if (!(isKeyword(t[i], "json_each") || isKeyword(t[i], "json_tree")) || t[i + 1]?.text !== "(") continue;
+    const open = i + 1;
+    if (
+      t[open + 1]?.type === "ident" && t[open + 2]?.text === "." && isKeyword(t[open + 3], "value") &&
+      (t[open + 4]?.text === "->" || t[open + 4]?.text === "->>") && t[open + 5]?.type === "string" && t[open + 6]?.text === ")"
+    ) {
+      out.push({
+        alias: functionCallAlias(t, open + 6, unquote(t[i]!.text)),
+        parentAlias: unquote(t[open + 1]!.text),
+        parentKey: t[open + 5]!.text.slice(1, -1).replace(/''/g, "'"),
+      });
+    }
+  }
+  return out;
+}
+
+// `insert into t (c1, c2, ...) select e1, e2, ... from ...`'s own column
+// list and select-list item ranges, in FROM-item alias order irrelevant --
+// only the positional pairing between an item and the column at the same
+// position matters. Null when the statement is not this shape.
+function insertSelectShape(t: readonly Token[]): { table: string; columns: string[]; items: { start: number; end: number }[] } | null {
+  for (let i = 0; i < t.length; i++) {
+    const target = insertTarget(t, i);
+    if (target === null) continue;
+    const table = unquote(t[target]!.text);
+    const open = target + 1;
+    if (t[open]?.text !== "(") continue;
+    const depth = t[open]!.depth;
+    let close = open + 1;
+    while (close < t.length && !(t[close]!.depth === depth && t[close]!.text === ")")) close++;
+    if (close >= t.length) continue;
+    const columns = tokenRanges(t, open + 1, close).map((r) => unquote(t[r.start]!.text));
+    const k = close + 1;
+    if (!isKeyword(t[k], "select")) continue;
+    let itemsEnd = t.length;
+    for (let m = k + 1; m < t.length; m++) {
+      if (t[m]!.depth === t[k]!.depth && isKeyword(t[m], "from")) { itemsEnd = m; break; }
+    }
+    return { table, columns, items: tokenRanges(t, k + 1, itemsEnd) };
+  }
+  return null;
+}
+
+// The insert-select shape's own select-list items that read `alias.value
+// ->> 'key'` (or, when alias is null, the bare, unqualified `value ->> 'key'`
+// of a statement with a single, unaliased json_each), each paired with the
+// insert column at the same position.
+function selectListKeysForAlias(t: readonly Token[], shape: NonNullable<ReturnType<typeof insertSelectShape>>, alias: string | null): { key: string; column: string }[] {
+  const out: { key: string; column: string }[] = [];
+  shape.items.forEach((item, index) => {
+    const column = shape.columns[index];
+    if (!column) return;
+    const width = item.end - item.start;
+    if (alias === null && width === 3 && isKeyword(t[item.start], "value") && t[item.start + 1]!.text === "->>" && t[item.start + 2]!.type === "string") {
+      out.push({ key: t[item.start + 2]!.text.slice(1, -1).replace(/''/g, "'"), column });
+    } else if (
+      alias !== null && width === 5 && t[item.start]!.type === "ident" && unquote(t[item.start]!.text).toLowerCase() === alias.toLowerCase() &&
+      t[item.start + 1]!.text === "." && isKeyword(t[item.start + 2], "value") && t[item.start + 3]!.text === "->>" && t[item.start + 4]!.type === "string"
+    ) {
+      out.push({ key: t[item.start + 4]!.text.slice(1, -1).replace(/''/g, "'"), column });
+    }
+  });
+  return out;
+}
+
+// A chained json_each's own key set: the insert-select shape's own columns
+// for its alias, plus, recursively, a further json_each chained off it.
+// `seen` guards a self-referential alias, which well-formed SQL never
+// produces, from looping forever.
+function nestedKeysForAlias(t: readonly Token[], alias: string, shape: ReturnType<typeof insertSelectShape>, seen = new Set<string>()): { key: string; ref: JsonKeyRef | null }[] {
+  const lower = alias.toLowerCase();
+  if (seen.has(lower)) return [];
+  seen.add(lower);
+  const keys = new Map<string, JsonKeyRef | null>();
+  if (shape) for (const k of selectListKeysForAlias(t, shape, alias)) keys.set(k.key, { table: shape.table, column: k.column });
+  for (const c of chainedJsonSources(t)) {
+    if (c.parentAlias.toLowerCase() !== lower) continue;
+    keys.set(c.parentKey, { nested: nestedKeysForAlias(t, c.alias, shape, seen) });
+  }
+  return [...keys].map(([key, ref]) => ({ key, ref }));
+}
+
 // The `value ->> 'key'` uses in the scope of the json_each whose parameter
 // sits at index p: the parenthesized region around the json_each call, or
 // the whole statement. Each key carries the column it is compared with
@@ -1050,8 +1169,17 @@ function insertTarget(t: readonly Token[], i: number): number | null {
 // or listed for (`c in (select value ->> 'k' ...`), when one is written --
 // or, for the two row-value shapes below, when it sits at a tuple position
 // that pairs with a column at the same position, since none of those three
-// per-occurrence checks ever sees a "(" or "," neighbor.
-function jsonKeys(t: readonly Token[], p: number): { key: string; ref: { alias: string | null; column: string } | null }[] {
+// per-occurrence checks ever sees a "(" or "," neighbor. A statement whose
+// FROM list holds more than one table-valued function needs a fourth check
+// a plain occurrence scan cannot make on its own: SQLite requires every
+// `value` there to be alias-qualified (a bare one is ambiguous and refuses
+// to prepare), so an occurrence qualified with a different json_each's own
+// alias belongs to that one, not this one, and is skipped. This json_each's
+// own alias also gathers an insert-select's own column-position keys (own
+// alias) and a chained json_each's own key set, nested under the key that
+// names it (chainedJsonSources, nestedKeysForAlias), the same way.
+function jsonKeys(t: readonly Token[], p: number): { key: string; ref: JsonKeyRef | null }[] {
+  const ownAlias = functionCallAlias(t, p + 1, t[p - 2]!.text);
   const scope = t[p - 2]!.depth;
   let from = p;
   while (from > 0 && !(t[from]!.text === "(" && t[from]!.depth === scope - 1)) from--;
@@ -1130,25 +1258,46 @@ function jsonKeys(t: readonly Token[], p: number): { key: string; ref: { alias: 
     }
   }
 
-  const keys = new Map<string, { alias: string | null; column: string } | null>();
+  const keys = new Map<string, JsonKeyRef | null>();
   for (let k = from; k < to; k++) {
     if (!isKeyword(t[k], "value") || t[k + 1]?.text !== "->>" || t[k + 2]?.type !== "string") continue;
+    // A qualified occurrence (`x.value ->> 'k'`) belongs to the json_each
+    // known as `x`; skip it here unless that is this call's own alias. An
+    // unqualified occurrence has no other candidate (SQLite refuses a bare
+    // `value` when more than one is in scope), so it always belongs here.
+    const qualified = t[k - 1]?.text === "." && t[k - 2]?.type === "ident";
+    if (qualified && unquote(t[k - 2]!.text).toLowerCase() !== ownAlias.toLowerCase()) continue;
+    const valueStart = qualified ? k - 2 : k;
     const key = t[k + 2]!.text.slice(1, -1).replace(/''/g, "'");
     let ref: { alias: string | null; column: string } | null = null;
-    const before = t[k - 1];
+    const before = t[valueStart - 1];
     const after = t[k + 3];
     if (positionRefs.has(k)) {
       ref = positionRefs.get(k) ?? null;
     } else if (before && compareOps.has(before.text.toLowerCase())) {
-      const r = refAt(k - 2, -1);
-      ref = r ?? (t[k - 2]?.text === "." ? refAt(k - 2, -1) : null);
+      ref = refAt(valueStart - 2, -1);
     } else if (after && compareOps.has(after.text.toLowerCase())) {
       ref = refAt(k + 4, 1);
-    } else if (isKeyword(before, "select") && t[k - 2]?.text === "(" && (t[k - 3]?.text === "=" || isKeyword(t[k - 3], "in"))) {
-      ref = refAt(k - 4, -1);
+    } else if (isKeyword(before, "select") && t[valueStart - 2]?.text === "(" && (t[valueStart - 3]?.text === "=" || isKeyword(t[valueStart - 3], "in"))) {
+      ref = refAt(valueStart - 4, -1);
     }
     if (!keys.has(key) || (keys.get(key) === null && ref !== null)) keys.set(key, ref);
   }
+
+  // This json_each's own insert-select column-position keys, and any
+  // json_each chained off its own element, nested under the key that names
+  // it. A key either scan already found (a comparison, a SET) keeps that
+  // ref; only an absent or unresolved (null) one is filled in.
+  const shape = insertSelectShape(t);
+  if (shape) for (const k of selectListKeysForAlias(t, shape, ownAlias)) {
+    const ref: JsonKeyRef = { table: shape.table, column: k.column };
+    if (!keys.has(k.key) || keys.get(k.key) === null) keys.set(k.key, ref);
+  }
+  for (const c of chainedJsonSources(t)) {
+    if (c.parentAlias.toLowerCase() !== ownAlias.toLowerCase()) continue;
+    keys.set(c.parentKey, { nested: nestedKeysForAlias(t, c.alias, shape) });
+  }
+
   return [...keys].map(([key, ref]) => ({ key, ref }));
 }
 

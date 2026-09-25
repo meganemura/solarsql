@@ -8,7 +8,7 @@
 import { onEqualities, queryScope, querySources, sqliteName, unionType, unionMembers, type Cte, type Source } from "./scope.ts";
 import { GUARD_TABLE } from "../runtime/plan.ts";
 import type { ColumnFact, Engine, OutputColumn, TableFact } from "./facts.ts";
-import { aliasMap, columnRef, findCall, isKeyword, leadingComment, namedParams, nonNullFilterAlias, paramSites, quoteIdent, returningClause, selectItems, significant, splitAtCommas, tokenize, type Token, unconditionalMatchAliases, unquote } from "./scan.ts";
+import { aliasMap, columnRef, findCall, isKeyword, leadingComment, namedParams, nonNullFilterAlias, paramSites, quoteIdent, returningClause, selectItems, significant, splitAtCommas, tokenize, type JsonKeyRef, type Token, unconditionalMatchAliases, unquote } from "./scan.ts";
 
 export class BuildError extends Error {
   readonly sql: string | undefined;
@@ -417,19 +417,20 @@ export class Typer {
     return null;
   }
 
-  // A second, unmet symptom of the same rule: a nested `json_each(:orders)
-  // o, json_each(o.value -> 'lines') l` (one json_each reading a bound
-  // parameter's array, a second reading `.value` of the first's own
-  // element) now prepares, since sourceRows (above) can type the second
-  // source's own output columns. But its parameter type still comes from
-  // scan.ts's jsonKeys, which scans the whole SQL text for `alias.value ->>
-  // 'k'` with no per-alias scope: every such key it finds, from every
-  // json_each in the statement, lands on the one bound parameter, so
-  // `:orders` would type with sku/qty/price as its own top-level keys
-  // instead of nested under `lines` (measured on a patched copy with only
-  // sourceRows's fix: readonly { id, sku, qty, price }[]). Fixing that scope
-  // gap is scan.ts's own change (out of this file's ownership; tracked as a
-  // follow-up), so this refuses the shape instead of typing it wrong.
+  // A second symptom of the same rule, now mostly resolved: a nested
+  // `json_each(:orders) o, json_each(o.value -> 'lines') l` (one json_each
+  // reading a bound parameter's array, a second reading `.value` of the
+  // first's own element) prepares, since sourceRows (above) types the second
+  // source's own output columns, and now types its keys nested under the
+  // key that names them, since scan.ts's jsonKeys tracks which json_each
+  // alias owns which key (per-alias scoping) and which key chains to a
+  // further json_each. That covers a table-valued function's argument
+  // reading a sole `<alias>.value -> 'key'` or `->> 'key'`, alone. A
+  // function argument scan.ts does not parse this way -- a JSON path
+  // argument (`json_each(o.value, '$.lines')`), or any other expression
+  // that still reads a parameter-bound json_each's own element -- would
+  // type its keys wrong the same way the whole shape once did, so this
+  // still refuses those, naming the workaround.
   private chainedJsonEachKeyRefusal(sql: string, names: readonly string[]): string | null {
     const params = new Set(names);
     let sources: ReturnType<typeof querySources>;
@@ -440,12 +441,20 @@ export class Typer {
       const bound = /^\s*(?:json_each|json_tree)\s*\(\s*:([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*$/i.exec(source.functionSql);
       if (bound && params.has(bound[1]!)) { paramAliases.add(sqliteName(source.alias)); continue; }
       const tokens = significant(tokenize(source.functionSql));
+      // scan.ts's chainedJsonSources nests exactly this shape: a call with
+      // a sole argument reading `<alias>.value -> 'key'` or `->> 'key'`.
+      const arg = tokens.length >= 3 && tokens[0]!.type === "ident" && tokens[1]!.text === "(" && tokens[tokens.length - 1]!.text === ")"
+        ? tokens.slice(2, -1)
+        : null;
+      const chained = arg !== null && arg.length === 5 && arg[0]!.type === "ident" && arg[1]!.text === "." &&
+        isKeyword(arg[2], "value") && (arg[3]!.text === "->" || arg[3]!.text === "->>") && arg[4]!.type === "string";
+      if (chained && paramAliases.has(sqliteName(unquote(arg![0]!.text)))) continue;
       for (let j = 0; j + 2 < tokens.length; j++) {
         if (tokens[j]!.type !== "ident" || tokens[j + 1]!.text !== "." || tokens[j + 2]!.type !== "ident") continue;
         if (sqliteName(unquote(tokens[j + 2]!.text)) !== "value") continue;
         const alias = sqliteName(unquote(tokens[j]!.text));
         if (paramAliases.has(alias)) {
-          return `json_each/json_tree ${quoteIdent(source.alias)} reads ${unquote(tokens[j]!.text)}.value, the element of a json_each/json_tree bound to a named parameter. A key read from ${quoteIdent(source.alias)}'s own rows (${unquote(tokens[j]!.text)}.value ->> '...') cannot yet be typed as nested under the parameter's element; every such key would land on the parameter's own top level instead. Give the child rows a second array parameter instead, with the parent id repeated on each child, and read it from its own json_each.`;
+          return `json_each/json_tree ${quoteIdent(source.alias)} reads ${unquote(tokens[j]!.text)}.value, the element of a json_each/json_tree bound to a named parameter. A key read from ${quoteIdent(source.alias)}'s own rows (${unquote(tokens[j]!.text)}.value ->> '...') can only be typed as nested under the parameter's element when it is that json_each's own sole argument (\`json_each(${unquote(tokens[j]!.text)}.value -> '...')\`), not a JSON path argument or any other expression. Give the child rows a second array parameter instead, with the parent id repeated on each child, and read it from its own json_each.`;
         }
       }
     }
@@ -1088,6 +1097,23 @@ export class Typer {
       if (topLevelNullable === undefined) topLevelNullable = this.sourceContext(sql, topLevelEnvironment, new Set(), note).context.nullable;
       return topLevelNullable.has(sqliteName(a)) ? { ...r, nullable: true } : r;
     };
+    // A json_each key's ref names its type one of three ways: a column
+    // reference resolved through this site's own query scope (ofRef), an
+    // insert-select's own column by table and name (rows_json's own
+    // shape, reused here since a chained json_each's outer key can carry
+    // either), or, for a key that is itself a chained json_each's own
+    // array of keys, the same recursively -- one array of one object type
+    // per level, matching how a nested JSON array is written.
+    const jsonKeyType = (ref: JsonKeyRef | null): string => {
+      if (!ref) return "SqlValue";
+      if ("nested" in ref) {
+        const fields = ref.nested.map((k) => `${JSON.stringify(k.key)}: ${jsonKeyType(k.ref)}`);
+        return fields.length > 0 ? `readonly { ${fields.join("; ")} }[]` : "readonly SqlValue[]";
+      }
+      if ("table" in ref) return withNull(this.column(ref.table, ref.column, sql));
+      const e = ofRef(ref.alias, ref.column);
+      return e ? withNull(e) : "SqlValue";
+    };
     for (const site of sites) {
       context = this.parameterContext(sql, site.offset ?? 0, note);
       let r: Resolved | null = null;
@@ -1114,8 +1140,7 @@ export class Typer {
         encode = true;
         jsonSites++;
         for (const k of site.keys) {
-          const e = k.ref ? ofRef(k.ref.alias, k.ref.column) : null;
-          const type = e ? withNull(e) : "SqlValue";
+          const type = jsonKeyType(k.ref);
           if (!jsonKeys.has(k.key) || (jsonKeys.get(k.key) === "SqlValue" && type !== "SqlValue")) jsonKeys.set(k.key, type);
         }
         if (site.scalar) jsonScalar = withNull(this.column(site.scalar.table, site.scalar.column, sql));

@@ -163,7 +163,7 @@ Shared SQL reports all its catalog locations.
 | `missing parameter` / `unexpected parameter` | fix `--params`' JSON object to match the query's own declared keys (ADR 0088) |
 | `--database is required` / `--database <file>:` | pass `--database <file.sqlite>`; the second form also carries the engine's own open failure |
 | `SQLite runs a FROM-clause subquery as its own closed scope` | move the condition into a JOIN's own ON clause, or write it as a scalar or EXISTS subquery in the SELECT list or WHERE clause, either of which SQLite does correlate to the enclosing query |
-| `the element of a json_each/json_tree bound to a named parameter` | give the child rows a second array parameter instead, with the parent id repeated on each child, and read it from its own json_each |
+| `the element of a json_each/json_tree bound to a named parameter` | a table-valued function's argument may only read a sole `<alias>.value -> 'key'` (or `->>`) to chain, typed as a nested array under that key; a JSON path argument, a second argument, or any other expression cannot yet, so give the child rows a second array parameter instead, with the parent id repeated on each child, and read it from its own json_each |
 | `is locked:` | another connection held the database past the busy-timeout wait; retry the command |
 | `An assert statement binds a run-time token as its own value, leaving 99 slots for the predicate` | give the assert's predicate 99 or fewer named parameters |
 

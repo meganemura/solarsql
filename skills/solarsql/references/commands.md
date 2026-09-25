@@ -151,6 +151,20 @@ When one statement must serve commands that need incompatible types, give the st
 
 Many rows come in one array parameter and one statement: `insert ... select ... from json_each(:rows)` for inserts, `update ... where id in (select value ->> 'id' from json_each(:rows))` for updates, and `changes() = json_array_length(:rows)` as the assert that every id was known.
 
+### Nested rows: many children for many parents, in one statement
+
+`json_each(:orders) o, json_each(o.value -> 'lines') l` reads a second array nested under each element of the first: `o.value -> 'lines'` is `o`'s own `lines` key, read as a JSON array in its own right. Each `alias.value ->> 'key'` in the SELECT list is keyed by the insert column at the same position, so both levels type from the target table's own columns:
+
+```ts
+plan: [
+  `insert into order_lines (id, order_id, sku, qty, price)
+   select l.value ->> 'id', o.value ->> 'id', l.value ->> 'sku', l.value ->> 'qty', l.value ->> 'price'
+   from json_each(:orders) o, json_each(o.value -> 'lines') l`,
+],
+```
+
+types `:orders` `readonly { id: OrdersId; lines: readonly { id: OrderLinesId; sku: string; qty: number; price: number | null }[] }[]`. The chained json_each's own argument must be a sole `<alias>.value -> 'key'` (or `->>`); a JSON path argument, a second argument, or any other expression cannot yet type this way -- give the child rows a second, flattened array parameter instead, with the parent id repeated on each child.
+
 ### An idempotent bulk upsert needs `where true`
 
 ```ts

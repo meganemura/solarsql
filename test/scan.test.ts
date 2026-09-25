@@ -206,6 +206,33 @@ describe("shapes", () => {
     assert.deepEqual(scalars.get("ids"), [{ kind: "json_each", keys: [], scalar: { table: "tags", column: "id" } }]);
   });
 
+  // A FROM list with two table-valued functions requires every `value` to
+  // be alias-qualified (SQLite refuses a bare, ambiguous one), so a key
+  // qualified with one json_each's own alias must land on that one only,
+  // not on a sibling json_each bound to a different parameter -- and a
+  // second json_each chained off the first's own element (`o.value ->
+  // 'lines'`) must nest its own keys under the key that names it, found
+  // from the insert's own column list by position.
+  test("paramSites nests a chained json_each's own keys under the key that chains to it, scoped by alias", () => {
+    const sql = `insert into order_lines (id, order_id, sku, qty, price)
+      select l.value ->> 'id', o.value ->> 'id', l.value ->> 'sku', l.value ->> 'qty', l.value ->> 'price'
+      from json_each(:orders) o, json_each(o.value -> 'lines') l`;
+    const sites = paramSites(sql);
+    assert.deepEqual(sites.get("orders"), [{
+      kind: "json_each",
+      keys: [
+        { key: "id", ref: { table: "order_lines", column: "order_id" } },
+        { key: "lines", ref: { nested: [
+          { key: "id", ref: { table: "order_lines", column: "id" } },
+          { key: "sku", ref: { table: "order_lines", column: "sku" } },
+          { key: "qty", ref: { table: "order_lines", column: "qty" } },
+          { key: "price", ref: { table: "order_lines", column: "price" } },
+        ] } },
+      ],
+      scalar: null,
+    }]);
+  });
+
   test("paramSites attributes every row of a multi-row VALUES insert to its column, not only the first row's", () => {
     hegel.test((tc) => {
       const columns = tc.draw(gs.arrays(ident, { minSize: 2, maxSize: 4, unique: true }));

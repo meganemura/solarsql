@@ -518,16 +518,35 @@ describe("Typer.analyze", () => {
     );
   });
 
-  // A second symptom of the same rule: json_each(o.tags) (an earlier FROM
-  // source's own column) now prepares (sourceRows, typegen.ts), but a
-  // json_each reading another json_each's own `.value` still cannot type
-  // its keys as nested under the bound parameter's element -- scan.ts's
-  // jsonKeys has no per-alias scope (out of this file's ownership) -- so
-  // this refuses that one shape instead of typing it wrong.
-  test("a json_each reading another json_each's own element is refused, naming the workaround", () => {
+  // A second symptom of the same rule, now resolved: json_each(o.tags) (an
+  // earlier FROM source's own column) prepares (sourceRows, typegen.ts),
+  // and a json_each reading another json_each's own `.value` now types its
+  // keys nested under the key that names them (scan.ts's jsonKeys tracks
+  // which json_each alias owns which key, and which key chains to a
+  // further json_each). The nested command inserts one order_lines row per
+  // element of each order's own "lines" array, keyed off the parent's own
+  // "id".
+  test("a json_each chained off another json_each's own element types its keys nested under the key that chains to it", () => {
     const sql = `insert into order_lines (id, order_id, sku, qty, price)
       select l.value ->> 'id', o.value ->> 'id', l.value ->> 'sku', l.value ->> 'qty', l.value ->> 'price'
       from json_each(:orders) o, json_each(o.value -> 'lines') l`;
+    const a = t.analyze(sql, "orders");
+    assert.deepEqual(a.params, [{
+      name: "orders",
+      type: 'readonly { "id": OrdersId; "lines": readonly { "id": OrderLinesId; "sku": string; "qty": number; "price": number | null }[] }[]',
+      encode: true,
+    }]);
+  });
+
+  // The one function-call shape scan.ts's own jsonKeys nests: a sole
+  // argument reading `<alias>.value -> 'key'` or `->> 'key'`. A JSON path
+  // argument still reads a parameter-bound json_each's own element the
+  // same way, but is not that one shape, so it is still refused, naming
+  // the workaround.
+  test("a json_each reading another json_each's own element through a JSON path argument is still refused, naming the workaround", () => {
+    const sql = `insert into order_lines (id, order_id, sku, qty, price)
+      select l.value ->> 'id', o.value ->> 'id', l.value ->> 'sku', l.value ->> 'qty', l.value ->> 'price'
+      from json_each(:orders) o, json_each(o.value, '$.lines') l`;
     assert.throws(() => t.analyze(sql, "orders"), (e: unknown) => e instanceof BuildError && /second array parameter/.test(e.message));
   });
 
