@@ -51,5 +51,6 @@ If you want to cite an internal document, write its substance in place instead.
 - `solarsql init <module>` starts a project; it needs the installed package, so `test/slow/pack.test.ts` is where it runs.
 - `SOLARSQL_REMOTE_URL=<the Worker's URL> node --test test/remote.test.ts` runs the example's steps against a deployed Worker, on remote D1 and on a Durable Object. `npm test` skips it. The README says how to deploy; `example/wrangler.jsonc` is gitignored because it names one account's database.
 - `node spike/<file>.ts` runs one experiment and prints the measurements that `docs/v0-measurements.md`, `docs/v1-measurements.md`, and `docs/v5-measurements.md` cite.
+- `npm run test:mutation` runs StrykerJS across all of `src/`. Incremental mode keeps its result in `reports/`. A full run takes hours, so CI does not run it. The configuration's judgment calls are in ADR 0141.
 
 The `spike/` directory holds the experiments. They are evidence for the ADRs.

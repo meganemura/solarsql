@@ -153,6 +153,7 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0138](adr/0138-a-table-valued-function-can-read-an-earlier-from-source-a-from-clause-subquery-cannot.md) | A table-valued function can read an earlier FROM source; a FROM-clause subquery cannot |
 | [0139](adr/0139-rehearsal-reports-a-primary-key-row-diff.md) | Rehearsal reports rows inserted, updated, and deleted, by primary key |
 | [0140](adr/0140-file-backed-reads-wait-out-a-held-sqlite-lock.md) | A file-backed read-only open waits out a held SQLite lock |
+| [0141](adr/0141-mutation-testing-with-stryker-and-the-tap-runner.md) | Mutation testing runs on StrykerJS with the tap runner |
 
 ## Measurements
 
