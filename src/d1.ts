@@ -8,7 +8,7 @@
 // runtime/plan.ts defines. Types come from the generated file through the
 // query and command objects.
 import type { AdapterOptions, BatchRows, Command, CommandResult, Database, Entry, GeneratedMap, ParamsArg, PlanShape, Query, Read, Row, SqlValue, StatementMeta } from "./index.ts";
-import { GUARD_CLEANUP, assertFailure, assertStatement, assertToken, bindValues, constraintFailure, engineMeta, observed, outcomeOf, parseJson, validateParams } from "./runtime/plan.ts";
+import { GUARD_CLEANUP, assertBindValues, assertFailure, assertStatement, assertToken, bindValues, constraintFailure, d1StatementRows, engineMeta, observed, outcomeOf, parseJson, validateParams } from "./runtime/plan.ts";
 
 // The part of the D1 binding this adapter uses. Structural, so no type
 // package is needed.
@@ -30,7 +30,7 @@ export function d1(binding: D1Like, options: AdapterOptions = {}): Database {
       const params=(args[0] ?? {}) as Record<string, unknown>;
       validateParams([query.meta], params, `query ${query.name}`);
       const result = await prepared(query.sql, query.meta, params).all();
-      report(engineMeta([result]));
+      report({ meta: engineMeta([result]) });
       return parseJson<Row<Q> & Record<string, unknown>>((result.results ?? []) as Record<string, unknown>[], query.meta.json, "d1");
     }, () => "ok");
 
@@ -44,7 +44,7 @@ export function d1(binding: D1Like, options: AdapterOptions = {}): Database {
       observed(options.observe, "batch", reads.map((r) => r.query.name).join("+"), async (report) => {
         for (const item of reads) validateParams([item.query.meta], item.params, `query ${item.query.name}`);
         const results = await binding.batch(reads.map((r) => prepared(r.query.sql, r.query.meta, r.params)));
-        report(engineMeta(results));
+        report({ meta: engineMeta(results), statements: d1StatementRows(results) });
         return reads.map((r, i) => parseJson((results[i]?.results ?? []) as Record<string, unknown>[], r.query.meta.json, "d1")) as unknown as BatchRows<R>;
       }, () => "ok"),
     run: <C extends Command<GeneratedMap, PlanShape<GeneratedMap>>>(command: C, ...args: ParamsArg<C>): Promise<CommandResult<C>> =>
@@ -54,8 +54,13 @@ export function d1(binding: D1Like, options: AdapterOptions = {}): Database {
         const token = assertToken();
         const hasAssert = command.plan.some((item) => typeof item !== "string");
         const statements = command.plan.map((item, i) => {
-          const sql = typeof item === "string" ? item : assertStatement(item.name, item.predicate, token);
-          return prepared(sql, command.meta.statements[i]!, params);
+          const meta = command.meta.statements[i]!;
+          if (typeof item === "string") return prepared(item, meta, params);
+          // The assert's text is the same on every run (ADR 0086
+          // amendment); the token binds as this
+          // statement's last value, after the predicate's own named
+          // parameters.
+          return binding.prepare(assertStatement(item.name, item.predicate, token)).bind(...assertBindValues(meta, params, token));
         });
         if (command.returns !== null) statements.push(prepared(command.returns, command.meta.returns!, params));
         // A passing assert's row has no further use once the plan and its
@@ -65,7 +70,14 @@ export function d1(binding: D1Like, options: AdapterOptions = {}): Database {
         let results: { results?: unknown; meta?: unknown }[];
         try {
           results = await binding.batch(statements);
-          report(engineMeta(results));
+          // `statements` (ADR 0039's 2026-09-25 section) is one reply per
+          // plan item, then one for `returns`; the guard-cleanup reply
+          // (always last, when present) is not a plan item and is
+          // dropped. `at` stays unset on D1: a failed batch names no
+          // index (D1's own batch() contract), and D1 gives this adapter
+          // nothing to attribute a thrown error to one statement with.
+          const itemReplies = results.slice(0, command.plan.length + (command.returns !== null ? 1 : 0));
+          report({ meta: engineMeta(results), statements: d1StatementRows(itemReplies) });
         } catch (e) {
           const failed = assertFailure(e, command.meta.asserts, token);
           if (failed !== null) return { ok: false, kind: "assert", assert: failed } as CommandResult<C>;

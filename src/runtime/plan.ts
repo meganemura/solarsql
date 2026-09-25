@@ -36,9 +36,28 @@ export function assertToken(): string {
 // the stored value exactly 0 or 1, so a NULL or non-numeric predicate
 // fails as a normal assert instead of failing the guard table's own NOT
 // NULL/STRICT constraint (ADR 0095).
+//
+// The token is bound as a value, not written into the text (ADR 0086
+// amendment): the text of every assert of the same name
+// and predicate is then the same on every run, so D1's insights group them
+// as one statement and workerd's per-text statement cache does not grow
+// without bound across many runs (measured: about 5.9 KB RSS per unique
+// text, up to the cache's roughly 5,300-text cap). Called with no token
+// (from the build, to type the predicate's own parameters only), the
+// identity stays embedded in the text: build.ts never runs this SQL, only
+// prepares it to read parameter and column types, and typegen.ts refuses
+// an anonymous `?` in a typed statement.
 export function assertStatement(name: string, predicate: string, token?: string): string {
-  const identity = token === undefined ? name : `${ASSERT_IDENTITY}${token}:${name}`;
-  return `insert into ${GUARD_TABLE} (name, ok) select '${identity}', (case when (${predicate}) then 1 else 0 end)`;
+  if (token === undefined) return `insert into ${GUARD_TABLE} (ok, name) select (case when (${predicate}) then 1 else 0 end), '${name}'`;
+  return `insert into ${GUARD_TABLE} (ok, name) select (case when (${predicate}) then 1 else 0 end), '${ASSERT_IDENTITY}' || ? || ':${name}'`;
+}
+
+// bindValues()'s own values, with the assert's run-time token appended as
+// the last, anonymous value: assertStatement()'s `?` sits after the
+// predicate's own named slots (ADR 0071's first-appearance order), so the
+// token is always the last value SQLite numbers for this statement.
+export function assertBindValues(meta: StatementMeta, params: Record<string, unknown>, token: string): SqlValue[] {
+  return [...bindValues(meta, params), token];
 }
 
 // Values in the order SQLite numbers the named parameters. A missing value
@@ -152,18 +171,55 @@ export function constraintFailure(error: unknown): ConstraintFailure | null {
 
 export type EngineMeta = { rows_read: number; rows_written: number; duration?: number; served_by_region?: string; served_by_primary?: boolean };
 
-type Event = { kind: "query" | "batch" | "command"; name: string; ms: number; outcome: string; meta?: EngineMeta };
+// Where in the plan an unclassified error or a constraint failure happened
+// (ADR 0137): a plan item by its 1-based position and the total, the
+// returns clause, or a read of a batch. `sql` is the catalog text (no
+// bound values); an assert's own text carries the run-time token as a
+// bound value now (ADR 0086's amendment), so `sql` for a failing assert is
+// its predicate, the same text the catalog names it by, not the text the
+// adapter sent. `included` names the including command's included range
+// when the position falls inside one. D1 never sets this: a failed batch
+// names no index (D1's own `batch()` contract), and D1's engine errors
+// carry nothing this adapter could attribute to one statement.
+export type At = { position: number; of: number; sql: string; included?: string } | { returns: true; sql: string };
+
+// One entry per plan item (a statement or an assert) in expanded-plan
+// order, then one for `returns` when the command has one (ADR 0039's
+// 2026-09-25 section): the rows D1's own reply or a Durable Object's own
+// cursor reports for that one statement. Guard cleanup and the
+// total_changes() probes are not plan items and get no entry. Reported
+// only when every entry has both counters, so index i always means
+// position i + 1 without a caller having to skip a hole.
+export type StatementRow = { rows_read: number; rows_written: number; duration?: number };
+
+type Event = { kind: "query" | "batch" | "command"; name: string; ms: number; outcome: string; meta?: EngineMeta; at?: At; statements?: readonly StatementRow[] };
+
+// What a call in progress may tell observed() about itself, accumulated
+// across as many report() calls as the body needs: an adapter clears `at`
+// once an item finishes (so a probe, cleanup, or commit failure after the
+// last item leaves no `at`) and sets `meta`/`statements` once, at the end.
+export type ObserveReport = { meta?: EngineMeta | undefined; at?: At | undefined; statements?: readonly StatementRow[] | undefined };
 
 // Time one call and report it to the observe hook. The body gets a
-// `report` for the engine's meta, when the engine gives one.
-export async function observed<T>(hook: ((event: Event) => void) | undefined, kind: "query" | "batch" | "command", name: string, body: (report: (meta: EngineMeta | undefined) => void) => Promise<T>, outcomeOf: (value: T) => string): Promise<T> {
-  let meta: EngineMeta | undefined;
-  const report = (m: EngineMeta | undefined) => {
-    meta = m;
+// `report` for what it learns about itself as it runs: the engine's meta,
+// when the engine gives one, and (ADR 0137, ADR 0039) `at` and
+// `statements`. Each call merges into the last -- a later `at: undefined`
+// clears a previous one, but an omitted key leaves its last value alone --
+// so the body can narrate a run item by item without losing what it
+// reported before.
+export async function observed<T>(hook: ((event: Event) => void) | undefined, kind: "query" | "batch" | "command", name: string, body: (report: (info: ObserveReport) => void) => Promise<T>, outcomeOf: (value: T) => string): Promise<T> {
+  let state: ObserveReport = {};
+  const report = (info: ObserveReport) => {
+    state = { ...state, ...info };
   };
   if (!hook) return body(report);
   const start = performance.now();
-  const event = (outcome: string): Event => ({ kind, name, ms: performance.now() - start, outcome, ...(meta ? { meta } : {}) });
+  const event = (outcome: string): Event => ({
+    kind, name, ms: performance.now() - start, outcome,
+    ...(state.meta ? { meta: state.meta } : {}),
+    ...(state.at ? { at: state.at } : {}),
+    ...(state.statements ? { statements: state.statements } : {}),
+  });
   const notify = (outcome: string) => {
     // Telemetry runs after the database outcome. Its failure must not make
     // a committed command appear to fail or replace an engine error.
@@ -201,6 +257,20 @@ export function engineMeta(replies: readonly { meta?: unknown }[]): EngineMeta |
     }
   }
   return out;
+}
+
+// One `StatementRow` per D1 reply, not summed (ADR 0039's 2026-09-25
+// section): `undefined` when any reply lacks both counters, the same
+// both-required rule `engineMeta()` applies, so a caller is never left
+// guessing which index a hole belongs to.
+export function d1StatementRows(replies: readonly { meta?: unknown }[]): StatementRow[] | undefined {
+  const rows: StatementRow[] = [];
+  for (const r of replies) {
+    const m = r.meta as Partial<Record<keyof EngineMeta, unknown>> | undefined;
+    if (!m || typeof m.rows_read !== "number" || typeof m.rows_written !== "number") return undefined;
+    rows.push({ rows_read: m.rows_read, rows_written: m.rows_written, ...(typeof m.duration === "number" ? { duration: m.duration } : {}) });
+  }
+  return rows;
 }
 
 export function outcomeOf(result: { ok: boolean; kind?: string; assert?: string }): string {

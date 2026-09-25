@@ -1,6 +1,7 @@
 # ADR 0015: An assert is a row in a guard table with one trigger
 
 Status: accepted (2026-09-06)
+Amended by ADR 0086 (2026-09-25 section).
 
 ## Context
 

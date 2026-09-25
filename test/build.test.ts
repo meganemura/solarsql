@@ -1121,3 +1121,139 @@ test('new migration names sort after every generated history with gaps', async (
     assert.equal(Number(generated.filename.split('_')[0]), Math.max(0,...values)+1);
   });
 });
+
+// typer.analyze() (typegen.ts) checks Engine.fullScans() only for a
+// select. build.ts's own writeScans() reports the same fact for an
+// UPDATE, DELETE, or INSERT...SELECT plan item with a WHERE clause.
+describe('a write statement reports its own full-table scan', () => {
+  test('an UPDATE against an unindexed column reports the scan; an index removes it', async () => {
+    const dir = copy();
+    try {
+      const customers = join(dir, 'example/modules/customers/module.ts');
+      const withUpdate = readFileSync(customers, 'utf8').replace(
+        'export const customerCommands = commands(generated, {',
+        'export const customerCommands = commands(generated, {\n  renameByName: { plan: ["update customers set email = :new_email where name = :name"] },',
+      );
+      writeFileSync(customers, withUpdate);
+      const unindexed = await build(join(dir, 'example/solarsql.config.ts'));
+      assert.deepEqual(
+        unindexed.scans.filter(s => s.sql.includes('update customers')),
+        [{ module: 'customers', sql: 'update customers set email = :new_email where name = :name', tables: ['customers'] }],
+      );
+
+      writeFileSync(customers, withUpdate.replace(
+        'create table customers (',
+        'create table customers (\n    -- an index added only in this fixture, to prove the scan line depends on it\n',
+      ).replace(
+        '  ) strict\n`);',
+        '  ) strict\n`);\n\nexport const customersByName = index(`create index customers_name on customers (name)`);',
+      ).replace(
+        'import { commands, queries, table } from "../../../src/index.ts";',
+        'import { commands, index, queries, table } from "../../../src/index.ts";',
+      ));
+      const indexed = await build(join(dir, 'example/solarsql.config.ts'));
+      assert.deepEqual(indexed.scans.filter(s => s.sql.includes('update customers')), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a DELETE and an INSERT...SELECT against an unindexed column are each reported', async () => {
+    const dir = copy();
+    try {
+      const customers = join(dir, 'example/modules/customers/module.ts');
+      writeFileSync(customers, readFileSync(customers, 'utf8')
+        .replace(
+          'export const customerCommands = commands(generated, {',
+          'export const customerCommands = commands(generated, {\n'
+          + '  purgeByName: { plan: ["delete from customers where name = :name"] },\n'
+          + '  archiveByName: { plan: ["insert into customers_archive (id, name, email) select id, name, email from customers where name = :name2"] },',
+        )
+        .replace(
+          'export const customerQueries = queries(generated, {',
+          'export const customersArchive = table(`\n'
+          + '  create table customers_archive (\n'
+          + '    id text primary key not null,\n'
+          + '    name text not null,\n'
+          + '    email text not null\n'
+          + '  ) strict\n'
+          + '`);\n\n'
+          + 'export const customerQueries = queries(generated, {',
+        ));
+      const result = await build(join(dir, 'example/solarsql.config.ts'));
+      const bySql = new Map(result.scans.map(s => [s.sql, s.tables]));
+      assert.deepEqual(bySql.get('delete from customers where name = :name'), ['customers']);
+      assert.deepEqual(bySql.get('insert into customers_archive (id, name, email) select id, name, email from customers where name = :name2'), ['customers']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a parent-table DELETE reports a child table scanned only for its own foreign-key check', async () => {
+    const dir = copy();
+    try {
+      const orders = join(dir, 'example/modules/orders/module.ts');
+      writeFileSync(orders, readFileSync(orders, 'utf8')
+        .replace('export const ordersByCustomer = index(`create index orders_customer_id on orders (customer_id)`);\n', ''));
+      const result = await build(join(dir, 'example/solarsql.config.ts'));
+      const remove = result.scans.find(s => s.module === 'customers' && s.sql.includes('delete from customers where id = :customer_id'));
+      assert.ok(remove, "customers.remove's own delete should report a scan once orders has no index on customer_id");
+      assert.deepEqual(remove!.tables, ['orders']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+test('a WHERE on an indexed column never scans; on an unindexed column it always does (no foreign key references the table)', async () => {
+  const { Engine } = await import('../src/build/facts.ts');
+  const { writeScans } = await import('../src/build/build.ts');
+  const { test: property } = await import('@hegeldev/hegel');
+  const gs = await import('@hegeldev/hegel/generators');
+  property(tc => {
+    const column = tc.draw(gs.sampledFrom(['c1', 'c2', 'c3']));
+    const verb = tc.draw(gs.sampledFrom(['update', 'delete']));
+    const indexed = tc.draw(gs.booleans());
+    const ddl = [
+      'create table t (id text primary key not null, c1 text, c2 text, c3 text) strict',
+      ...(indexed ? [`create index t_${column} on t (${column})`] : []),
+    ];
+    const engine = new Engine(ddl);
+    const sql = verb === 'update' ? `update t set id = id where ${column} = :v` : `delete from t where ${column} = :v`;
+    const scans = writeScans(engine, sql);
+    assert.deepEqual(scans, indexed ? [] : ['t']);
+  });
+});
+
+// An assert statement binds its run-time token as its own value, after the
+// predicate's own named parameters (ADR 0086's 2026-09-25 amendment), so
+// the 100-bound-value limit D1 and a Durable Object apply (limits.md)
+// leaves 99 slots for the predicate.
+test('an assert predicate builds at 99 parameters and is refused at 100', async () => {
+  // A flat function call, not a chain of "and": workerd's own exprDepth
+  // limit (100, src/build/facts.ts) would refuse a 99-deep AND chain
+  // before this test ever reaches the parameter-count check it means to
+  // exercise.
+  const predicate = (n: number): string => `coalesce(${Array.from({ length: n }, (_, i) => `:p${i}`).join(', ')}, 0) is not null`;
+  for (const [n, ok] of [[99, true], [100, false]] as const) {
+    const dir = copy();
+    try {
+      const customers = join(dir, 'example/modules/customers/module.ts');
+      writeFileSync(customers, readFileSync(customers, 'utf8').replace(
+        'export const customerCommands = commands(generated, {',
+        `export const customerCommands = commands(generated, {\n  budget: { plan: [assert("budget", ${JSON.stringify(predicate(n))})] },`,
+      ).replace(
+        'import { commands, queries, table } from "../../../src/index.ts";',
+        'import { assert, commands, queries, table } from "../../../src/index.ts";',
+      ));
+      if (ok) {
+        const result = await build(join(dir, 'example/solarsql.config.ts'));
+        assert.ok(result.modules.some(m => m.name === 'customers'));
+      } else {
+        await expectBuildError(dir, /assert "budget"'s predicate names 100 parameters.*leaving 99 slots for the predicate/s);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});

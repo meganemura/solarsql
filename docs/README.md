@@ -149,6 +149,10 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0134](adr/0134-the-build-prepares-under-workerds-own-sqlite-limits.md) | The build prepares every user statement under workerd's own SQLite limits |
 | [0135](adr/0135-a-deletes-returning-rows-are-the-commands-rows.md) | A DELETE's RETURNING rows are the command's rows |
 | [0136](adr/0136-json-group-array-refuses-a-join-that-can-multiply-its-elements.md) | `json_group_array` refuses a join that can multiply its elements |
+| [0137](adr/0137-observe-names-the-plan-item-that-failed.md) | The observe event names the plan item that failed |
+| [0138](adr/0138-a-table-valued-function-can-read-an-earlier-from-source-a-from-clause-subquery-cannot.md) | A table-valued function can read an earlier FROM source; a FROM-clause subquery cannot |
+| [0139](adr/0139-rehearsal-reports-a-primary-key-row-diff.md) | Rehearsal reports rows inserted, updated, and deleted, by primary key |
+| [0140](adr/0140-file-backed-reads-wait-out-a-held-sqlite-lock.md) | A file-backed read-only open waits out a held SQLite lock |
 
 ## Measurements
 

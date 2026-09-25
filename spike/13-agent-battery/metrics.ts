@@ -21,7 +21,7 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 export function parseStream(stdout: string, fallbackDurationMs: number): Metrics {
   const filesRead = new Set<string>();
-  const filesEdited = new Set<string>(); // distinct file_path of Edit and Write tool_use (ntky-30, hunksOutsideTask's sibling metric)
+  const filesEdited = new Set<string>(); // distinct file_path of Edit and Write tool_use; hunksOutsideTask's sibling metric
   let searchReads = 0; // one per Glob or Grep tool_use, uncounted by distinct path
   let toolCalls = 0;
   let failedCommands = 0;
@@ -71,7 +71,7 @@ export function parseStream(stdout: string, fallbackDurationMs: number): Metrics
 
 // A diff hunk whose added or removed lines name a table outside
 // `taskTables` -- the harmful-edit count the module-ownership study
-// measures (ntky-30's spec, "Measure it from the saved .diff"). A hunk
+// measures, read from the saved .diff. A hunk
 // counts once any of its changed lines contains a whole-word match of a
 // name in `knownTables` (the project's full table set, so an unrelated
 // English word in a comment -- "from the declared schema", every migration

@@ -33,6 +33,8 @@ const [orders, customers] = await db.batch([read(orderQueries.byId, { id }), rea
 
 A query without parameters takes none: `db.all(customerQueries.all)`.
 Each call requires exactly its generated own parameter keys before SQL runs.
+
+`db.first()` is `all()[0]` on every adapter: it reads the whole result into memory before returning row 0. A query written for `db.first()` whose filter can match more than one row should end with `limit 1`, which bounds the rows returned and read; when the `ORDER BY` needs a sort, the query still reads every matching row before returning the first ([D1 prepared statements](https://developers.cloudflare.com/d1/worker-api/prepared-statements/): "D1PreparedStatement::first does not alter the SQL query. To improve performance, consider appending LIMIT 1 to your statement," checked 2026-09-25).
 An inherited value reports a missing parameter, and an extra enumerable key reports an unexpected parameter. The message names the query or command that rejected the call, and what it declares (ADR 0088).
 A command validates the union of its plan, asserts, and `returns`; each statement then binds its own ordered subset.
 JSON columns arrive parsed, and array parameters go encoded; the module code sees plain values.
@@ -78,8 +80,8 @@ A caller can also reach past the generated queries and commands and run raw SQL 
 `options.observe` is a hook for a logger or a tracer, called once per call:
 
 ```ts
-const db = d1(env.DB, { observe: (e) => console.log(e.kind, e.name, e.outcome, `${e.ms.toFixed(1)}ms`, e.meta?.rows_read) });
-// e: { kind: "query" | "batch" | "command"; name: string; ms: number; outcome: string; meta?: EngineMeta }
+const db = d1(env.DB, { observe: (e) => console.log(e.kind, e.name, e.outcome, `${e.ms.toFixed(1)}ms`, e.meta?.rows_read, e.at) });
+// e: { kind: "query" | "batch" | "command"; name: string; ms: number; outcome: string; meta?: EngineMeta; at?: At; statements?: readonly StatementRow[] }
 // outcome: "ok", "assert:<name>", a constraint kind, or "error" when thrown
 // the name of a batch is the query names joined with "+"
 // meta, on D1 and on a Durable Object: { rows_read, rows_written, duration?, served_by_region?, served_by_primary? }
@@ -93,6 +95,10 @@ The adapter contains synchronous throws and rejected observer promises, and does
 An observer that needs failure reporting must handle and report its own delivery errors.
 
 Both D1 and a Durable Object bill on `rows_read` and `rows_written`, so a cost tracer reads `e.meta` on either engine (ADR 0039).
+
+`e.at` (ADR 0137) names the plan item, the returns clause, or the batch read that was running: `{ position: number; of: number; sql: string; included?: string } | { returns: true; sql: string }`. `position` counts from 1 in the expanded plan (an included command's items count too, ADR 0127); `sql` is the catalog text, with no bound values -- for a failing assert, its predicate, the catalog's own key for it, not the text the adapter composed at run time. `included` names the including command's included range when the position falls inside one. Present on node and a Durable Object, on an unclassified error, a constraint failure, or an assert failure alike (the outcome already names an assert, ADR 0086, so `at` there is incidental, not the field's reason to exist); **D1 never sets it** -- a failed D1 batch names no index of its own, and D1 gives the adapter nothing to attribute the error to one statement with. Absent on a successful call, and absent when the failure is a probe, the guard-table cleanup, or the transaction's own commit rather than one plan item.
+
+`e.statements` (ADR 0039's 2026-09-25 section) is one `{ rows_read: number; rows_written: number; duration?: number }` per plan item (a statement or an assert), in expanded-plan order, then one more for `returns` when the command has one; one per read for a batch. Guard cleanup and a Durable Object's internal `total_changes()` probes get no entry, so index `i` always means position `i + 1`. Present only when every entry carries both counters (D1 and a Durable Object, on a successful call); `duration` inside an entry is D1 only, the same reason `meta.duration` is D1 only. Absent on node:sqlite (no per-statement counters) and absent on a failed call on any adapter (a failed D1 batch returns no replies at all).
 
 ## On a Durable Object
 
@@ -126,12 +132,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { newId } from "solarsql";
-import { migrate, node } from "solarsql/node";
+import { migrate, NODE_TEST_LIMITS, node } from "solarsql/node";
 import { migrations } from "../../migrations/index.ts";
 import { orderCommands, orderQueries, type OrdersId } from "./public.ts";
 
 test("confirm once", async () => {
-  const raw = new DatabaseSync(":memory:");
+  const raw = new DatabaseSync(":memory:", { limits: NODE_TEST_LIMITS });
   migrate(raw, migrations);
   const db = node(raw);
   const id = newId<OrdersId>();
@@ -141,6 +147,8 @@ test("confirm once", async () => {
 
 Node tests check SQL locally. Miniflare tests check the D1 batch and Durable Object transaction contracts.
 Engine versions and adapter conversions must be checked for each target.
+
+`NODE_TEST_LIMITS` sets two workerd run-time limits node:sqlite's own defaults are far looser than (`LIKE`/`GLOB` pattern length, trigger recursion depth); see `limits.md` for the values, why the row-size limit is left out, and what fails without it.
 
 ## Values across adapters
 

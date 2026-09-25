@@ -25,6 +25,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { D1Harness, type WorkerOk } from "../d1.ts";
+import { WORKERD_SQLITE_VERSION } from "../../src/build/facts.ts";
 
 async function d1SqliteVersion(): Promise<string> {
   const d1 = new D1Harness();
@@ -86,10 +87,21 @@ async function durableObjectSqliteVersion(): Promise<string> {
   }
 }
 
-test("node:sqlite, D1, and a Durable Object each print their own SQLite version (no assertion: see the value-differential probe below)", async () => {
+test("node:sqlite, D1, and a Durable Object each report the pinned WORKERD_SQLITE_VERSION", async () => {
   const nodeVersion = new DatabaseSync(":memory:").prepare("select sqlite_version() as v").get()!.v as string;
   const [d1Version, doVersion] = await Promise.all([d1SqliteVersion(), durableObjectSqliteVersion()]);
   console.log(`sqlite versions: node:sqlite=${nodeVersion} D1=${d1Version} DurableObject=${doVersion}`);
+  // A miniflare bump moves D1's and the Durable Object's own SQLite without
+  // moving this constant; this assertion is what catches that drift, so it
+  // must fail loudly (not skip) when the DEFAULT-expression probe itself
+  // stops answering (workerd's call-authorizer patch 0006 could break it,
+  // ADR 0114): "unavailable" fails the equality below the same as a wrong
+  // version does, and the message tells a reader which case it is.
+  const mismatch = (label: string, v: string) =>
+    `${label} reported "${v}", not the pinned WORKERD_SQLITE_VERSION "${WORKERD_SQLITE_VERSION}". If the probe itself stopped answering, fix the probe; otherwise follow docs/releasing.md's MODULE.bazel step and update the constant.`;
+  assert.equal(nodeVersion, WORKERD_SQLITE_VERSION, mismatch("node:sqlite", nodeVersion));
+  assert.equal(d1Version, WORKERD_SQLITE_VERSION, mismatch("D1", d1Version));
+  assert.equal(doVersion, WORKERD_SQLITE_VERSION, mismatch("the Durable Object", doVersion));
 });
 
 // Each probe below is a value two SQLite builds sharing a major.minor were

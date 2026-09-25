@@ -131,6 +131,22 @@ const ALLOWED_SQLITE_FUNCTIONS = new Set([
   "sqlite_rename_quotefix",
 ]);
 
+// The SQLite version this release's pinned workerd builds against (from
+// workerd's MODULE.bazel at the pinned tag, strip_prefix sqlite-src-NNNNNNN;
+// docs/releasing.md has the read-it-off-the-tag step). A developer's own
+// node:sqlite can run a newer or older SQLite than this: the Node floor
+// (ADR 0129) refuses an older one, but nothing stops a newer Node shipping a
+// newer SQLite than the pinned workerd release tests against. Measured
+// 2026-09-25: the example project's generated files are byte-identical when
+// built on SQLite 3.50.4, 3.51.2, 3.51.3, and 3.53.4, so a differing engine
+// does not by itself justify refusing the build; what can differ instead is
+// node()'s own decoded REAL/CAST values and Engine.fullScans()'s EXPLAIN
+// QUERY PLAN notes. solarsql build and inspect compare the build engine's
+// own `select sqlite_version()` against this constant and note a mismatch
+// (test/miniflare/sqlite-version.test.ts pins that Miniflare's D1 and its
+// own Durable Object still report exactly this value).
+export const WORKERD_SQLITE_VERSION = "3.53.4";
+
 // Sets the allowlist's deny authorizer on `db` for the duration of `fn`
 // only, then clears it in a `finally`, whatever `fn` does -- the call-scoped
 // shape ADR 0113 established for Engine.prepare(), factored out so the
@@ -163,7 +179,10 @@ export function withDeniedFunctions<T>(db: DatabaseSync, fn: () => T): T {
 // are left out on purpose: workerd enforces them only at run time (a row
 // write, a LIKE call, a trigger firing), never at prepare, so scoping this
 // build-time gate around them would check nothing (limits.md still lists
-// them as unchecked). `functionArg` is 127 here, matching workerd's own
+// them as unchecked). The run-time two of those three (`likePatternLength`,
+// `triggerDepth`) have their own values in src/runtime/node-limits.ts's
+// NODE_TEST_LIMITS instead, one definition a node:sqlite test connection
+// sets directly, since no prepare-time gate can reach them. `functionArg` is 127 here, matching workerd's own
 // source; the Cloudflare D1 and Durable Object limit pages instead say 32
 // (limits.md) -- this build follows the source, not the docs page, and the
 // gap is recorded in the ADR pending a remote probe.
@@ -204,7 +223,7 @@ function renameVdbeOpError(e: unknown): Error {
 // into a false "string or blob too big" build error that names no user
 // statement. Scoping per call keeps every one of those wrapper calls
 // outside this function, running at the connection's real (node:sqlite
-// default) limits, exactly as before this ticket. Never assign Infinity:
+// default) limits, exactly as before this function scoped them. Never assign Infinity:
 // DatabaseSync.limits treats that as "no limit", which would silently
 // widen a connection that had a tighter limit before this call.
 export function withWorkerdLimits<T>(db: DatabaseSync, fn: () => T): T {

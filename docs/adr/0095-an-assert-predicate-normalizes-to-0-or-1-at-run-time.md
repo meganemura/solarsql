@@ -1,6 +1,7 @@
 # ADR 0095: An assert predicate normalizes to 0 or 1 at run time
 
 Status: accepted (2026-09-14)
+Amended by ADR 0086 (2026-09-25 section).
 
 ## Context
 

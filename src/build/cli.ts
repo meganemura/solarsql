@@ -134,10 +134,11 @@ function migrationArguments(args: string[]): { name: string; configPath: string;
   return { name: paths[0]!, configPath: paths[1] ?? "solarsql.config.ts", intent: intentPath ? readMigrationIntent(intentPath) : { drops: [], renames: [] } };
 }
 
-function queryArguments(args: string[]): { target: string; database: string; params: Record<string, unknown>; configPath: string } {
+function queryArguments(args: string[]): { target: string; database: string; params: Record<string, unknown>; configPath: string; timeoutMs: number } {
   const paths: string[] = [];
   let database: string | undefined;
   let paramsJson: string | undefined;
+  let timeoutMs = 30_000;
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]!;
     if (arg === "--database") {
@@ -148,13 +149,19 @@ function queryArguments(args: string[]): { target: string; database: string; par
       const value = args[++index];
       if (!value) throw new BuildError("--params requires one JSON object.");
       paramsJson = value;
+    } else if (arg === "--timeout-ms") {
+      const value = args[++index];
+      if (!value || !/^\d+$/.test(value) || Number(value) < 1 || Number(value) > 2_147_483_647) {
+        throw new BuildError("--timeout-ms requires an integer from 1 to 2147483647 milliseconds.");
+      }
+      timeoutMs = Number(value);
     } else if (arg.startsWith("--")) {
       throw new BuildError(`Unknown query option ${arg}.`);
     } else {
       paths.push(arg);
     }
   }
-  if (paths.length < 1 || paths.length > 2) throw new BuildError("Use solarsql query <module>.<catalog>.<name> --database <file> [--params json] [solarsql.config.ts].");
+  if (paths.length < 1 || paths.length > 2) throw new BuildError("Use solarsql query <module>.<catalog>.<name> --database <file> [--params json] [--timeout-ms 30000] [solarsql.config.ts].");
   if (!database) throw new BuildError("--database is required.");
   let params: Record<string, unknown> = {};
   if (paramsJson !== undefined) {
@@ -164,7 +171,7 @@ function queryArguments(args: string[]): { target: string; database: string; par
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new BuildError("--params requires a JSON object.");
     params = parsed as Record<string, unknown>;
   }
-  return { target: paths[0]!, database, params, configPath: paths[1] ?? "solarsql.config.ts" };
+  return { target: paths[0]!, database, params, configPath: paths[1] ?? "solarsql.config.ts", timeoutMs };
 }
 
 function intentAction(drops: readonly DropIntent[], renames: readonly Rename[], configArgument: string): string {
@@ -222,9 +229,9 @@ async function main(argv: string[]): Promise<number> {
     return ok ? 0 : 1;
   }
   if (command === "rehearse") {
-    const { paths } = rehearsalArguments(rest);
+    const { paths, timeoutMs } = rehearsalArguments(rest);
     const checks = paths[2] ? JSON.parse(readFileSync(paths[2], "utf8")) : {};
-    const report = await rehearse(paths[0]!, readFileSync(paths[1]!, "utf8"), checks);
+    const report = await rehearse(paths[0]!, readFileSync(paths[1]!, "utf8"), checks, timeoutMs);
     await printReport(report);
     return report.ok ? 0 : 1;
   }
@@ -260,6 +267,7 @@ async function main(argv: string[]): Promise<number> {
     for (const n of result.notes) {
       console.log(`note    ${n.module}.${n.command}: parameter :${n.parameter} of the included command ${n.included.module}.${n.included.command} is not named by any statement or assert of module ${n.module}`);
     }
+    if (result.sqliteNote) console.log(`note    ${result.sqliteNote}`);
     console.log(`time    ${result.ms}ms`);
     if (result.index.path !== null && result.index.changed) console.log(`${check ? "stale  " : "wrote  "} ${result.index.path} (the migration files, for a Durable Object)`);
     const stale = result.modules.some((m) => m.changed) || result.index.changed;
@@ -294,8 +302,8 @@ async function main(argv: string[]): Promise<number> {
   }
   if (command === "query") {
     try {
-      const { target, database, params, configPath } = queryArguments(rest);
-      const rows = await runQuery(configPath, parseQueryTarget(target), database, params);
+      const { target, database, params, configPath, timeoutMs } = queryArguments(rest);
+      const rows = await runQuery(configPath, parseQueryTarget(target), database, params, timeoutMs);
       await printReport(rows);
       return 0;
     } catch (e) {
@@ -392,7 +400,11 @@ try {
       try {
         const worker = deadlineArguments(args);
         queryArguments(worker.args.slice(1));
-        return await runHuman(import.meta.filename, worker.args, worker.timeoutMs);
+        // Unlike build/migration, query's own worker re-derives its busy
+        // timeout from --timeout-ms (queryArguments parses it too), so the
+        // flag must reach the child; deadlineArguments' own stripped
+        // worker.args exists only to validate the rest of the arguments.
+        return await runHuman(import.meta.filename, args, worker.timeoutMs);
       } catch (e) {
         if (!(e instanceof BuildError)) throw e;
         console.error(`error: ${e.message}`);

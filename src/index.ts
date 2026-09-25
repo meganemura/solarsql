@@ -357,6 +357,26 @@ export type CommandResult<C> = C extends Command<infer G, infer P>
 // all, and the field is absent.
 export type EngineMeta = { rows_read: number; rows_written: number; duration?: number; served_by_region?: string; served_by_primary?: boolean };
 
+// Where an unclassified error or a constraint failure happened (ADR 0137):
+// a plan item's 1-based position and the plan's total, or the returns
+// clause. `sql` is the catalog text, with no bound values; a failing
+// assert's `sql` is its predicate (the catalog names it by that text, not
+// by the text the adapter composes at run time, which now carries a bound
+// invocation token rather than one written into it). `included` names an
+// including command's included range (ADR 0127) when the position falls
+// inside one. D1 never sets this field: a failed batch names no index, and
+// D1's own engine errors carry nothing an adapter could attribute to one
+// statement.
+export type At = { position: number; of: number; sql: string; included?: string } | { returns: true; sql: string };
+
+// The rows_read/rows_written (and, on D1, duration) of one plan item, in
+// expanded-plan order, then one for `returns` when the command has one
+// (ADR 0039's 2026-09-25 section). Guard cleanup and a Durable Object's
+// total_changes() probes are not plan items and get no entry. Present only
+// when every entry carries both counters, so index i always means
+// position i + 1.
+export type StatementRow = { rows_read: number; rows_written: number; duration?: number };
+
 export type Observed = {
   kind: "query" | "batch" | "command";
   name: string;
@@ -364,6 +384,8 @@ export type Observed = {
   // "ok", "assert:<name>", a constraint kind, or "error" when thrown.
   outcome: string;
   meta?: EngineMeta;
+  at?: At;
+  statements?: readonly StatementRow[];
 };
 
 export type AdapterOptions = {

@@ -27,7 +27,7 @@ The API does not expose fragments or interpolation.
 
 ## Why
 
-One statement per query keeps every type keyed by the text (ADR 0021) and keeps one prepared statement per query.
+One statement per query keeps every type keyed by the text (ADR 0021) and keeps one prepared statement per query. [Corrected 2026-09-25: this held for every statement except an assert, whose text carried a fresh random token (ADR 0086) and so was not the same text twice; see ADR 0086's 2026-09-25 section.]
 `json_each` takes one bound value for any list length, and the engine uses the index on `col`.
 The full-scan report gives the agent the fact it needs to split a query when the table is large.
 

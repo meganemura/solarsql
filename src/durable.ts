@@ -7,7 +7,7 @@
 // Boundary: no SQL is composed here beyond the assert statement that
 // runtime/plan.ts defines.
 import type { AdapterOptions, BatchRows, Command, CommandResult, Database, EngineMeta, Entry, GeneratedMap, ParamsArg, PlanShape, Query, Read, Row, SqlValue, StatementMeta } from "./index.ts";
-import { GUARD_CLEANUP, assertFailure, assertStatement, assertToken, bindValues, constraintFailure, observed, outcomeOf, parseJson, validateParams } from "./runtime/plan.ts";
+import { GUARD_CLEANUP, assertBindValues, assertFailure, assertStatement, assertToken, bindValues, constraintFailure, observed, outcomeOf, parseJson, validateParams, type At, type StatementRow } from "./runtime/plan.ts";
 import { created, definitions, isKeyword, normalize, parseRebuildRecords, quoteIdent, redeclaredByFile, revivedDeclaration, significant, splitStatements, tokenize, unknownDeclaration } from "./build/scan.ts";
 
 // The cursor shape this adapter reads meta from. rowsRead/rowsWritten are
@@ -51,13 +51,28 @@ function cursorMeta(cursors: readonly CursorLike[]): EngineMeta | undefined {
   return out;
 }
 
+// One `StatementRow` per cursor, not summed (ADR 0039's 2026-09-25
+// section): `undefined` when any cursor lacks both counters -- node's
+// shim cursor always does, so node reports no `statements` field, the
+// same both-required rule `cursorMeta()` applies to the summed field.
+function statementRows(cursors: readonly CursorLike[]): StatementRow[] | undefined {
+  const out: StatementRow[] = [];
+  for (const c of cursors) {
+    if (typeof c.rowsRead !== "number" || typeof c.rowsWritten !== "number") return undefined;
+    out.push({ rows_read: c.rowsRead, rows_written: c.rowsWritten });
+  }
+  return out;
+}
+
 export function durable(storage: StorageLike, options: AdapterOptions = {}): Database {
-  // sink, when given, collects the cursor after it is read, for cursorMeta()
-  // above to sum once the caller is done issuing statements.
-  const rows = (sql: string, meta: StatementMeta, params: Record<string, unknown>, sink?: CursorLike[]) => {
+  // Each sink, when given, collects the cursor after it is read: `cursors`
+  // for cursorMeta()'s summed total, `itemCursors` (run() only) for
+  // statementRows()'s own per-item rows, which the summed total's probe
+  // and cleanup cursors must not join.
+  const rows = (sql: string, meta: StatementMeta, params: Record<string, unknown>, ...sinks: (CursorLike[] | undefined)[]) => {
     const cursor = storage.sql.exec(sql, ...bindValues(meta, params));
     const data = parseJson(cursor.toArray(), meta.json);
-    sink?.push(cursor);
+    for (const sink of sinks) sink?.push(cursor);
     return data;
   };
 
@@ -67,7 +82,7 @@ export function durable(storage: StorageLike, options: AdapterOptions = {}): Dat
       validateParams([query.meta], params, `query ${query.name}`);
       const cursors: CursorLike[] = [];
       const result = rows(query.sql, query.meta, params, cursors) as Row<Q>[];
-      report(cursorMeta(cursors));
+      report({ meta: cursorMeta(cursors) });
       return result;
     }, () => "ok");
 
@@ -78,12 +93,21 @@ export function durable(storage: StorageLike, options: AdapterOptions = {}): Dat
       return out[0] ?? null;
     },
     // The storage is local, so a batch of reads is the reads in order.
+    // `at` names the read in progress (ADR 0137), cleared once it
+    // returns, so a throw mid-read leaves the event naming that read and
+    // a throw between reads (there is none today) would leave none.
     batch: <const R extends readonly Read<Query<string, Entry>>[]>(reads: R): Promise<BatchRows<R>> =>
       observed(options.observe, "batch", reads.map((r) => r.query.name).join("+"), async (report) => {
         for (const item of reads) validateParams([item.query.meta], item.params, `query ${item.query.name}`);
         const cursors: CursorLike[] = [];
-        const result = reads.map((r) => rows(r.query.sql, r.query.meta, r.params, cursors)) as unknown as BatchRows<R>;
-        report(cursorMeta(cursors));
+        const result = reads.map((r, i) => {
+          const at: At = { position: i + 1, of: reads.length, sql: r.query.sql };
+          report({ at });
+          const row = rows(r.query.sql, r.query.meta, r.params, cursors);
+          report({ at: undefined });
+          return row;
+        }) as unknown as BatchRows<R>;
+        report({ meta: cursorMeta(cursors), statements: statementRows(cursors) });
         return result;
       }, () => "ok"),
     run: <C extends Command<GeneratedMap, PlanShape<GeneratedMap>>>(command: C, ...args: ParamsArg<C>): Promise<CommandResult<C>> =>
@@ -96,15 +120,35 @@ export function durable(storage: StorageLike, options: AdapterOptions = {}): Dat
         // touch, not only the plan's own statements (changes above stays
         // narrower, on purpose -- ADR 0042 counts only the plan's rows).
         const cursors: CursorLike[] = [];
+        // Only a plan item's own cursor and the returns clause's own
+        // cursor join this one (ADR 0039's 2026-09-25 section): a probe
+        // or the guard cleanup is not a plan item, and statementRows()
+        // below would otherwise misalign position i + 1 against it.
+        const itemCursors: CursorLike[] = [];
         try {
           const out = storage.transactionSync(() => {
             let changes = 0;
             let returningRows: Record<string, unknown>[] | null = null;
             const hasAssert = command.plan.some((item) => typeof item !== "string");
             command.plan.forEach((item, i) => {
+              const meta = command.meta.statements[i]!;
+              // The assert's text is the same on every run (ADR 0086
+              // amendment); the token binds as this
+              // statement's last value, after the predicate's own named
+              // parameters, keeping workerd's per-text statement cache from
+              // growing without bound across many runs of the same assert.
               const sql = typeof item === "string" ? item : assertStatement(item.name, item.predicate, token);
+              const values = typeof item === "string" ? bindValues(meta, params) : assertBindValues(meta, params, token);
+              // The probe above stays outside `at` (ADR 0137): it is not
+              // this plan item, only a step to compute its own changes.
+              // `at.sql` for an assert is its catalog key, the predicate --
+              // the text the catalog names it by -- not the text this
+              // adapter composed with the bound token.
               const before = totalChanges(storage, cursors);
-              const cursor = storage.sql.exec(sql, ...bindValues(command.meta.statements[i]!, params));
+              const included = command.included.find((r) => i >= r.from && i < r.to)?.name;
+              const at: At = { position: i + 1, of: command.plan.length, sql: typeof item === "string" ? item : item.predicate, ...(included !== undefined ? { included } : {}) };
+              report({ at });
+              const cursor = storage.sql.exec(sql, ...values);
               const data = cursor.toArray();
               // ADR 0136: with no `returns`, a marked DELETE ... RETURNING
               // plan item is the command's row source. Its own cursor
@@ -113,13 +157,23 @@ export function durable(storage: StorageLike, options: AdapterOptions = {}): Dat
               // hand, instead of re-reading the cursor after the loop.
               if (i === command.returningIndex) returningRows = parseJson(data, command.meta.statements[i]!.json);
               cursors.push(cursor);
+              itemCursors.push(cursor);
+              report({ at: undefined });
               if (typeof item === "string") changes += totalChanges(storage, cursors) - before;
             });
-            const resultRows = command.returns !== null ? rows(command.returns, command.meta.returns!, params, cursors) : (returningRows ?? []);
+            let resultRows: Record<string, unknown>[];
+            if (command.returns !== null) {
+              report({ at: { returns: true, sql: command.returns } });
+              resultRows = rows(command.returns, command.meta.returns!, params, cursors, itemCursors);
+              report({ at: undefined });
+            } else {
+              resultRows = returningRows ?? [];
+            }
             // A passing assert's row has no further use once the plan and
             // its returns clause have read what they need; deleting it
             // here, after returns and still inside this transaction, keeps
             // the guard table at zero rows between commands (ADR 0093).
+            // Not a plan item: no `at`, already cleared above.
             if (hasAssert) {
               const cleanup = storage.sql.exec(GUARD_CLEANUP);
               cleanup.toArray();
@@ -127,9 +181,14 @@ export function durable(storage: StorageLike, options: AdapterOptions = {}): Dat
             }
             return { rows: resultRows, changes };
           });
-          report(cursorMeta(cursors));
+          report({ meta: cursorMeta(cursors), statements: statementRows(itemCursors) });
           return { ok: true, ...out } as CommandResult<C>;
         } catch (e) {
+          // `at` (ADR 0137) was already reported, synchronously, by the
+          // failing item itself, and observed()'s report() merges rather
+          // than replacing: a probe, the cleanup, or the commit failing
+          // instead leaves no `at`, because the last plan item to run
+          // cleared it on its own way out before any of those ran.
           const failed = assertFailure(e, command.meta.asserts, token);
           if (failed !== null) return { ok: false, kind: "assert", assert: failed } as CommandResult<C>;
           const constraint = constraintFailure(e);

@@ -196,12 +196,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { newId } from "solarsql";
-import { migrate, node } from "solarsql/node";
+import { migrate, NODE_TEST_LIMITS, node } from "solarsql/node";
 import { migrations } from "../../migrations/index.ts";
 import { ${c}Commands, ${c}Queries, type ${id} } from "./public.ts";
 
+// NODE_TEST_LIMITS matches two workerd run-time limits (LIKE/GLOB pattern
+// length, trigger recursion depth) that node:sqlite's own defaults are far
+// looser than, so a query that passes here also passes on D1 and a Durable
+// Object. It leaves out the row-size limit; see its own comment.
 test("create, then finish once", async () => {
-  const raw = new DatabaseSync(":memory:");
+  const raw = new DatabaseSync(":memory:", { limits: NODE_TEST_LIMITS });
   migrate(raw, migrations);
   const db = node(raw);
   const id = newId<${id}>();

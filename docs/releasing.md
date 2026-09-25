@@ -37,6 +37,12 @@ After a successful OIDC `npm publish`, the package settings can require two-fact
 
 The repository has `sha_pinning_required` enabled.
 
+## Bumping miniflare
+
+`miniflare` bundles a workerd build, and `src/build/facts.ts`'s `WORKERD_SQLITE_VERSION` pins the SQLite version that build runs. A `miniflare` bump can move that SQLite version without moving the constant; `test/miniflare/sqlite-version.test.ts` fails when they disagree.
+
+After bumping the `miniflare` dependency: read the pinned workerd tag's `MODULE.bazel` in [cloudflare/workerd](https://github.com/cloudflare/workerd) for the SQLite source archive's `strip_prefix` (its shape is `sqlite-src-NNNNNNN`), look up that number against [sqlite.org's own version history](https://www.sqlite.org/changes.html) or its download page, and set `WORKERD_SQLITE_VERSION` to that version. Then run `npm run test:all`.
+
 ## Each version
 
 1. Choose the version by SemVer (before 1.0, a minor version may change the API; `CHANGELOG.md`'s own opening line says so). Set it in `package.json`, then turn `CHANGELOG.md`'s `## Unreleased` heading into `## <version> (<date>)`. Add a `## Unreleased` heading first if none exists.

@@ -149,3 +149,14 @@ One model, three runs per pass, task wording that names a `deleted_at` column an
 ### 3.6 Spend
 
 The 30 earlier runs (section 2's first pass and rename re-run, an unreported ddl-only re-run, and section 3's owned, flat, and owned re-run) summed to 15.65 USD in `costUsd`, recorded earlier today before their `.scratch` directories were deleted; the after-ADR-0127 owned re-run's three runs sum to 3.24 USD, from `.scratch/battery-2026-09-19-owned3/metrics.jsonl`. Together with about 0.2 USD of preflights, the day's total across every battery run is about 19.1 USD. Section 3's own three passes (owned, flat, owned re-run) are 8.03 USD of that total; section 2's own spend figures stay unchanged.
+
+## 4. An assert's SQL text, and workerd's per-text statement cache
+
+`spike/15-assert-token-cache.ts` drives one Durable Object, through `spike/15-assert-token-cache-worker.ts`, 10,001 times per mode: once to let workerd start, then ten batches of 1,000 runs, sampling the workerd child process's RSS (`ps -o rss=`) after each batch. `before` composes the assert-shaped insert with a fresh random token written into the SQL text every run, the shape `assertStatement()` used before ADR 0086's 2026-09-25 amendment; `after` binds the same token as the statement's own value, the shape it emits now. Local workerd 1.20260828.1 (Miniflare 5.20260828.0-alpha), one run, macOS, 2026-09-25:
+
+| mode | run 1 | run 1,001 | run 4,001 | run 7,001 | run 10,001 | growth, run 1,001 to 10,001 |
+|---|---|---|---|---|---|---|
+| before | 63,552 KB | 67,040 KB | 80,272 KB | 87,296 KB | 88,272 KB | 21,232 KB |
+| after | 63,856 KB | 64,816 KB | 71,504 KB | 72,432 KB | 73,472 KB | 8,656 KB |
+
+Both curves rise at first (workerd warms up its own caches beyond just this one statement), and `before`'s own rise visibly slows past run 7,001 (87,296 to 88,272 KB across the last 3,000 runs, versus 4,712 KB across the first 1,000), consistent with its per-text cache approaching its cap and starting to evict. `after`'s curve is flatter but still rises across the whole run: 71,104 to 73,472 KB across runs 3,001 to 10,001, about 0.3 KB per 1,000-run batch's own last measured step, against `before`'s roughly 3.5 KB per batch over the same span -- smaller, not flat. `docs/adr/0086-assert-results-have-invocation-identities.md`'s 2026-09-25 section cites these numbers directly.

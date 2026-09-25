@@ -797,3 +797,87 @@ test('query runs a catalog query against a local database, and refuses a command
   // catalog query is a SELECT (ADR 0045), and node:sqlite's own `readOnly:
   // true` would refuse a write before solarsql code ran at all.
 });
+
+// query and rehearse open their database read-only, in WAL mode, the same
+// shape wrangler dev's D1 file and a Durable Object's own file take
+// (deploy.md:18). A held SQLITE_BUSY/SQLITE_LOCKED must be waited out with
+// solarsql's own busy timeout (ADR 0140), not fail on first contact.
+test('query and rehearse wait out a held lock and name the file when the wait runs out', async (t) => {
+  const f = fixture(t);
+  const dbPath = join(f.dir, 'lock.sqlite');
+  const { migrations } = await import(pathToFileURL(join(f.dir, 'example/migrations/index.ts')).href) as { migrations: readonly { name: string; sql: string }[] };
+  const { migrate } = await import(pathToFileURL(join(f.dir, 'src/node.ts')).href) as { migrate: (db: DatabaseSync, files: readonly { name: string; sql: string }[]) => string[] };
+  const raw = new DatabaseSync(dbPath);
+  migrate(raw, migrations);
+  raw.exec("insert into customers (id, name, email) values ('c1', 'Ada', 'ada@example.com')");
+  raw.close();
+  const change = join(f.dir, 'change.sql');
+  writeFileSync(change, 'alter table customers add column note text');
+
+  const locker = join(f.dir, 'locker.mjs');
+  writeFileSync(locker, `
+    import { DatabaseSync } from 'node:sqlite';
+    const [, , path, ms] = process.argv;
+    const db = new DatabaseSync(path);
+    db.exec('pragma locking_mode=exclusive');
+    db.exec('begin exclusive');
+    process.stdout.write('ready\\n');
+    setTimeout(() => { try { db.exec('rollback'); db.close(); } catch {} process.exit(0); }, Number(ms));
+  `);
+
+  // Starts the locker, waits for its "ready" line (the exclusive
+  // transaction is open by then), then returns a function that reads it
+  // back. Killed in t.after regardless of how long its own hold was.
+  function holdLock(ms: number): Promise<() => void> {
+    return new Promise((resolvePromise, reject) => {
+      const child = spawn(process.execPath, [locker, dbPath, String(ms)], { stdio: ['ignore', 'pipe', 'pipe'] });
+      t.after(() => { child.kill('SIGKILL'); });
+      let out = '';
+      child.stdout!.on('data', (chunk) => {
+        out += String(chunk);
+        if (out.includes('ready\n')) resolvePromise(() => child.kill('SIGKILL'));
+      });
+      child.on('error', reject);
+    });
+  }
+
+  // (1) A lock released well inside the busy-timeout wait (--timeout-ms
+  // 2000 gives a 1,000ms wait; ADR 0140) lets both commands succeed.
+  {
+    const release = await holdLock(300);
+    const byId = spawnSync(process.execPath, [join(root, 'src/build/cli.ts'), 'query', 'customers.customerQueries.byId', '--database', dbPath, '--params', '{"id":"c1"}', '--timeout-ms', '2000', config], { cwd: f.dir, encoding: 'utf8', timeout: 10_000 });
+    assert.equal(byId.status, 0, byId.stderr);
+    assert.deepEqual(JSON.parse(byId.stdout), [{ id: 'c1', name: 'Ada', email: 'ada@example.com' }]);
+    release();
+  }
+  {
+    const release = await holdLock(300);
+    const rehearsed = spawnSync(process.execPath, [join(root, 'src/build/cli.ts'), 'rehearse', dbPath, change, '--timeout-ms', '2000'], { encoding: 'utf8', timeout: 10_000 });
+    assert.equal(rehearsed.status, 0, rehearsed.stdout + rehearsed.stderr);
+    assert.equal(JSON.parse(rehearsed.stdout).ok, true);
+    release();
+  }
+
+  // (2) and (3): a lock held past the wait (--timeout-ms 2000, a 1,000ms
+  // wait) reports the path and "locked", not a time-budget message.
+  {
+    const release = await holdLock(4_000);
+    const byId = spawnSync(process.execPath, [join(root, 'src/build/cli.ts'), 'query', 'customers.customerQueries.byId', '--database', dbPath, '--params', '{"id":"c1"}', '--timeout-ms', '2000', config], { cwd: f.dir, encoding: 'utf8', timeout: 10_000 });
+    release();
+    assert.equal(byId.status, 2, byId.stdout);
+    assert.equal(byId.stderr.trim().split('\n').length, 1, byId.stderr);
+    assert.match(byId.stderr, /locked/);
+    assert.match(byId.stderr, new RegExp(dbPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.doesNotMatch(byId.stderr, /time budget/);
+  }
+  {
+    const release = await holdLock(4_000);
+    const rehearsed = spawnSync(process.execPath, [join(root, 'src/build/cli.ts'), 'rehearse', dbPath, change, '--timeout-ms', '2000'], { encoding: 'utf8', timeout: 10_000 });
+    release();
+    const report = JSON.parse(rehearsed.stdout);
+    assert.equal(report.ok, false);
+    assert.equal(report.diagnostics[0].code, 'SNAPSHOT_FAILED');
+    assert.match(report.diagnostics[0].message, /locked/);
+    assert.match(report.diagnostics[0].message, new RegExp(dbPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
+});

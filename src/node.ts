@@ -35,7 +35,16 @@ export function storageOf(db: DatabaseSync): StorageLike {
         const statement = db.prepare(sql);
         const slots = bindings.length === 0 ? [] : namedSlots(sql);
         statement.setAllowBareNamedParameters(false);
-        const rows = slots.length > 0 ? statement.all(Object.fromEntries(slots.map((slot, i) => [slot.sqlName, bindings[i]])) as Record<string, never>) : statement.all(...(bindings as never[]));
+        // An assert's SQL carries the predicate's own named slots and, when
+        // a token is bound (ADR 0086 amendment), one
+        // trailing anonymous `?` after them: node:sqlite takes the named
+        // object as one argument and any remaining positional values
+        // (here, only the token) after it. Passing the named object alone
+        // would leave that `?` unbound (NULL), and the guard table's `name
+        // text not null` would fail in its place.
+        const rows = slots.length > 0
+          ? statement.all(Object.fromEntries(slots.map((slot, i) => [slot.sqlName, bindings[i]])) as Record<string, never>, ...(bindings.slice(slots.length) as never[]))
+          : statement.all(...(bindings as never[]));
         // node:sqlite rows have no prototype; a plain object compares equal
         // to a literal in a test.
         return { toArray: () => rows.map((r) => ({ ...r })) };
@@ -66,3 +75,4 @@ export function storageOf(db: DatabaseSync): StorageLike {
 }
 
 export { MigrationHistoryError, type MigrationOptions } from "./durable.ts";
+export { NODE_TEST_LIMITS } from "./runtime/node-limits.ts";

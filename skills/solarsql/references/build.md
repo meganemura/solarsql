@@ -32,7 +32,7 @@ The files are ES modules; a package.json that says `"type": "commonjs"` gets a n
 
 The build imports every module of `solarsql.config.ts`, applies the schema to an in-memory SQLite, prepares every statement on it, and writes `solarsql.generated.ts` next to each module.
 A generated file that is missing gets a stub before the import, so a fresh clone builds whatever the modules import from each other, and a configuration file that imports a module builds too.
-It prints `wrote` or `current` per module, with the time to import and type that module at the end of the line, a `+` line per statement added and a `-` line per statement removed, `scan` lines for full scans, a `reads` line per query of a `readsAll` module with the tables that query reads, a `time` line for the whole build, and `migrations are current`, or the statements a migration would hold. Its last line, `next: <command>`, names the next command to run: `npx tsc --noEmit && npm test` after a clean build with migrations current, the migration command when one is pending, or the fix for a blocked migration.
+It prints `wrote` or `current` per module, with the time to import and type that module at the end of the line, a `+` line per statement added and a `-` line per statement removed, `scan` lines for full scans (an UPDATE, DELETE, or INSERT...SELECT plan item with a WHERE clause can name a foreign-key child table its write scans, not only the write's own target, the same as a SELECT), a `reads` line per query of a `readsAll` module with the tables that query reads, a `time` line for the whole build, and `migrations are current`, or the statements a migration would hold. Its last line, `next: <command>`, names the next command to run: `npx tsc --noEmit && npm test` after a clean build with migrations current, the migration command when one is pending, or the fix for a blocked migration.
 The generated file is keyed by the SQL text: a statement whose text changed has no entry, and `tsc` fails at the call site until the build runs again. The error's expected type says `run npx solarsql build`. Commit the generated file.
 If only the DDL changes, unchanged statements can retain stale types that pass `tsc`; `build --check` detects stale generated files.
 
@@ -162,6 +162,10 @@ Shared SQL reports all its catalog locations.
 | `is a command, not a query. Run a command through db.run` | commands are out of scope for `query`; call `db.run` from application code instead |
 | `missing parameter` / `unexpected parameter` | fix `--params`' JSON object to match the query's own declared keys (ADR 0088) |
 | `--database is required` / `--database <file>:` | pass `--database <file.sqlite>`; the second form also carries the engine's own open failure |
+| `SQLite runs a FROM-clause subquery as its own closed scope` | move the condition into a JOIN's own ON clause, or write it as a scalar or EXISTS subquery in the SELECT list or WHERE clause, either of which SQLite does correlate to the enclosing query |
+| `the element of a json_each/json_tree bound to a named parameter` | give the child rows a second array parameter instead, with the parent id repeated on each child, and read it from its own json_each |
+| `is locked:` | another connection held the database past the busy-timeout wait; retry the command |
+| `An assert statement binds a run-time token as its own value, leaving 99 slots for the predicate` | give the assert's predicate 99 or fewer named parameters |
 
 A statement that does not prepare fails with the engine's own message, such as `no such column: x`, under the module and the statement.
 

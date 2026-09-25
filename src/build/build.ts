@@ -11,11 +11,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Command, Config, Index, ModuleConfig, PlanInclusion, PlanItem, Query, Search, Table, Trigger, View } from "../index.ts";
 import { GUARD_DDL, GUARD_TABLE, assertStatement } from "../runtime/plan.ts";
 import { GENERATED_FILE, emitGenerated, emitMigrationsIndex, emitStub } from "./emit.ts";
-import { Engine, type Access, type OutputColumn, type PlanRow } from "./facts.ts";
+import { Engine, WORKERD_SQLITE_VERSION, type Access, type OutputColumn, type PlanRow } from "./facts.ts";
 import { applied, diff, introspect, open, type DropIntent, type Rename, type RenameRepair } from "./migration.ts";
 import type { MigrationIntent } from "./migration-intent.ts";
 import { migrationSequence, nextMigrationFile, withMigrationLock, writeNewMigration } from "./migration-files.ts";
-import { aliasCandidates, created, definitions, indexTarget, isKeyword, quoteIdent, returningClause, significant, tokenize, triggerTarget, unquote, type RebuildRecord } from "./scan.ts";
+import { aliasCandidates, created, definitions, indexTarget, isKeyword, namedParams, quoteIdent, returningClause, significant, tokenize, triggerTarget, unquote, type RebuildRecord } from "./scan.ts";
 import { sqliteName } from "./scope.ts";
 import { shellArgument } from "./shell.ts";
 import { writeGeneratedFile } from "./output.ts";
@@ -128,8 +128,50 @@ export function summarizePlan(rows: readonly PlanRow[]): OperationPlan {
   return { rows: [...rows], scans, searches, tempBtree };
 }
 
+// A full-table scan of a write statement (UPDATE, DELETE, or INSERT...
+// SELECT), the same fact `Engine.fullScans()` reports for a select
+// (typer.analyze(), typegen.ts, gates that call on `select && where`: no
+// write plan item, including an assert's own INSERT...SELECT, was ever
+// checked there). The WHERE gate here matches that one: a WHERE-less write
+// (the example's `clear` commands) is meant to scan its table and reports
+// nothing.
+//
+// `Engine.fullScans()` covers every alias the statement's own text
+// declares. A parent-table write can also scan a *child* table for
+// SQLite's own foreign-key check, and that child's name never appears in
+// the write's text at all (measured: `delete from customers where id =
+// :id`, with no index on `orders.customer_id`, plans `SCAN orders`
+// alongside the parent's own indexed search). Engine.plan()'s SCAN rows
+// carry that name unresolved, the same alias-or-table-name `detail` gives
+// (ADR 0122); a name here that is not one of the statement's own declared
+// aliases, and that is a real (non-virtual) table's name, is such a check.
+export function writeScans(engine: Engine, sql: string): string[] {
+  if (isSelect(sql) || !/\bwhere\b/i.test(sql)) return [];
+  const out = new Set(engine.fullScans(sql));
+  const aliases = aliasCandidates(sql);
+  const tableNames = new Set(engine.tables().filter((t) => !t.virtual).map((t) => t.name));
+  for (const row of engine.plan(sql)) {
+    if (row.detail.includes("VIRTUAL TABLE")) continue;
+    const scan = /^SCAN\s+(\S+)/.exec(row.detail);
+    if (!scan) continue;
+    const name = unquote(scan[1]!);
+    if (!aliases.has(name) && tableNames.has(name)) out.add(name);
+  }
+  return [...out].sort();
+}
+
 export type BuildResult = {
-  inspection?: { sqlite: string; operations: OperationInspection[] };
+  // The build engine's own SQLite version, and the version the release's
+  // pinned workerd build ships (facts.ts's WORKERD_SQLITE_VERSION). A
+  // mismatch does not fail the build (measured: the example's generated
+  // files are byte-identical across 3.50.4-3.53.4): what can differ is a
+  // node() value (REAL through json_array/json_object and CAST digit
+  // count; STRICT generated-column enforcement) and a full-scan note
+  // (EXPLAIN QUERY PLAN's own shape changed for EXISTS in 3.51).
+  sqlite: string;
+  workerdSqlite: string;
+  sqliteNote: string | null;
+  inspection?: { sqlite: string; workerdSqlite: string; operations: OperationInspection[] };
   // Per module: the statements this build added to and removed from the
   // generated file, so the CLI can say what changed.
   modules: { name: string; generatedPath: string; entries: number; changed: boolean; added: string[]; removed: string[]; ms: number }[];
@@ -371,6 +413,7 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
   checkImports(modules);
   resolveIncludes(modules);
   checkAssertCollisions(modules);
+  checkAssertParamBudget(modules);
 
   // Ownership: one module per table.
   const owner = new Map<string, Module>();
@@ -665,6 +708,8 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
         }
         for (const b of analysis.brands) used.add(b);
         if (analysis.scans.length > 0) scans.push({ module: m.name, sql: key, tables: analysis.scans });
+        const written = writeScans(engine, sql);
+        if (written.length > 0) scans.push({ module: m.name, sql: key, tables: written });
         entries.push({ key, analysis, returning: returningKeys.has(key) });
       }
       if (moduleFailed) continue;
@@ -738,8 +783,11 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
 
     const migration = migrationStatus(configDir, config, modules);
     const index = await migrationsIndex(resolve(configDir, config.migrations), write);
-    const inspection = options.inspect ? { sqlite: String(engine.db.prepare("select sqlite_version() as version").get()!.version), operations } : undefined;
-    return { modules: results, migration, index, scans, reads, notes, ms: Math.round(performance.now() - buildStarted), ...(inspection ? { inspection } : {}) };
+    const sqlite = String(engine.db.prepare("select sqlite_version() as version").get()!.version);
+    const sqliteNote = sqlite === WORKERD_SQLITE_VERSION ? null
+      : `the build engine runs SQLite ${sqlite}; the release's pinned workerd build runs ${WORKERD_SQLITE_VERSION}. A node() value (REAL through json_array/json_object and CAST digit count; STRICT generated-column enforcement) or a full-scan note can differ. See README Requirements.`;
+    const inspection = options.inspect ? { sqlite, workerdSqlite: WORKERD_SQLITE_VERSION, operations } : undefined;
+    return { modules: results, migration, index, scans, reads, notes, sqlite, workerdSqlite: WORKERD_SQLITE_VERSION, sqliteNote, ms: Math.round(performance.now() - buildStarted), ...(inspection ? { inspection } : {}) };
   } finally {
     engine.close();
   }
@@ -817,6 +865,30 @@ function resolveIncludes(modules: readonly Module[]): void {
           throw new BuildError(`command ${m.name}.${c.name} includes ${range.name}: module ${owner.name} must come before module ${m.name} in modules.\n  at: ${at}`);
         }
         range.module = owner.name;
+      }
+    }
+  }
+}
+
+// An assert statement (ADR 0086 amendment) binds the
+// invocation token as its own value, appended after the predicate's own
+// named parameters, so D1 and a Durable Object's 100-bound-value prepare
+// limit (limits.md) leaves 99 slots for the predicate. The build types the
+// predicate alone, with no placeholder for the token (assertStatement()
+// called with no token), so a predicate at 100 named parameters would pass
+// here and still fail on every engine once the token is appended at run
+// time; refusing it here keeps every engine behaving the same.
+function checkAssertParamBudget(modules: readonly Module[]): void {
+  for (const m of modules) {
+    for (const c of m.commands) {
+      for (const [position, item] of c.plan.entries()) {
+        if (typeof item === "string") continue;
+        const count = namedParams(item.predicate).names.length;
+        if (count > 99) {
+          throw new BuildError(
+            `command ${m.name}.${c.name}: assert ${JSON.stringify(item.name)}'s predicate names ${count} parameters. An assert statement binds a run-time token as its own value, leaving 99 slots for the predicate; give it 99 or fewer.\n  at: ${join(m.dir, "module.ts")}: command ${c.catalog}.${c.name}`,
+          );
+        }
       }
     }
   }
