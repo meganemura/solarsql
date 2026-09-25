@@ -188,4 +188,23 @@ export function exampleSteps(value: Value, options: { oneIsolate: boolean; engin
     assert.deepEqual(await value({ step: "reset" }), { ok: true, rows: [], changes: 1 });
     assert.deepEqual(await value({ step: "searchNotes", query: "gift" }), []);
   });
+
+  // Own ids, placed after the last step that reads a row count: two SQLite
+  // builds sharing a major.minor were measured returning different values
+  // for the same float expression (see
+  // test/miniflare/sqlite-version.test.ts's value-differential probe). This
+  // step pins the same fact through the real read path: a price written as
+  // 0.1 + 0.2 must come back through orders.withLines's JSON lines exactly
+  // as it went in, not rounded to 0.3.
+  test("a line price written as 0.1 + 0.2 reads back through JSON lines exactly, not rounded", async () => {
+    await value({ step: "createCustomer", id: "c-float", name: "Flo", email: "flo@example.com" });
+    await value({
+      step: "placeOrder",
+      id: "o-float",
+      customer_id: "c-float",
+      lines: [{ id: "l-float", sku: "F", qty: 1, price: 0.1 + 0.2 }],
+    });
+    const order = (await value({ step: "order", id: "o-float" })) as { lines: { id: string; price: number }[] };
+    assert.deepEqual(order.lines.map((l) => l.price), [0.1 + 0.2]);
+  });
 }

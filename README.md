@@ -78,7 +78,7 @@ The package ships it; in a project, point AGENTS.md at `node_modules/solarsql/sk
 ## Requirements
 
 Node `^24.20.0 || >=26.7.0` runs the build: node:sqlite must report the SQLite that the release tests against in Miniflare (ADR 0129). The tests of this repository run on Node 24 and 26, and on each line's floor.
-On 2026-09-19, node:sqlite (Node 26.7.0) reported SQLite 3.53.4 and workerd (miniflare 5.20260828.0-alpha) reported SQLite 3.53.4.
+On 2026-09-19, node:sqlite (Node 26.7.0) reported SQLite 3.53.4 and workerd (miniflare 5.20260828.0-alpha) reported SQLite 3.53.4. The library's own CI compares node:sqlite, D1, and a Durable Object by the values of representative probe statements, not by version string alone: two SQLite builds sharing a major.minor were measured returning different values for the same expression (`test/miniflare/sqlite-version.test.ts`).
 TypeScript 5.8 or later: the tsconfig `init` writes sets `erasableSyntaxOnly`, which is the syntax Node's type stripping runs, and reads the imports with a `.ts` extension that the stripping needs (`allowImportingTsExtensions` under `noEmit`, or `rewriteRelativeImportExtensions` when tsc emits).
 
 ## Design

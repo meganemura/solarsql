@@ -28,5 +28,5 @@ See v0-measurements.md, sections 1 and 4.
 
 ## Consequences
 
-- The library CI prints both SQLite versions, so a drift between them is visible.
+- The library CI compares node:sqlite, D1, and a Durable Object by the values of representative probe statements, not by version string alone: two SQLite builds sharing a major.minor were measured returning different values for the same expression, so a version-string comparison alone would have missed a drift a value comparison catches. `test/miniflare/sqlite-version.test.ts` still prints all three version strings.
 - Users get property-based testing helpers after version 1.

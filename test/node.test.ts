@@ -80,6 +80,24 @@ describe("the example on node:sqlite", () => {
     if (first.ok) assert.equal(first.changes, 6);
     assert.deepEqual(await db.run(orderCommands.clear), { ok: true, rows: [], changes: 0 });
   });
+
+  // Own ids, placed after the last row count this describe block reads: two
+  // SQLite builds sharing a major.minor were measured returning different
+  // values for the same float expression (see
+  // test/miniflare/sqlite-version.test.ts's value-differential probe). This
+  // pins the same fact on node(): a price written as 0.1 + 0.2 must come
+  // back through orders.withLines's JSON lines exactly as it went in.
+  test("a line price written as 0.1 + 0.2 reads back through JSON lines exactly, not rounded", async () => {
+    const floatOrder = "o-float" as OrdersId;
+    await db.run(customerCommands.create, { id: "c-float" as CustomersId, name: "Flo", email: "flo@example.com" });
+    await db.run(orderCommands.place, {
+      id: floatOrder,
+      customer_id: "c-float" as CustomersId,
+      lines: [{ id: "l-float" as OrderLinesId, sku: "F", qty: 1, price: 0.1 + 0.2 }],
+    });
+    const order = await db.first(orderQueries.withLines, { id: floatOrder });
+    assert.deepEqual(order!.lines.map((l) => l.price), [0.1 + 0.2]);
+  });
 });
 
 test("SQLite scalar values survive the Node adapter", async () => {
