@@ -5,7 +5,7 @@
 // (schema.md, "Search tables") writing into a created search table, the
 // diff also generates the insert that repopulates it from its base table
 // (ADR 0118); any other shape leaves a comment instead.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { applied, diff, introspect, open, render } from "../src/build/migration.ts";
 import { searchFill, splitStatements, triggerInsertTarget } from "../src/build/scan.ts";

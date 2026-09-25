@@ -1,7 +1,7 @@
 // Responsibility: a table rebuild that never knew about a column the table
 // actually has, at replay time, refuses instead of silently losing the
 // column or its data (ADR 0099).
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { applied, diff, introspect, open, render } from "../src/build/migration.ts";

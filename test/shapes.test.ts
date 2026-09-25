@@ -1,7 +1,7 @@
 // The SQL shapes the type generator supports, one line each, with the
 // exact parameter and row types pinned. A change to scan.ts or typegen.ts
 // that moves one of these lines is a change to the public contract.
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { Engine } from "../src/build/facts.ts";
 import { Typer, brandName, type Brand } from "../src/build/typegen.ts";

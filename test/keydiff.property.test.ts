@@ -1,7 +1,7 @@
 // The build reports the statements it added and removed. For any two lists
 // of keys, the report and the old list rebuild the new list, and no key is
 // both added and removed.
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";

@@ -1,7 +1,7 @@
 // The id generator: version 7, the variant bits, and the order of ids as
 // strings follows the order they were made in, across milliseconds and
 // within one.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";

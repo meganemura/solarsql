@@ -5,7 +5,7 @@
 // cannot see: the rebuild's own restore step re-inserts each row under the
 // new declaration, the engine checks it there, and a violation rolls back
 // the whole file the same way a STRICT type mismatch does.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { applied, diff, introspect, open, render } from "../src/build/migration.ts";
 import { splitStatements } from "../src/build/scan.ts";

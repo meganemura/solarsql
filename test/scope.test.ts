@@ -1,7 +1,7 @@
 // Responsibility: compare inferred scalar guarantees with real SQLite rows across query scopes.
 // Boundary: this oracle understands scalar unions, not TypeScript's complete type language.
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
 import { Engine } from "../src/build/facts.ts";

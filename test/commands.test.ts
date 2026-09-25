@@ -10,7 +10,7 @@
 // type-level PlanRows selection is asserted at compile time below, both
 // against a hand-authored `Generated` map, so this file needs nothing from
 // the build's own emit (src/build/build.ts, src/build/typegen.ts).
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { GUARD_DDL } from "../src/runtime/plan.ts";

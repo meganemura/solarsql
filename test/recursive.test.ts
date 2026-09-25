@@ -1,7 +1,7 @@
 // Responsibility: verify recursive result types against SQLite's actual fixed point.
 // Boundary: finite fixtures test inference; SQL execution limits belong to the caller.
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
 import { Engine } from "../src/build/facts.ts";

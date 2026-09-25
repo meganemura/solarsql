@@ -4,7 +4,7 @@
 // see (ADR 0032). test/miniflare/node-limits.test.ts pins the same two
 // boundaries against D1 and a Durable Object.
 // Boundary: node:sqlite only. No Miniflare here.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { NODE_TEST_LIMITS } from "../src/runtime/node-limits.ts";

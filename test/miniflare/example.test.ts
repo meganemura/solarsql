@@ -1,7 +1,7 @@
 // The example project runs on the local D1 engine and on a SQLite Durable
 // Object, through the same module code. The steps are in example-steps.ts;
 // each is one request to the Worker in example/worker.ts.
-import { after, before, describe, test } from "node:test";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
@@ -28,7 +28,7 @@ for (const target of ["d1", "do"] as const) {
       return (reply as { value: unknown }).value;
     };
 
-    before(async () => {
+    beforeAll(async () => {
       // Excluded suites do not run disposal hooks, so registration must not own a runtime.
       mf = workerMiniflare(resolve(root, "example/worker.ts"), root, { durableObjects: { STORE: "Store" } });
       if (target === "d1") {
@@ -37,7 +37,7 @@ for (const target of ["d1", "do"] as const) {
         for (const file of migrations) await db.batch(splitStatements(file).map((s) => db.prepare(s)));
       }
     });
-    after(async () => {
+    afterAll(async () => {
       await mf?.dispose();
     });
 
@@ -46,9 +46,13 @@ for (const target of ["d1", "do"] as const) {
 }
 
 test("example selection exits when no test matches", () => {
+  // Vitest reports "no test suite found" as a failure unless the caller
+  // opts in with --passWithNoTests.
   const result = spawnSync(process.execPath, [
-    "--test", "--test-name-pattern=solarsql-unmatched-selection-probe", import.meta.filename,
-  ], { encoding: "utf8", timeout: 20_000 });
+    join(root, "node_modules/.bin/vitest"), "run", "--project", "miniflare",
+    "--testNamePattern", "solarsql-unmatched-selection-probe", "--passWithNoTests",
+    import.meta.filename,
+  ], { encoding: "utf8", timeout: 20_000, cwd: root });
   assert.equal(result.error, undefined, result.error?.message ?? "");
   assert.equal(result.status, 0, result.stderr + result.stdout);
 });

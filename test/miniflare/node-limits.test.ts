@@ -5,7 +5,7 @@
 // against node:sqlite under the constant.
 // Boundary: run-time limits only (prepare-limits.test.ts owns the
 // prepare-time ones).
-import { after, describe, test } from "node:test";
+import { afterAll, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { D1Harness } from "../d1.ts";
@@ -22,7 +22,7 @@ const recurseDdl = (depth: number) =>
 describe("D1's SQLite run-time verdict matches NODE_TEST_LIMITS", () => {
   const d1 = new D1Harness();
 
-  after(async () => {
+  afterAll(async () => {
     await d1.dispose();
   });
 
@@ -80,7 +80,7 @@ export default {
     durableObjects: { STORE: { className: "Store", useSQLite: true } },
   }));
 
-  after(async () => {
+  afterAll(async () => {
     await runtime?.dispose();
   });
 

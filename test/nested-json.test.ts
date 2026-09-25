@@ -1,6 +1,6 @@
 // A nested JSON aggregation arrives parsed at every level: the adapter
 // parses the column once, and json() made the inner array nest as JSON.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { queries, type Meta } from "../src/index.ts";

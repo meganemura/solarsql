@@ -4,7 +4,7 @@
 // and runs to make it -- is scripted, not model output.
 // Boundary: this spawns the stub as a child process and the CLI it calls
 // (npx solarsql, npx tsc), so it lives in test/slow/, not test/.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";

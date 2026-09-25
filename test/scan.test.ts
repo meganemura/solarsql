@@ -1,7 +1,7 @@
 // The scanner reads SQL text without a grammar. Properties: the tokens join
 // back into the input, a named parameter inside a string literal is not a
 // parameter, and statements split at top-level semicolons only.
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";

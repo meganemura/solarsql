@@ -13,7 +13,7 @@
 // ops on macOS where node:sqlite's own vdbeOp 25,000 already refuses), so a
 // case there would pin a boundary this library cannot make both engines
 // agree on.
-import { after, describe, test } from "node:test";
+import { afterAll, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { D1Harness } from "../d1.ts";
@@ -73,7 +73,7 @@ function nodeVerdict(sql: string): boolean {
 describe("D1 SQLite's prepare-time verdict matches facts.ts's WORKERD_LIMITS", () => {
   const d1 = new D1Harness();
 
-  after(async () => {
+  afterAll(async () => {
     await d1.dispose();
   });
 
@@ -126,7 +126,7 @@ export default {
     durableObjects: { STORE: { className: "Store", useSQLite: true } },
   }));
 
-  after(async () => {
+  afterAll(async () => {
     await runtime?.dispose();
   });
 

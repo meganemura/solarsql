@@ -1,7 +1,7 @@
 // `solarsql build` on the example: the committed generated files are
 // current, the migration files are current, and the build refuses the
 // shapes the design rules out. Each case works on a copy of the example.
-import { describe, test } from "node:test";
+import { describe, onTestFinished, test } from "vitest";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -1066,8 +1066,8 @@ export const referrals = table(\`
   });
 });
 
-test('migration generation appends after gaps without replacing history', async t => {
-  const dir = copy(); t.after(() => rmSync(dir, {recursive:true,force:true}));
+test('migration generation appends after gaps without replacing history', async () => {
+  const dir = copy(); onTestFinished(() => rmSync(dir, {recursive:true,force:true}));
   const migrations = join(dir,'example/migrations');
   const existing = join(migrations,'0006_collision.sql');
   renameSync(join(migrations,'0005_customer_name_not_empty.sql'),existing);
@@ -1082,9 +1082,9 @@ test('migration generation appends after gaps without replacing history', async 
   assert.equal(existsSync(join(migrations,'.solarsql-generation.lock')),false);
 });
 
-test('migration file publication is exclusive and generation locks are released', async t => {
+test('migration file publication is exclusive and generation locks are released', async () => {
   const dir = mkdtempSync(join(tmpdir(),'solarsql-migration-lock-'));
-  t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  onTestFinished(()=>rmSync(dir,{recursive:true,force:true}));
   const file = {filename:'0001_initial.sql',sql:'create table t(n integer) strict;'};
   writeNewMigration(dir,file);
   assert.throws(()=>writeNewMigration(dir,{...file,sql:'drop table t;'}),/already exists/);
@@ -1095,9 +1095,9 @@ test('migration file publication is exclusive and generation locks are released'
   assert.equal(existsSync(join(dir,'.solarsql-generation.lock')),false);
 });
 
-test('a migration write killed before its link leaves no file at the final name', async t => {
+test('a migration write killed before its link leaves no file at the final name', async () => {
   const dir = mkdtempSync(join(tmpdir(),'solarsql-migration-killed-'));
-  t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  onTestFinished(()=>rmSync(dir,{recursive:true,force:true}));
   const filename = '0001_initial.sql';
   const sql = 'create table t(n integer) strict;';
   const fixture = join(root,'test/fixtures/interrupted-migration-write.ts');
@@ -1110,7 +1110,7 @@ test('a migration write killed before its link leaves no file at the final name'
     });
     child.on('error', reject);
     child.on('exit', (code,signal) => resolvePromise({code,signal}));
-    t.after(() => child.kill('SIGKILL'));
+    onTestFinished(() => { child.kill('SIGKILL'); });
   });
   const {signal} = await killed;
   assert.equal(signal,'SIGKILL');
@@ -1131,8 +1131,8 @@ test('migration numbering rejects ambiguous history and unsafe lexical rollover'
   assert.equal(nextMigrationFile(['00001_a.sql','00009_b.sql'],'next',[]).filename,'00010_next.sql');
 });
 
-test('a competing CLI generator reports the held lock and preserves history', async t => {
-  const dir = copy(); t.after(()=>rmSync(dir,{recursive:true,force:true}));
+test('a competing CLI generator reports the held lock and preserves history', async () => {
+  const dir = copy(); onTestFinished(()=>rmSync(dir,{recursive:true,force:true}));
   const migrations = join(dir,'example/migrations');
   const existing = join(migrations,'0005_customer_name_not_empty.sql');
   const before = readFileSync(existing,'utf8');

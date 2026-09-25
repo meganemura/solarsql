@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { build } from "../src/build/build.ts";
 import { fixtureDir, librarySpecifier } from "./fixture-dir.ts";
 

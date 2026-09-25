@@ -4,7 +4,7 @@
 // on-disk source database and its backup phase, live in
 // test/slow/rehearse-file.test.ts; every test here calls rehearseSnapshot()
 // against an in-memory database instead.
-import { test } from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { readdirSync } from 'node:fs';

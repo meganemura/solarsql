@@ -5,16 +5,16 @@
 // the same as a real deployment (this is the fact the section cites).
 // Boundary: local Miniflare evidence; a real Cloudflare deployment is not
 // exercised here (see skills/solarsql/references/deploy.md's remote suite).
-import { test } from "node:test";
+import { test, onTestFinished } from "vitest";
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { workerMiniflare } from "../worker.ts";
 
 const root = resolve(import.meta.dirname, "../..");
 
-test("an alarm set from a request fires and its handler runs a command", async (t) => {
+test("an alarm set from a request fires and its handler runs a command", async () => {
   const mf = workerMiniflare(resolve(root, "test/durable-alarm.worker.ts"), root, { durableObjects: { PROBE: "AlarmProbe" } });
-  t.after(() => mf.dispose());
+  onTestFinished(() => mf.dispose());
 
   const scheduled = await mf.dispatchFetch("http://localhost/");
   assert.equal(await scheduled.text(), "scheduled");

@@ -3,7 +3,7 @@
 // has since dropped, and whose own target schema still declares it, refuses
 // to replay instead of silently restoring what the sibling meant to remove
 // (the mirror direction of ADR 0099/0101/0102's own checks; see ADR 0116).
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { applied, diff, introspect, open, render } from "../src/build/migration.ts";

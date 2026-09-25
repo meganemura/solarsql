@@ -1,7 +1,7 @@
 // Responsibility: check parameter binding against lexical SELECT scopes.
 // Boundary: these cases use table columns, not inferred CTE output parameters.
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
 import { Engine } from "../src/build/facts.ts";

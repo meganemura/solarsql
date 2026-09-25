@@ -2,7 +2,7 @@
 // does not change reported changes and reads the correct returns reply
 // once a cleanup delete follows it in the same D1 batch.
 // Boundary: the D1 adapter's statement assembly and reply indexing only.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { d1, type D1Like, type D1StatementLike } from "../src/d1.ts";
 import { orderCommands } from "../example/modules/orders/public.ts";

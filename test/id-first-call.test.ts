@@ -2,7 +2,7 @@
 // from an earlier call exists. Kept in its own file because id.ts holds
 // its clock state at module scope, and only a fresh process gives this
 // call a clean lastMs.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { uuidV7 } from "../src/runtime/id.ts";
 

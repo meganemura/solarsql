@@ -5,7 +5,7 @@
 // unpaged read gives; and a row deleted between two pages, before its own
 // page is fetched, must not stop the walk from reaching every row that was
 // never deleted.
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import * as hegel from "@hegeldev/hegel";

@@ -10,7 +10,7 @@
 // WAL source had been touched earlier in the same process (ADR 0121);
 // rehearse() now uses `vacuum into`, and the last test below asserts that
 // phase stays under 2,000 ms so a regression back to backup() fails loudly.
-import { test } from 'node:test';
+import { test, onTestFinished } from 'vitest';
 import assert from 'node:assert/strict';
 import { subscribe, unsubscribe } from 'node:diagnostics_channel';
 import { DatabaseSync } from 'node:sqlite';
@@ -19,9 +19,9 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { rehearse } from '../../src/build/rehearse.ts';
 
-test('rehearsal checks data and old queries without changing the source', async t => {
+test('rehearsal checks data and old queries without changing the source', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'solarsql-rehearsal-test-'));
-  t.after(() => rmSync(dir, {recursive:true,force:true}));
+  onTestFinished(() => rmSync(dir, {recursive:true,force:true}));
   const path = join(dir,'source.sqlite');
   const db = new DatabaseSync(path);
   db.exec("create table items(id integer primary key, value text not null) strict; insert into items values (1,'kept')");
@@ -51,19 +51,19 @@ test('rehearsal checks data and old queries without changing the source', async 
   }
 });
 
-test('rehearsal snapshots committed WAL data and rejects broken foreign keys', async t => {
+test('rehearsal snapshots committed WAL data and rejects broken foreign keys', async () => {
   const events: { phase: string; event: string; ms?: number }[] = [];
   const observe = (message: unknown) => events.push(message as typeof events[number]);
   subscribe('solarsql.rehearse', observe);
-  t.after(() => { unsubscribe('solarsql.rehearse', observe); });
+  onTestFinished(() => { unsubscribe('solarsql.rehearse', observe); });
   const dir = mkdtempSync(join(tmpdir(), 'solarsql-rehearsal-wal-'));
   const path = join(dir,'source.sqlite');
   const db = new DatabaseSync(path);
   // Windows refuses to remove a directory holding an open SQLite handle, so
-  // the close hook must run before the rmSync hook; node runs t.after hooks
-  // in registration order, so close is registered first.
-  t.after(() => db.close());
-  t.after(() => rmSync(dir, {recursive:true,force:true,maxRetries:5}));
+  // the close hook must run before the rmSync hook; Vitest runs
+  // onTestFinished hooks in registration order, so close is registered first.
+  onTestFinished(() => db.close());
+  onTestFinished(() => rmSync(dir, {recursive:true,force:true,maxRetries:5}));
   db.exec('pragma journal_mode = wal; create table parents(id integer primary key); create table children(p integer references parents(id)); insert into parents values (1); insert into children values (1)');
   db.exec("create table identities(value text); insert into identities(rowid,value) values (42,'kept')");
   const report = await rehearse(path,'alter table children add column note text', {
@@ -79,14 +79,14 @@ test('rehearsal snapshots committed WAL data and rejects broken foreign keys', a
   assert.equal(db.prepare('select count(*) as n from parents').get()!.n,1);
 });
 
-test('rehearsal snapshots a one-row database quickly, plain and WAL', async t => {
+test('rehearsal snapshots a one-row database quickly, plain and WAL', async () => {
   for (const mode of ['plain', 'wal'] as const) {
     const events: { phase: string; event: string; ms?: number }[] = [];
     const observe = (message: unknown) => events.push(message as typeof events[number]);
     subscribe('solarsql.rehearse', observe);
-    t.after(() => { unsubscribe('solarsql.rehearse', observe); });
+    onTestFinished(() => { unsubscribe('solarsql.rehearse', observe); });
     const dir = mkdtempSync(join(tmpdir(), `solarsql-rehearsal-speed-${mode}-`));
-    t.after(() => rmSync(dir, {recursive:true,force:true}));
+    onTestFinished(() => rmSync(dir, {recursive:true,force:true}));
     const path = join(dir,'source.sqlite');
     const db = new DatabaseSync(path);
     if (mode === 'wal') db.exec('pragma journal_mode = wal');
@@ -99,14 +99,14 @@ test('rehearsal snapshots a one-row database quickly, plain and WAL', async t =>
   }
 });
 
-test('rehearsal preserves implicit row identities across the snapshot step, plain and WAL (ADR 0063/0068)', async t => {
+test('rehearsal preserves implicit row identities across the snapshot step, plain and WAL (ADR 0063/0068)', async () => {
   // vacuum into (ADR 0121) rewrites the file; SQLite's own VACUUM docs warn
   // rowids of a table with no INTEGER PRIMARY KEY "may" change, so this
   // checks a table with a gap-and-reorder-prone rowid sequence, not just one
   // row, plus an AUTOINCREMENT table's sqlite_sequence counter.
   for (const mode of ['plain', 'wal'] as const) {
     const dir = mkdtempSync(join(tmpdir(), `solarsql-rehearsal-rowid-${mode}-`));
-    t.after(() => rmSync(dir, {recursive:true,force:true}));
+    onTestFinished(() => rmSync(dir, {recursive:true,force:true}));
     const path = join(dir,'source.sqlite');
     const db = new DatabaseSync(path);
     if (mode === 'wal') db.exec('pragma journal_mode = wal');

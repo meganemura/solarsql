@@ -3,7 +3,7 @@
 // The adapter turns an engine error into a value. The message formats are
 // fixed strings on node:sqlite, D1, and a Durable Object, so a message built
 // from a kind, a table, and columns must parse back to the same value.
-import { describe, test } from "node:test";
+import { describe, test, onTestFinished } from "vitest";
 import assert from "node:assert/strict";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
@@ -117,7 +117,7 @@ test('unique expression-index failures retain their actual index names', async (
   }finally{raw.close();}
 });
 
-test('generated command callers receive index targets on Node, D1, and Durable Objects', async t => {
+test('generated command callers receive index targets on Node, D1, and Durable Objects', async () => {
   const {DatabaseSync}=await import('node:sqlite');
   const {node}=await import('../../src/node.ts');
   const {ddl,conflict}=await import('../index-failure-fixture.ts');
@@ -173,7 +173,7 @@ test('generated command callers receive index targets on Node, D1, and Durable O
   }finally{parameterRaw.close();}
   const root=resolve(import.meta.dirname,'../..');
   const mf=workerMiniflare(resolve(root,'test/index-failure-worker.ts'),root,{durableObjects:{INDEX:'IndexFailure',COLLISION:'AssertCollision',NULLPREDICATE:'NullPredicateAssert',AMBIGUOUS:'AmbiguousConstraint',PARAMETERS:'ParameterContract'}});
-  t.after(()=>mf.dispose());
+  onTestFinished(()=>mf.dispose());
   for(const path of ['/','/do']) assert.deepEqual(await (await mf.dispatchFetch('http://localhost'+path)).json(),expected);
   for(const path of ['/collision','/collision-do']) {
     const result=await (await mf.dispatchFetch('http://localhost'+path)).json() as {messages:string[];count:number};

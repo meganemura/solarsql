@@ -3,7 +3,7 @@
 // stores. Opt-in: SOLARSQL_REMOTE_URL names the Worker, and
 // SOLARSQL_REMOTE_TOKEN carries its TOKEN secret when it has one. Without
 // the URL the test is skipped, so `npm test` needs no account.
-import { before, describe, test } from "node:test";
+import { beforeAll, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { exampleSteps, type Reply } from "./example-steps.ts";
 
@@ -11,7 +11,8 @@ const url = process.env.SOLARSQL_REMOTE_URL;
 const token = process.env.SOLARSQL_REMOTE_TOKEN;
 
 if (url === undefined) {
-  test("the example on a deployed Worker", { skip: "set SOLARSQL_REMOTE_URL to the Worker's URL to run" }, () => {});
+  // set SOLARSQL_REMOTE_URL to the Worker's URL to run
+  test.skip("the example on a deployed Worker", () => {});
 } else {
   for (const target of ["d1", "do"] as const) {
     describe(`example on remote ${target}`, () => {
@@ -31,7 +32,7 @@ if (url === undefined) {
         return (reply as { value: unknown }).value;
       };
 
-      before(async () => {
+      beforeAll(async () => {
         await value({ step: "reset" });
       });
 

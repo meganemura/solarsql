@@ -6,7 +6,7 @@
 // migrate-durable-object.test.ts style.
 // Boundary: local Miniflare evidence; a real Cloudflare deployment is not
 // exercised here (see skills/solarsql/references/deploy.md's remote suite).
-import { test } from "node:test";
+import { test, onTestFinished } from "vitest";
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { workerMiniflare } from "../worker.ts";
@@ -15,9 +15,9 @@ const root = resolve(import.meta.dirname, "../..");
 
 type EventBody = { kind: string; name: string; outcome: string; meta: { rows_read: number; rows_written: number; duration?: number } | null };
 
-test("a real Durable Object's cursor reports rows_written after a command and rows_read after a batch", async (t) => {
+test("a real Durable Object's cursor reports rows_written after a command and rows_read after a batch", async () => {
   const mf = workerMiniflare(resolve(root, "test/durable-object-meta.worker.ts"), root, { durableObjects: { PROBE: "MetaProbe" } });
-  t.after(() => mf.dispose());
+  onTestFinished(() => mf.dispose());
 
   const response = await mf.dispatchFetch("http://localhost/");
   const events = (await response.json()) as EventBody[];

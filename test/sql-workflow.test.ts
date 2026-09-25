@@ -1,6 +1,6 @@
 // Responsibility: exercise adoption, query repair, and a populated transition through the CLI.
 // Boundary: local evidence; remote adapter execution has its own opt-in suite.
-import { test } from 'node:test';
+import { test, onTestFinished } from 'vitest';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -25,9 +25,9 @@ select a.name, t.total
 from accounts a left join totals t on t.account = a.name
 order by a.name`;
 
-test('SQL changes retain caller types, expose repair steps, and rehearse against stored rows', t => {
+test('SQL changes retain caller types, expose repair steps, and rehearse against stored rows', () => {
   const dir = fixtureDir('solarsql-workflow-');
-  t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  onTestFinished(()=>rmSync(dir,{recursive:true,force:true}));
   symlinkSync(join(root,'node_modules'),join(dir,'node_modules'),'dir');
   writeFileSync(join(dir,'package.json'),'{"type":"module"}');
   const ddl = join(dir,'schema.sql'), catalog = join(dir,'queries.json'), out = join(dir,'generated.ts');
@@ -104,17 +104,17 @@ try {
   assert.equal(executed.status,0,executed.stdout+executed.stderr);
 });
 
-test('generated outer-join reports preserve arbitrary invoice totals and empty accounts', async t => {
+test('generated outer-join reports preserve arbitrary invoice totals and empty accounts', async () => {
   const { testAsync } = await import('@hegeldev/hegel');
   const gs = await import('@hegeldev/hegel/generators');
   const dir = mkdtempSync(join(tmpdir(),'solarsql-report-property-'));
-  t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  onTestFinished(()=>rmSync(dir,{recursive:true,force:true}));
   const file = join(dir,'generated.ts');
   writeFileSync(file,analyzeSchema(schema,{report},join(root,'src/index.ts')).generated);
   const emitted = await import(pathToFileURL(file).href);
   const q = queries(emitted.generated, emitted.statements);
   const db = new DatabaseSync(':memory:');
-  t.after(()=>db.close());
+  onTestFinished(()=>db.close());
   db.exec(schema);
   db.exec("insert into accounts values ('A'),('B')");
   const adapter = node(db);

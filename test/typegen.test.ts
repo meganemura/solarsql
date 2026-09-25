@@ -1,7 +1,7 @@
 // The type generator turns engine facts into TypeScript text. These cases
 // pin the text for the shapes the library supports, and the errors for the
 // shapes it refuses.
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";

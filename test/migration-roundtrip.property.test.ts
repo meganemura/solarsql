@@ -2,7 +2,7 @@
 // a database at S1 (with rows) to the shape of S2, and a second diff is empty.
 // When one table has both a removed and an added column, the generator must
 // stop instead of guessing a rename.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";

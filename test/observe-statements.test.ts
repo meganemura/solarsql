@@ -6,7 +6,7 @@
 // field, node:sqlite having no per-statement counters). The summed `meta`
 // field's own contract stays test/observe-meta.test.ts's; this file only
 // checks that it is unchanged alongside the new field.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { d1, type D1Like, type D1StatementLike } from "../src/d1.ts";
 import { durable, type StorageLike } from "../src/durable.ts";

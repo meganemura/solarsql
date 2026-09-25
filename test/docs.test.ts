@@ -2,7 +2,7 @@
 // every reference is linked from SKILL.md, every relative link under skills/
 // and in the README resolves, and every message fragment in build.md's
 // table appears in the source of the build.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";

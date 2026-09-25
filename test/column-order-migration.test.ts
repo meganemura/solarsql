@@ -10,7 +10,7 @@
 // Boundary: this file pins diff()'s own comparison. The RebuildRecord check
 // a replay runs (ADR 0099/0101/0102, applied()/durable.ts's migrate()) is
 // already order-insensitive and is not touched here.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";

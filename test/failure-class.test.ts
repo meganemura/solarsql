@@ -2,7 +2,7 @@
 // quote, plus the two prefixes bareMessage() strips before a rule ever
 // sees the text. A Hegel property covers what the example cases cannot:
 // that failureClass() never throws, and that a match it reports is real.
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";

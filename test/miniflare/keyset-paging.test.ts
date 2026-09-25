@@ -7,7 +7,7 @@
 // observe hook.
 // Boundary: local Miniflare evidence; a real Cloudflare deployment is not
 // exercised here (see skills/solarsql/references/deploy.md's remote suite).
-import { test } from "node:test";
+import { test, onTestFinished } from "vitest";
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { workerMiniflare } from "../worker.ts";
@@ -17,9 +17,9 @@ const root = resolve(import.meta.dirname, "../..");
 type Result = { keyset: number | null; composite: number | null; offset: number | null; limit: number; offsetArg: number };
 
 for (const target of ["d1", "do"] as const) {
-  test(`a deep keyset page reads a fixed number of rows and an OFFSET page reads offset + limit, on ${target}`, async (t) => {
+  test(`a deep keyset page reads a fixed number of rows and an OFFSET page reads offset + limit, on ${target}`, async () => {
     const mf = workerMiniflare(resolve(root, "test/keyset-paging.worker.ts"), root, { durableObjects: { PROBE: "KeysetProbe" } });
-    t.after(() => mf.dispose());
+    onTestFinished(() => mf.dispose());
 
     const response = await mf.dispatchFetch(`http://localhost/${target === "do" ? "do" : ""}`);
     const result = (await response.json()) as Result;

@@ -1,6 +1,6 @@
 // Responsibility: prove SQL survives generation, caller compilation, and adapter execution.
 // Boundary: scope inference cases live with the resolver; this test crosses its public seams.
-import { test } from "node:test";
+import { test, onTestFinished } from "vitest";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -12,9 +12,9 @@ import { fixtureDir, librarySpecifier, specifier, tscArgs } from "./fixture-dir.
 
 const root = resolve(import.meta.dirname, "..");
 
-test("original SQL crosses CTEs, FULL JOIN, UNION and scalar JSON with precise caller types", async (t) => {
+test("original SQL crosses CTEs, FULL JOIN, UNION and scalar JSON with precise caller types", async () => {
   const dir = fixtureDir("solarsql-scopes-");
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, "stock"));
   symlinkSync(join(root, "node_modules"), join(dir, "node_modules"), "dir");
   writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
@@ -98,9 +98,9 @@ try {
   assert.equal(executed.status, 0, executed.stdout + executed.stderr);
 });
 
-test("integer and blob keys retain runtime types while text references retain brands", async (t) => {
+test("integer and blob keys retain runtime types while text references retain brands", async () => {
   const dir = fixtureDir("solarsql-key-types-");
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, "keys"));
   symlinkSync(join(root, "node_modules"), join(dir, "node_modules"), "dir");
   writeFileSync(join(dir, "package.json"), '{"type":"module"}');
@@ -154,12 +154,12 @@ db.close();
 });
 
 
-test("CHECK-derived generated rows compile with their stored SQLite types", async (t) => {
+test("CHECK-derived generated rows compile with their stored SQLite types", async () => {
   const { Engine } = await import("../src/build/facts.ts");
   const { Typer } = await import("../src/build/typegen.ts");
   const { emitGenerated } = await import("../src/build/emit.ts");
   const dir = mkdtempSync(join(tmpdir(), "solarsql-check-types-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
   symlinkSync(join(root, "node_modules"), join(dir, "node_modules"), "dir");
   writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
   const engine = new Engine([`create table values_table(

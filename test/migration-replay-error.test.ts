@@ -1,7 +1,7 @@
 // Responsibility: applied()'s wrapped replay error names which statement of
 // a multi-statement migration file failed, not only the file.
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { applied } from "../src/build/migration.ts";
 import { BuildError } from "../src/build/typegen.ts";
 

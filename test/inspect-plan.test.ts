@@ -3,7 +3,7 @@
 // summarized by summarizePlan() in build.ts. The example pins one case of
 // each; the property below holds for any indexed column, not just the
 // example's own.
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import * as hegel from "@hegeldev/hegel";

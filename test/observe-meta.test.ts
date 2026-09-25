@@ -3,7 +3,7 @@
 // The observe hook carries D1's meta: one reply for a query, the sum of the
 // replies for a batch and for a command, the region from the first reply,
 // and no field at all when the engine reports none.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { d1, type D1Like, type D1StatementLike } from "../src/d1.ts";
 import { read, type Observed } from "../src/index.ts";

@@ -12,7 +12,7 @@
 // the check here only stops the known slow mechanisms (Miniflare,
 // ../cli-discovery.ts, rehearse() itself) from drifting back into the fast
 // set, and stops Miniflare from drifting into test/slow/.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";

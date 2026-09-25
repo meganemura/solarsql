@@ -6,7 +6,7 @@
 // succeeds), plus one D1 fake proving `at` is absent on a D1 failure too.
 // test/miniflare/observe-plan-item.test.ts is this file's Miniflare
 // evidence, on real D1 and a real Durable Object.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { commands, read, type Meta, type Observed } from "../src/index.ts";

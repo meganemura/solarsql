@@ -1,7 +1,7 @@
 // A view takes part in the migration diff, and a table rebuild under a view
 // drops the view first and creates it again after: RENAME refuses to run
 // while a view names a table that is gone.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { applied, diff, introspect, open, render } from "../src/build/migration.ts";
 import { splitStatements } from "../src/build/scan.ts";

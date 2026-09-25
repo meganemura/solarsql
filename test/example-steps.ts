@@ -4,7 +4,7 @@
 // test/remote.test.ts on a deployed Worker.
 // Boundary: no transport here. The caller sends a step and returns the value
 // of the reply, and fails the test when the reply is an error.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 
 export type Reply = { ok: true; value: unknown } | { ok: false; message: string; cause: string | null };
@@ -156,7 +156,9 @@ export function exampleSteps(value: Value, options: { oneIsolate: boolean; engin
     assert.deepEqual(await value({ step: "customers" }), [{ id: "c1", name: "Ann", email: "ann@example.com" }]);
   });
 
-  test("the observe hook saw every call with its name and outcome", { skip: options.oneIsolate ? false : "the events of the hook live in one isolate, and a deployed Worker runs several" }, async () => {
+  // Skipped unless oneIsolate: the events of the hook live in one isolate,
+  // and a deployed Worker runs several.
+  test.skipIf(!options.oneIsolate)("the observe hook saw every call with its name and outcome", async () => {
     const seen = (await value({ step: "observed" })) as { kind: string; name: string; outcome: string; timed: boolean; meta: { rows_read: number; rows_written: number; duration: number } | null }[];
     assert.ok(seen.every((e) => e.timed));
     // D1 and a Durable Object report meta on every reply that arrived; a

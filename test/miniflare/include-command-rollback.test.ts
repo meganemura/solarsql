@@ -8,7 +8,7 @@
 // module's own part leaves the included part's rows in place too (the
 // mirror case), because the whole plan is one transaction.
 // Boundary: local Miniflare evidence, the same as test/miniflare/example.test.ts.
-import { after, before, describe, test } from "node:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { cpSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";

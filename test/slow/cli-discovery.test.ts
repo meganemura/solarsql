@@ -1,6 +1,6 @@
 // Responsibility: check project-free discovery through the source CLI.
 // Boundary: pack.test.ts applies the same checks to the installed artifact.
-import { test } from "node:test";
+import { test } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { checkDiscovery } from "../cli-discovery.ts";

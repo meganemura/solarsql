@@ -1,6 +1,6 @@
 // Responsibility: verify schema-only adoption across generation, compilation, and execution.
 // Boundary: module ownership checks belong to build tests.
-import { test } from "node:test";
+import { onTestFinished, test, vi } from "vitest";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { linkSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -21,9 +21,9 @@ const library = join(root, "src/index.ts");
 const schema = 'create table legacy(n integer, label); create table items(n integer not null, label text) strict;';
 const catalog = { legacy: 'select n, label from legacy', items: '-- Original SQL\nselect n, label from items where n = :n;' };
 
-test('schema-only generation preserves SQL and coexists with a direct SQLite driver', t => {
+test('schema-only generation preserves SQL and coexists with a direct SQLite driver', () => {
   const dir = fixtureDir('solarsql-analyze-');
-  t.after(() => rmSync(dir, {recursive:true,force:true}));
+  onTestFinished(() => rmSync(dir, {recursive:true,force:true}));
   symlinkSync(join(root, 'node_modules'), join(dir, 'node_modules'), 'dir');
   writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
   const report = analyzeSchema(schema, catalog, library);
@@ -65,9 +65,9 @@ try {
   assert.equal(executed.status,0,executed.stdout+executed.stderr);
 });
 
-test('analyze CLI checks freshness without writing and reports query locations', t => {
+test('analyze CLI checks freshness without writing and reports query locations', () => {
   const dir = mkdtempSync(join(tmpdir(), 'solarsql-analyze-cli-'));
-  t.after(() => rmSync(dir,{recursive:true,force:true}));
+  onTestFinished(() => rmSync(dir,{recursive:true,force:true}));
   const ddl = join(dir,'schema.sql'), sql = join(dir,'queries.json'), out = join(dir,'generated.ts');
   writeFileSync(ddl,schema);
   writeFileSync(sql,JSON.stringify(catalog));
@@ -100,11 +100,11 @@ test('schema-only analysis rejects invalid inputs and shares duplicate SQL metad
   assert.equal(same.generated.match(/params: \{ n: number \}/g)?.length,1);
 });
 
-test('database analysis uses existing WAL schema and compiles a caller without copying DDL', t => {
+test('database analysis uses existing WAL schema and compiles a caller without copying DDL', () => {
   const dir = fixtureDir('solarsql-existing-');
   const source = join(dir, 'source.sqlite');
   const db = new DatabaseSync(source);
-  t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
+  onTestFinished(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
   db.exec(`pragma journal_mode=wal;
     create table items(id integer not null, value text) strict;
     create index item_ids on items(id);
@@ -162,11 +162,11 @@ try {
   assert.equal(executed.status, 0, executed.stdout + executed.stderr);
 });
 
-test('database CLI protects source aliases and companion files and checks current contracts', t => {
+test('database CLI protects source aliases and companion files and checks current contracts', () => {
   const dir = mkdtempSync(join(tmpdir(), 'solarsql-source-protection-'));
   const source = join(dir, 'source.sqlite');
   const db = new DatabaseSync(source);
-  t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
+  onTestFinished(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
   db.exec('pragma journal_mode=wal; create table items(value text) strict; insert into items values(\'kept\')');
   const catalog = join(dir, 'queries.json');
   writeFileSync(catalog, JSON.stringify({ item: 'select * from items' }));
@@ -202,18 +202,18 @@ test('database CLI protects source aliases and companion files and checks curren
   assert.equal(readFileSync(output, 'utf8'), generated);
 });
 
-test('database analysis keeps one schema view while another WAL connection commits', t => {
+test('database analysis keeps one schema view while another WAL connection commits', () => {
   const dir = mkdtempSync(join(tmpdir(), 'solarsql-schema-view-'));
   const source = join(dir, 'source.sqlite');
   const writer = new DatabaseSync(source);
-  t.after(() => { writer.close(); rmSync(dir, { recursive: true, force: true }); });
+  onTestFinished(() => { writer.close(); rmSync(dir, { recursive: true, force: true }); });
   writer.exec('pragma journal_mode=wal; create table items(value text) strict');
   const initial = analyzeDatabase(source, { item: 'select * from items' });
   const prepare = DatabaseSync.prototype.prepare;
   let changed = false;
   // Commit immediately after the reader acquires its schema view. Later facts
   // must describe that same view, even though the writer's schema is newer.
-  const mock = t.mock.method(DatabaseSync.prototype, 'prepare', function (this: DatabaseSync, sql: string) {
+  const spy = vi.spyOn(DatabaseSync.prototype, 'prepare').mockImplementation(function (this: DatabaseSync, sql: string) {
     const statement = prepare.call(this, sql);
     if (!changed && sql.includes('from sqlite_schema')) {
       const all = statement.all.bind(statement);
@@ -227,7 +227,7 @@ test('database analysis keeps one schema view while another WAL connection commi
     return statement;
   });
   const during = analyzeDatabase(source, { item: 'select * from items' });
-  mock.mock.restore();
+  spy.mockRestore();
   assert.equal(changed, true);
   assert.equal(during.source.schemaHash, initial.source.schemaHash);
   assert.deepEqual(during.operations[0]!.columns, initial.operations[0]!.columns);
@@ -236,13 +236,13 @@ test('database analysis keeps one schema view while another WAL connection commi
   assert.deepEqual(after.operations[0]!.columns.map(c => c.name), ['value', 'newer']);
 });
 
-test('database analysis preserves arbitrary SQLite values and source bytes', async t => {
+test('database analysis preserves arbitrary SQLite values and source bytes', async () => {
   const { test: property } = await import('@hegeldev/hegel');
   const gs = await import('@hegeldev/hegel/generators');
   const dir = mkdtempSync(join(tmpdir(), 'solarsql-preserve-values-'));
   const source = join(dir, 'source.sqlite');
   const db = new DatabaseSync(source);
-  t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
+  onTestFinished(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
   db.exec('create table values_table(value)');
   property(tc => {
     const kind = tc.draw(gs.integers({ minValue: 0, maxValue: 3 }));
@@ -265,9 +265,9 @@ create table shadows(RowId text not null, value text) strict;
 create table keyed(id text primary key) without rowid;
 create virtual table search using fts5(value);`;
 
-test('row identifiers retain engine output names, shadowing, joins, and wildcard shape', t => {
+test('row identifiers retain engine output names, shadowing, joins, and wildcard shape', () => {
   const db = new DatabaseSync(':memory:');
-  t.after(() => db.close());
+  onTestFinished(() => db.close());
   db.exec(rowidSchema);
   db.exec(`insert into items values(42,'item'); insert into labels(rowid,label) values(7,'label');
     insert into shadows(_rowid_,RowId,value) values(9,'declared','shadow'); insert into search(rowid,value) values(11,'search');`);
@@ -294,9 +294,9 @@ test('row identifiers retain engine output names, shadowing, joins, and wildcard
   }
 });
 
-test('generated row-identifier callers compile with numeric parameters', t => {
+test('generated row-identifier callers compile with numeric parameters', () => {
   const dir = mkdtempSync(join(tmpdir(),'solarsql-rowid-'));
-  t.after(() => rmSync(dir,{recursive:true,force:true}));
+  onTestFinished(() => rmSync(dir,{recursive:true,force:true}));
   const root = resolve(import.meta.dirname,'..');
   const library = join(root,'src/index.ts');
   const sql = 'select rowid from items where oid=:id';
@@ -317,20 +317,20 @@ export type Input = Assert<Equal<Params<typeof q.byId>,{id:number}>>;
   assert.equal(result.status,0,result.stdout+result.stderr);
 });
 
-test('row identifier parameters retain their type in writes', t => {
+test('row identifier parameters retain their type in writes', () => {
   const engine = new Engine(['create table items(value text) strict']);
-  t.after(() => engine.close());
+  onTestFinished(() => engine.close());
   const typer = new Typer(engine,new Map());
   for (const sql of ['update items set value=:value where rowid=:id', 'delete from items where oid=:id', 'insert into items(_rowid_,value) values(:id,:value)']) {
     assert.equal(typer.analyze(sql,'').params.find(p => p.name==='id')?.type,'number',sql);
   }
 });
 
-test('all unshadowed row-identifier spellings return the stored integer', async t => {
+test('all unshadowed row-identifier spellings return the stored integer', async () => {
   const { test: property } = await import('@hegeldev/hegel');
   const gs = await import('@hegeldev/hegel/generators');
   const db = new DatabaseSync(':memory:');
-  t.after(() => db.close());
+  onTestFinished(() => db.close());
   db.exec('create table values_table(value)');
   property(tc => {
     const id = tc.draw(gs.integers({minValue:-1_000_000,maxValue:1_000_000}));

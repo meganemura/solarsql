@@ -7,7 +7,7 @@
 // Boundary: this file owns the runtime shape and the type-level parameter
 // type. scan.ts's own key-scoping is pinned in test/scan.test.ts, and the
 // build's own success and refusal for this shape in test/typegen.test.ts.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { GUARD_DDL } from "../src/runtime/plan.ts";

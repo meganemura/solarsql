@@ -3,7 +3,7 @@
 // trigger, or by a foreign key check; a view, json_each, pragma_*, and the
 // guard table are not tables. The property: a FROM list over any tables of
 // the schema reads exactly those tables, sorted, once each.
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";

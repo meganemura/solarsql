@@ -6,7 +6,7 @@
 // with an at: line") needs a real build, not a direct Typer call.
 // Boundary: one throwaway module, not the example; test/build.test.ts (a
 // different owner's file) already exercises the example project itself.
-import { test } from "node:test";
+import { onTestFinished, test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -38,9 +38,9 @@ function writeModule(dir: string, imports: string, catalog: string): void {
   ].join("\n"));
 }
 
-test("select o.id, j.value from orders o, json_each(o.tags) j builds, and returns one row per array element", async (t) => {
+test("select o.id, j.value from orders o, json_each(o.tags) j builds, and returns one row per array element", async () => {
   const { dir, config } = project();
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
   writeModule(dir, "queries", `export const shopQueries = queries(generated, { tags: "select o.id, j.value as tag from orders o, json_each(o.tags) j" });`);
   await build(config);
   const written = await migration(config, "shop");
@@ -55,9 +55,9 @@ test("select o.id, j.value from orders o, json_each(o.tags) j builds, and return
   assert.deepEqual(rows, [{ id: "o1", tag: "a" }, { id: "o1", tag: "b" }]);
 });
 
-test("a FROM-clause subquery reading an earlier FROM item's column is refused, naming the rule, with an at: line", async (t) => {
+test("a FROM-clause subquery reading an earlier FROM item's column is refused, naming the rule, with an at: line", async () => {
   const { dir, config } = project();
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
   // A bare SELECT reaches typer.analyze() directly only as a command's own
   // plan item (build.ts's own role="plan"): a queries()/returns entry is
   // role="read", and build.ts checks engine.accesses(sql) on that role

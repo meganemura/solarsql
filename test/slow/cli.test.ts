@@ -1,6 +1,6 @@
 // Responsibility: CLI exit codes and recovery commands across generation and checks.
 // Boundary: schema inference and migration SQL have their own in-process tests.
-import { test, type TestContext } from "node:test";
+import { test, onTestFinished } from "vitest";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -14,9 +14,9 @@ const root = resolve(import.meta.dirname, "../..");
 const config = "example/team's $config.ts";
 const quotedConfig = `'example/team'"'"'s $config.ts'`;
 
-function fixture(t: TestContext) {
+function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "solarsql-cli-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
   cpSync(join(root, "src"), join(dir, "src"), { recursive: true });
   cpSync(join(root, "example"), join(dir, "example"), { recursive: true });
   renameSync(join(dir, "example/solarsql.config.ts"), join(dir, config));
@@ -130,8 +130,8 @@ function snapshot(dir: string): [string, string][] {
     .sort(([a], [b]) => a.localeCompare(b));
 }
 
-test("build generates changed SQL and check reports stale files without writes", (t) => {
-  const f = fixture(t);
+test("build generates changed SQL and check reports stale files without writes", () => {
+  const f = fixture();
   f.edit("update orders set note = :note where id = :id", "update orders set note = :note where id = :id and status = 'draft'");
   const before = snapshot(f.dir);
   const checked = f.run("build", "--check");
@@ -149,8 +149,8 @@ test("build generates changed SQL and check reports stale files without writes",
   assert.equal(lastLine(passed.stdout), "next: npx tsc --noEmit && npm test");
 });
 
-test("pending migration is a successful generation and a failed check", (t) => {
-  const f = fixture(t);
+test("pending migration is a successful generation and a failed check", () => {
+  const f = fixture();
   f.edit("updated_at text\n", "updated_at text,\n    placed_at integer not null default 0\n");
   f.edit("select id, note, updated_at from orders", "select id, note, updated_at, placed_at from orders");
   const before = snapshot(f.dir);
@@ -176,15 +176,15 @@ test("pending migration is a successful generation and a failed check", (t) => {
   assert.equal(f.run("build", "--check").status, 0);
 });
 
-test("a build with no schema change to migrate says so, with the same next line as a written one", (t) => {
-  const f = fixture(t);
+test("a build with no schema change to migrate says so, with the same next line as a written one", () => {
+  const f = fixture();
   const result = f.run("migration", "nothing_pending");
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "nothing to migrate\nnext: npx tsc --noEmit && npm test\n");
 });
 
-test("a BuildError from build or migration names the command to repeat after the fix", (t) => {
-  const f = fixture(t);
+test("a BuildError from build or migration names the command to repeat after the fix", () => {
+  const f = fixture();
   f.edit("update orders set note = :note where id = :id", "update orders set absent_column = :note where id = :id");
   const built = f.run("build");
   assert.equal(built.status, 1);
@@ -196,8 +196,8 @@ test("a BuildError from build or migration names the command to repeat after the
   assert.equal(lastLine(migrated.stdout), `next: fix the error above, then npx solarsql migration fix_it ${quotedConfig}`);
 });
 
-test("blocked migration preserves generated types and fails checks without writes", (t) => {
-  const f = fixture(t);
+test("blocked migration preserves generated types and fails checks without writes", () => {
+  const f = fixture();
   f.edit("updated_at text\n", "updated_at text,\n    placed_at integer not null\n");
   f.edit("select id, note, updated_at from orders", "select id, note, updated_at, placed_at from orders");
   const before = snapshot(f.dir);
@@ -215,9 +215,9 @@ test("blocked migration preserves generated types and fails checks without write
   assert.equal(f.run("migration", "placed_at").status, 1);
 });
 
-test("build's next line carries a config path needing no shell quoting", (t) => {
+test("build's next line carries a config path needing no shell quoting", () => {
   const dir = mkdtempSync(join(tmpdir(), "solarsql-cli-default-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
   cpSync(join(root, "src"), join(dir, "src"), { recursive: true });
   cpSync(join(root, "example"), join(dir, "example"), { recursive: true });
   const run = (...args: string[]) => {
@@ -236,8 +236,8 @@ test("build's next line carries a config path needing no shell quoting", (t) => 
   assert.equal(lastLine(checked.stdout), "next: npx tsc --noEmit && npm test");
 });
 
-test("a removed ordinary column needs an exact intent before migration generation", (t) => {
-  const f = fixture(t);
+test("a removed ordinary column needs an exact intent before migration generation", () => {
+  const f = fixture();
   const initial = join(f.dir, "example/migrations/0001_initial.sql");
   writeFileSync(initial, readFileSync(initial, "utf8").replace("    note text\n", "    note text,\n    obsolete_note text\n"));
   const before = snapshot(f.dir);
@@ -261,8 +261,8 @@ test("a removed ordinary column needs an exact intent before migration generatio
   assert.equal(f.run("build", "--check").status, 0);
 });
 
-test("a pending rename reports a strict intent and writes a data-preserving migration", (t) => {
-  const f = fixture(t);
+test("a pending rename reports a strict intent and writes a data-preserving migration", () => {
+  const f = fixture();
   const initial = join(f.dir, "example/migrations/0001_initial.sql");
   writeFileSync(initial, readFileSync(initial, "utf8").replace("    note text\n", '    "old.note" text\n'));
   const search = join(f.dir, "example/migrations/0004_search.sql");
@@ -292,8 +292,8 @@ test("a pending rename reports a strict intent and writes a data-preserving migr
   assert.equal(f.run("build", "--check").status, 0);
 });
 
-test("an invalid destructive intent fails before configuration import", (t) => {
-  const f = fixture(t);
+test("an invalid destructive intent fails before configuration import", () => {
+  const f = fixture();
   const intent = join(f.dir, "invalid.json");
   writeFileSync(intent, '{"version":1,"drops":[],"renames":[],"unexpected":true}');
   writeFileSync(join(f.dir, config), "throw new Error('configuration must not load');\n");
@@ -303,8 +303,8 @@ test("an invalid destructive intent fails before configuration import", (t) => {
   assert.doesNotMatch(result.stderr, /configuration must not load/);
 });
 
-test("an unreadable destructive intent fails before configuration import", (t) => {
-  const f = fixture(t);
+test("an unreadable destructive intent fails before configuration import", () => {
+  const f = fixture();
   writeFileSync(join(f.dir, config), "throw new Error('configuration must not load');\n");
   const result = f.run("migration", "remove", "--intent", join(f.dir, "missing.json"));
   assert.equal(result.status, 1);
@@ -312,8 +312,8 @@ test("an unreadable destructive intent fails before configuration import", (t) =
   assert.doesNotMatch(result.stderr, /configuration must not load/);
 });
 
-test("invalid SQL fails generation and checks", (t) => {
-  const f = fixture(t);
+test("invalid SQL fails generation and checks", () => {
+  const f = fixture();
   f.edit("update orders set note = :note where id = :id", "update orders set absent_column = :note where id = :id");
   for (const args of [["build"], ["build", "--check"]]) {
     const result = f.run(...args);
@@ -322,8 +322,8 @@ test("invalid SQL fails generation and checks", (t) => {
   }
 });
 
-test("missing generated files retain the custom config in recovery commands without writes", (t) => {
-  const f = fixture(t);
+test("missing generated files retain the custom config in recovery commands without writes", () => {
+  const f = fixture();
   rmSync(f.generated);
   for (const importsModule of [false, true]) {
     if (importsModule) {
@@ -338,8 +338,8 @@ test("missing generated files retain the custom config in recovery commands with
   }
 });
 
-test("missing generated files report the rebuild command as an action in JSON", (t) => {
-  const f = fixture(t);
+test("missing generated files report the rebuild command as an action in JSON", () => {
+  const f = fixture();
   rmSync(f.generated);
   for (const importsModule of [false, true]) {
     if (importsModule) {
@@ -357,8 +357,8 @@ test("missing generated files report the rebuild command as an action in JSON", 
   }
 });
 
-test("a DDL-only nullability change updates types before its migration", (t) => {
-  const f = fixture(t);
+test("a DDL-only nullability change updates types before its migration", () => {
+  const f = fixture();
   assert.equal(f.run("build", "--check").status, 0);
   assert.match(readFileSync(f.generated, "utf8"), /updated_at: string \| null/);
   f.edit("updated_at text\n", "updated_at text not null default ''\n");
@@ -375,8 +375,8 @@ test("a DDL-only nullability change updates types before its migration", (t) => 
   assert.equal(f.run("build", "--check").status, 0);
 });
 
-test('inspect reports contracts, sources and effects without modifying files', t => {
-  const f = fixture(t);
+test('inspect reports contracts, sources and effects without modifying files', () => {
+  const f = fixture();
   const before = snapshot(f.dir);
   const inspected = f.run('inspect');
   assert.equal(inspected.status, 0, inspected.stderr);
@@ -393,8 +393,8 @@ test('inspect reports contracts, sources and effects without modifying files', t
   assert.ok(JSON.parse(stale.stdout).diagnostics.some((d: { code: string }) => d.code === 'GENERATED_STALE'));
 });
 
-test('JSON failures retain SQL and source locations', t => {
-  const f = fixture(t);
+test('JSON failures retain SQL and source locations', () => {
+  const f = fixture();
   f.edit('update orders set note = :note where id = :id', 'update orders set unknown_field = :note where id = :id');
   const before = snapshot(f.dir);
   for (const args of [['inspect'], ['build', '--check', '--json']]) {
@@ -408,8 +408,8 @@ test('JSON failures retain SQL and source locations', t => {
   assert.deepEqual(snapshot(f.dir), before);
 });
 
-test('a colliding migration sequence reports every file and an action in JSON', t => {
-  const f = fixture(t);
+test('a colliding migration sequence reports every file and an action in JSON', () => {
+  const f = fixture();
   const migrations = join(f.dir, 'example/migrations');
   writeFileSync(join(migrations, '0006_add_a.sql'), 'alter table customers add column note_a text;\n');
   writeFileSync(join(migrations, '0006_add_b.sql'), 'alter table customers add column note_b text;\n');
@@ -425,8 +425,8 @@ test('a colliding migration sequence reports every file and an action in JSON', 
   }
 });
 
-test('machine build reports survive configuration and module output', t => {
-  const f = fixture(t);
+test('machine build reports survive configuration and module output', () => {
+  const f = fixture();
   const path = join(f.dir, config);
   writeFileSync(path, `console.log('config log'); process.stdout.write('config direct\\n');\n` + readFileSync(path, 'utf8'));
   f.edit('import {', `console.log('module log'); process.stdout.write('module direct\\n');\nimport {`);
@@ -455,9 +455,9 @@ test('machine build reports survive configuration and module output', t => {
   }
 });
 
-test('machine imports report exceptions and premature successful exits as failures', t => {
+test('machine imports report exceptions and premature successful exits as failures', () => {
   for (const ending of ["throw new Error('import exploded')", 'process.exit(0)']) {
-    const f = fixture(t);
+    const f = fixture();
     const path = join(f.dir, config);
     writeFileSync(path, `console.log('before termination'); process.stdout.write('direct termination\\n'); ${ending};\n` + readFileSync(path, 'utf8'));
     for (const args of [['inspect'], ['build', '--json']]) {
@@ -472,8 +472,8 @@ test('machine imports report exceptions and premature successful exits as failur
   }
 });
 
-test('an unrelated IPC message from imported project code does not corrupt a machine report', t => {
-  const f = fixture(t);
+test('an unrelated IPC message from imported project code does not corrupt a machine report', () => {
+  const f = fixture();
   const path = join(f.dir, config);
   writeFileSync(path, `if (typeof process.send === 'function') process.send({unrelated: true});\n` + readFileSync(path, 'utf8'));
   for (const args of [['inspect'], ['build', '--json']]) {
@@ -484,8 +484,8 @@ test('an unrelated IPC message from imported project code does not corrupt a mac
   }
 });
 
-test('machine builds bound configuration imports before they run', t => {
-  const f = fixture(t);
+test('machine builds bound configuration imports before they run', () => {
+  const f = fixture();
   const commands = [['inspect'], ['build', '--json']];
   const oneReport = (result: ReturnType<typeof f.run>) => {
     assert.equal(result.stdout.trim().split('\n').length, 1, result.stdout);
@@ -528,8 +528,8 @@ test('machine builds bound configuration imports before they run', t => {
   }
 });
 
-test('human build commands validate deadlines before imports and bound their direct worker', t => {
-  const f = fixture(t);
+test('human build commands validate deadlines before imports and bound their direct worker', () => {
+  const f = fixture();
   for (const args of [['build'], ['build', '--check'], ['migration', 'deadline_test']]) {
     const defaultResult = f.run(...args);
     assert.equal(defaultResult.status, 0, defaultResult.stderr);
@@ -554,8 +554,8 @@ test('human build commands validate deadlines before imports and bound their dir
   }
 });
 
-test('a machine report received before the child closes is not discarded as a timeout', t => {
-  const f = fixture(t);
+test('a machine report received before the child closes is not discarded as a timeout', () => {
+  const f = fixture();
   // The report worker sends its report and then keeps the process open past
   // the deadline before it really exits. A parent that only clears its
   // timer on close would race the deadline and report a false timeout for
@@ -566,8 +566,8 @@ test('a machine report received before the child closes is not discarded as a ti
   assert.equal(report.ok, true, JSON.stringify(report));
 });
 
-test('a human worker exit code received before the child closes is not discarded as a timeout', t => {
-  const f = fixture(t);
+test('a human worker exit code received before the child closes is not discarded as a timeout', () => {
+  const f = fixture();
   // The human worker finishes its real work and then keeps the process
   // open past the deadline before it really exits. A parent that only
   // clears its timer on close would race the deadline and report a false
@@ -577,8 +577,8 @@ test('a human worker exit code received before the child closes is not discarded
   assert.doesNotMatch(timed.stderr, /exceeded its 500ms time budget/);
 });
 
-test('human build timeout retains a complete generated destination when atomic replacement has started', t => {
-  const f = fixture(t);
+test('human build timeout retains a complete generated destination when atomic replacement has started', () => {
+  const f = fixture();
   const before = readFileSync(f.generated, "utf8");
   f.edit("update orders set note = :note where id = :id", "update orders set note = :note where id = :id and status = 'draft'");
   const timed = f.runAfterRenameStarts("solarsql.generated.ts", "build", "--timeout-ms", "500");
@@ -592,8 +592,8 @@ test('human build timeout retains a complete generated destination when atomic r
   assert.match(readFileSync(join(f.dir, "example/modules/orders", temporary[0]!), "utf8"), /status = 'draft'/);
 });
 
-test('migration timeout keeps the first retained lock after project code forges a later announcement', t => {
-  const f = fixture(t);
+test('migration timeout keeps the first retained lock after project code forges a later announcement', () => {
+  const f = fixture();
   const index = join(f.dir, "example/migrations/index.ts");
   const before = readFileSync(index, "utf8");
   f.edit("updated_at text\n", "updated_at text,\n    placed_at integer not null default 0\n");
@@ -625,8 +625,8 @@ test('migration timeout keeps the first retained lock after project code forges 
   assert.match(readFileSync(join(f.dir, "example/migrations", temporary[0]!), "utf8"), /atomic_timeout/);
 });
 
-test('build timeout names the held migration lock, the same way a migration timeout does', t => {
-  const f = fixture(t);
+test('build timeout names the held migration lock, the same way a migration timeout does', () => {
+  const f = fixture();
   const indexPath = join(f.dir, "example/migrations/index.ts");
   // Force build's own pre-lock check to see the index as stale, so it
   // deterministically takes the lock the way build's own migrations-index
@@ -641,8 +641,8 @@ test('build timeout names the held migration lock, the same way a migration time
   assert.ok(existsSync(lock));
 });
 
-test("build re-reads migration files inside the lock, not a snapshot from before a concurrent migration finished", async (t) => {
-  const f = fixture(t);
+test("build re-reads migration files inside the lock, not a snapshot from before a concurrent migration finished", async () => {
+  const f = fixture();
   // A migration already exists, so migrationsIndex has something to compare against.
   f.edit("updated_at text\n", "updated_at text,\n    placed_at integer not null default 0\n");
   const first = f.run("migration", "placed_at");
@@ -656,7 +656,7 @@ test("build re-reads migration files inside the lock, not a snapshot from before
 
   const releaseFlag = join(f.dir, "release-lock");
   const child = f.runPausedAtLock(releaseFlag, "build");
-  t.after(() => { try { child.kill("SIGKILL"); } catch { /* already exited */ } });
+  onTestFinished(() => { try { child.kill("SIGKILL"); } catch { /* already exited */ } });
 
   let stderr = "";
   await new Promise<void>((resolve, reject) => {
@@ -692,8 +692,8 @@ test("build re-reads migration files inside the lock, not a snapshot from before
   assert.equal(readFileSync(indexPath, "utf8"), afterMigration);
 });
 
-test('machine report transport flushes large diagnostics before exit', t => {
-  const f = fixture(t);
+test('machine report transport flushes large diagnostics before exit', () => {
+  const f = fixture();
   const message = 'failure: ' + 'x'.repeat(250_000);
   const path = join(f.dir, config);
   writeFileSync(path, `throw new Error(${JSON.stringify(message)});\n` + readFileSync(path, 'utf8'));
@@ -702,13 +702,13 @@ test('machine report transport flushes large diagnostics before exit', t => {
   assert.equal(JSON.parse(result.stdout).diagnostics[0].message, message);
 });
 
-test('rehearsal deadlines stop native SQL and remove snapshots while preserving WAL data', t => {
+test('rehearsal deadlines stop native SQL and remove snapshots while preserving WAL data', () => {
   const dir = mkdtempSync(join(tmpdir(), 'solarsql-deadline-'));
   const temporary = join(dir, 'temporary');
   mkdirSync(temporary);
   const source = join(dir, 'source.sqlite');
   const db = new DatabaseSync(source);
-  t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
+  onTestFinished(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
   db.exec("pragma journal_mode=wal; create table items(value text); insert into items(rowid,value) values(42,'kept')");
   const before = [readFileSync(source), readFileSync(source + '-wal')];
   const change = join(dir, 'change.sql');
@@ -749,8 +749,8 @@ test('rehearsal deadlines stop native SQL and remove snapshots while preserving 
   }
 });
 
-test('query runs a catalog query against a local database, and refuses a command, an unknown name, and a missing option', async (t) => {
-  const f = fixture(t);
+test('query runs a catalog query against a local database, and refuses a command, an unknown name, and a missing option', async () => {
+  const f = fixture();
   const dbPath = join(f.dir, 'query.sqlite');
   const { migrations } = await import(pathToFileURL(join(f.dir, 'example/migrations/index.ts')).href) as { migrations: readonly { name: string; sql: string }[] };
   const { migrate } = await import(pathToFileURL(join(f.dir, 'src/node.ts')).href) as { migrate: (db: DatabaseSync, files: readonly { name: string; sql: string }[]) => string[] };
@@ -802,8 +802,8 @@ test('query runs a catalog query against a local database, and refuses a command
 // shape wrangler dev's D1 file and a Durable Object's own file take
 // (deploy.md:18). A held SQLITE_BUSY/SQLITE_LOCKED must be waited out with
 // solarsql's own busy timeout (ADR 0140), not fail on first contact.
-test('query and rehearse wait out a held lock and name the file when the wait runs out', async (t) => {
-  const f = fixture(t);
+test('query and rehearse wait out a held lock and name the file when the wait runs out', async () => {
+  const f = fixture();
   const dbPath = join(f.dir, 'lock.sqlite');
   const { migrations } = await import(pathToFileURL(join(f.dir, 'example/migrations/index.ts')).href) as { migrations: readonly { name: string; sql: string }[] };
   const { migrate } = await import(pathToFileURL(join(f.dir, 'src/node.ts')).href) as { migrate: (db: DatabaseSync, files: readonly { name: string; sql: string }[]) => string[] };
@@ -827,11 +827,11 @@ test('query and rehearse wait out a held lock and name the file when the wait ru
 
   // Starts the locker, waits for its "ready" line (the exclusive
   // transaction is open by then), then returns a function that reads it
-  // back. Killed in t.after regardless of how long its own hold was.
+  // back. Killed in onTestFinished regardless of how long its own hold was.
   function holdLock(ms: number): Promise<() => void> {
     return new Promise((resolvePromise, reject) => {
       const child = spawn(process.execPath, [locker, dbPath, String(ms)], { stdio: ['ignore', 'pipe', 'pipe'] });
-      t.after(() => { child.kill('SIGKILL'); });
+      onTestFinished(() => { child.kill('SIGKILL'); });
       let out = '';
       child.stdout!.on('data', (chunk) => {
         out += String(chunk);

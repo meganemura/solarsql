@@ -1,5 +1,5 @@
 // The Node floor check: a table of versions on each side of the range.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { nodeVersionError } from "../src/runtime/node-version.ts";
 

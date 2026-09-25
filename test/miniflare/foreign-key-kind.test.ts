@@ -8,7 +8,7 @@
 // Boundary: local Miniflare evidence for D1 and a Durable Object; a real
 // Cloudflare deployment is not exercised here (see
 // skills/solarsql/references/deploy.md's remote suite).
-import { test } from "node:test";
+import { test, onTestFinished } from "vitest";
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
@@ -56,7 +56,7 @@ test("node:sqlite reports kind foreign_key on a real db.run()", async () => {
   }
 });
 
-test("D1 and a Durable Object report kind foreign_key on a real db.run()", async (t) => {
+test("D1 and a Durable Object report kind foreign_key on a real db.run()", async () => {
   // The virtual entry imports the library's own d1() and durable() adapters
   // and the command they run, so this proves the adapters' classification,
   // not a re-implementation of it in a worker script. No file backs this
@@ -127,7 +127,7 @@ export default {
       durableObjects: { PROBE: { className: "Probe", useSQLite: true } },
     }),
   );
-  t.after(() => mf.dispose());
+  onTestFinished(() => mf.dispose());
 
   const d1Response = (await (await mf.dispatchFetch("http://localhost/")).json()) as { result: unknown; message: string };
   console.log(`D1 raw foreign key message: ${d1Response.message}`);

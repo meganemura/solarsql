@@ -1,7 +1,7 @@
 // Pins commands.md's "Bulk writes" recipe: an idempotent bulk upsert
 // (`where true` before `on conflict`), chunked past one statement, with a
 // retried chunk giving changes 0 and no duplicate rows.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { GUARD_DDL } from "../src/runtime/plan.ts";

@@ -1,7 +1,7 @@
 // The package as a user gets it: `npm pack`, install the tarball into a
 // fresh project, run the CLI from node_modules, and import the adapters.
 // This is the only test that needs the compiled dist/, and prepack builds it.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";

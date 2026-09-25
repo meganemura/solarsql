@@ -2,7 +2,7 @@
 // the declaration wrote: D1's HTTP API keeps a trigger body whole only
 // then, and a lowercase one fails `wrangler d1 migrations apply --remote`
 // with "incomplete input".
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { diff, introspect, open } from "../src/build/migration.ts";
 

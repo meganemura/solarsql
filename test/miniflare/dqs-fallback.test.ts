@@ -12,7 +12,7 @@
 // why-comment needs another look.
 // Boundary: no assertions about migration.ts's own output live here;
 // test/rebuild-column-loss-migration.test.ts owns the refusal message.
-import { after, before, describe, test } from "node:test";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
@@ -38,7 +38,7 @@ test("node:sqlite ships the double-quoted-string fallback off for CREATE TABLE .
 describe("D1 SQLite ships the double-quoted-string fallback on", () => {
   const d1 = new D1Harness();
 
-  before(async () => {
+  beforeAll(async () => {
     const reply = await d1.batch([
       { sql: "create table zt (id text primary key not null)" },
       { sql: "insert into zt (id) values ('r1')" },
@@ -46,7 +46,7 @@ describe("D1 SQLite ships the double-quoted-string fallback on", () => {
     assert.equal(reply.ok, true, JSON.stringify(reply));
   });
 
-  after(async () => {
+  afterAll(async () => {
     await d1.dispose();
   });
 
@@ -130,7 +130,7 @@ export default {
     durableObjects: { STORE: { className: "StoreCtas", useSQLite: true } },
   }));
 
-  after(async () => {
+  afterAll(async () => {
     await runtime?.dispose();
     await ctasRuntime?.dispose();
   });

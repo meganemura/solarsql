@@ -1,7 +1,7 @@
 // Responsibility: require an exact declaration before generated SQL removes
 // ordinary data containers. Boundary: virtual search tables keep their own
 // replace-on-change rule in search-migration.test.ts.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";

@@ -1,7 +1,7 @@
 // `solarsql init` refuses to write over anything, and refuses a name that
 // cannot be a table. The project it writes is tested in pack.test.ts, from
 // the installed package, because that is where "solarsql" resolves.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

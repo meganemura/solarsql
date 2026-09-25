@@ -1,6 +1,6 @@
 // Responsibility: test generated contracts and scalar normalization across adapters.
 // Boundary: local Miniflare evidence; deployed behavior needs the remote suite.
-import { test } from 'node:test';
+import { test, onTestFinished } from 'vitest';
 import assert from 'node:assert/strict';
 import { resolve, join } from 'node:path';
 import { writeFileSync, rmSync, realpathSync } from 'node:fs';
@@ -23,21 +23,21 @@ test('BLOB conversion preserves bytes and JSON arrays', () => {
   });
 });
 
-test('local D1 and Durable Objects return Uint8Array and decoded JSON', async t => {
+test('local D1 and Durable Objects return Uint8Array and decoded JSON', async () => {
   const root = resolve(import.meta.dirname, '../..');
   const mf = workerMiniflare(resolve(root, 'test/value-worker.ts'), root, { durableObjects: { VALUES: 'Values' } });
-  t.after(() => mf.dispose());
+  onTestFinished(() => mf.dispose());
   for (const path of ['/', '/do']) {
     const response = await mf.dispatchFetch(`http://localhost${path}`);
     assert.deepEqual(await response.json(), { bytes: [0,255], typed: true, empty: null, n: Number.MAX_SAFE_INTEGER, items: [1,2], batchTyped: true });
   }
 });
 
-test('generated named-slot contracts compile and execute on Node, D1, and Durable Objects', async t => {
+test('generated named-slot contracts compile and execute on Node, D1, and Durable Objects', async () => {
   const root=resolve(import.meta.dirname,'../..');
   const dir=realpathSync(fixtureDir('solarsql-slots-'));
   let mf:ReturnType<typeof workerMiniflare>|undefined;
-  t.after(async()=>{await mf?.dispose();rmSync(dir,{recursive:true,force:true});});
+  onTestFinished(async()=>{await mf?.dispose();rmSync(dir,{recursive:true,force:true});});
   // A relative specifier resolves for both Node and tsc only when the
   // fixture and src/ sit on the same drive; see test/fixture-dir.ts.
   const library=librarySpecifier(dir);
@@ -84,11 +84,11 @@ export default {async fetch(request,env){if(new URL(request.url).pathname==='/do
   }
 });
 
-test('generated JSONB contracts compile and execute on Node, D1, and Durable Objects', async t => {
+test('generated JSONB contracts compile and execute on Node, D1, and Durable Objects', async () => {
   const root=resolve(import.meta.dirname,'../..');
   const dir=realpathSync(fixtureDir('solarsql-jsonb-'));
   let mf:ReturnType<typeof workerMiniflare>|undefined;
-  t.after(async()=>{await mf?.dispose();rmSync(dir,{recursive:true,force:true});});
+  onTestFinished(async()=>{await mf?.dispose();rmSync(dir,{recursive:true,force:true});});
   const library=librarySpecifier(dir);
   const sql="with payload as (select cast /* JSONB storage */ (jsonb(:input) as blob) as value) select json_object('data',1,/* decoded value */ ('data'),value) as result from payload";
   const report=analyzeSchema('',{query:sql},library);
@@ -133,11 +133,11 @@ export default {async fetch(request,env){if(new URL(request.url).pathname==='/do
   }
 });
 
-test('generated binary, scalar, and ordered JSON contracts compile and execute on Node, D1, and Durable Objects', async t => {
+test('generated binary, scalar, and ordered JSON contracts compile and execute on Node, D1, and Durable Objects', async () => {
   const root=resolve(import.meta.dirname,'../..');
   const dir=realpathSync(fixtureDir('solarsql-literals-'));
   let mf:ReturnType<typeof workerMiniflare>|undefined;
-  t.after(async()=>{await mf?.dispose();rmSync(dir,{recursive:true,force:true});});
+  onTestFinished(async()=>{await mf?.dispose();rmSync(dir,{recursive:true,force:true});});
   const library=librarySpecifier(dir);
   const bytes=Uint8Array.from({length:256},(_,i)=>i);
   const sql=`select x'${Buffer.from(bytes).toString('hex')}' as value, cast(length(json_object('a',1)) as integer) as n, cast(json_object('a',1) || 'suffix' as text) as text, (select json_group_array(distinct json_object('n',value) order by value desc) from (select 0X1 as value union all select 2.e0 union all select 0_1)) as ordered union all select x'',null,null,null`;

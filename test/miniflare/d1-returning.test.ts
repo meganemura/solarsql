@@ -2,7 +2,7 @@
 // RETURNING in prepared statements and inside a batch. This file measures
 // that on the local D1 engine, and records which introspection functions
 // the engine refuses.
-import { after, before, describe, test } from "node:test";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { D1Harness, type WorkerOk } from "../d1.ts";
 
@@ -13,14 +13,14 @@ function rows(reply: WorkerOk): Record<string, unknown>[] {
 describe("D1 RETURNING", () => {
   const d1 = new D1Harness();
 
-  before(async () => {
+  beforeAll(async () => {
     const reply = await d1.batch([
       { sql: "create table notes (id text primary key, body text not null, n integer not null default 0)" },
     ]);
     assert.equal(reply.ok, true, JSON.stringify(reply));
   });
 
-  after(async () => {
+  afterAll(async () => {
     await d1.dispose();
   });
 

@@ -3,7 +3,7 @@
 // Node's storageOf() shim (test/node.test.ts already covers that side).
 // Boundary: local Miniflare evidence; a real Cloudflare deployment is not
 // exercised here (see skills/solarsql/references/deploy.md's remote suite).
-import { test } from "node:test";
+import { test, onTestFinished } from "vitest";
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { diff, introspect, open, render } from "../../src/build/migration.ts";
@@ -25,9 +25,9 @@ if (tightened.kind !== "ok") throw new Error(tightened.reason);
 const f2 = render(2, "foreign_key", tightened.statements, tightened.rebuilds ?? []);
 const originalChildSchema = introspect(open(before)).tables.get("child")!.sql;
 
-test("migrate() rolls back only the violating file on a real Durable Object, and leaves the object usable", async (t) => {
+test("migrate() rolls back only the violating file on a real Durable Object, and leaves the object usable", async () => {
   const mf = workerMiniflare(resolve(root, "test/migrate-durable-object.worker.ts"), root, { durableObjects: { PROBE: "MigrateProbe" } });
-  t.after(() => mf.dispose());
+  onTestFinished(() => mf.dispose());
   const send = async (instance: string, files: { name: string; sql: string }[]) => {
     const response = await mf.dispatchFetch(`http://localhost/${instance}`, { method: "POST", body: JSON.stringify(files) });
     return { status: response.status, body: await response.json() as {
@@ -84,9 +84,9 @@ test("migrate() rolls back only the violating file on a real Durable Object, and
 // unsafeGetDurableObjectStorage, which needs unsafeInspectDurableObjects on
 // the Miniflare instance (test/worker.ts), so each builds its own instance
 // rather than sharing the one above.
-test("migrate() applies a file that repairs a pre-existing violation, then applies a later file normally, on a real Durable Object", async (t) => {
+test("migrate() applies a file that repairs a pre-existing violation, then applies a later file normally, on a real Durable Object", async () => {
   const mf = workerMiniflare(resolve(root, "test/migrate-durable-object.worker.ts"), root, { durableObjects: { PROBE: "MigrateProbe" }, unsafeInspectDurableObjects: true });
-  t.after(() => mf.dispose());
+  onTestFinished(() => mf.dispose());
   const send = async (instance: string, files: { name: string; sql: string }[]) => {
     const response = await mf.dispatchFetch(`http://localhost/${instance}`, { method: "POST", body: JSON.stringify(files) });
     return { status: response.status, body: await response.json() as {
@@ -125,9 +125,9 @@ test("migrate() applies a file that repairs a pre-existing violation, then appli
   assert.deepEqual(applyUnrelated.body.historyNames, [repair.name, unrelated.name]);
 });
 
-test("migrate()'s pragma_foreign_key_check error says a violation predates the file it names, when every violation was already there before that file ran", async (t) => {
+test("migrate()'s pragma_foreign_key_check error says a violation predates the file it names, when every violation was already there before that file ran", async () => {
   const mf = workerMiniflare(resolve(root, "test/migrate-durable-object.worker.ts"), root, { durableObjects: { PROBE: "MigrateProbe" }, unsafeInspectDurableObjects: true });
-  t.after(() => mf.dispose());
+  onTestFinished(() => mf.dispose());
   const send = async (instance: string, files: { name: string; sql: string }[]) => {
     const response = await mf.dispatchFetch(`http://localhost/${instance}`, { method: "POST", body: JSON.stringify(files) });
     return { status: response.status, body: await response.json() as {

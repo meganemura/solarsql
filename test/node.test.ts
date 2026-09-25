@@ -1,7 +1,7 @@
 // The example modules on node:sqlite, in-process: the migration files
 // apply, and queries, commands, and failures as values behave as they do on
 // D1 and on a Durable Object. This is the loop a module's own tests run in.
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { migrate, MigrationHistoryError, node } from "../src/node.ts";

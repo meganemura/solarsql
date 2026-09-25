@@ -4,7 +4,7 @@
 // test.ts proves the same three cases on D1 and on a Durable Object; this
 // file is the fast, in-process version test/node.test.ts's own header
 // describes as "the loop a module's own tests run in".
-import { describe, test } from "node:test";
+import { describe, onTestFinished, test } from "vitest";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
@@ -87,9 +87,9 @@ async function open(dir: string): Promise<{ db: ReturnType<typeof node>; custome
 }
 
 describe("ADR 0127: customers.remove includes orders.deleteByCustomer, on node:sqlite", () => {
-  test("the happy path removes the customer, its orders, lines, and search rows", async (t) => {
+  test("the happy path removes the customer, its orders, lines, and search rows", async () => {
     const dir = copyExample();
-    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
     const { db, customerCommands, orderCommands } = await open(dir);
     const { customerQueries } = (await import(fresh(join(dir, "example/modules/customers/public.ts")))) as never as { customerQueries: any };
     const { orderQueries } = (await import(fresh(join(dir, "example/modules/orders/public.ts")))) as never as { orderQueries: any };
@@ -103,9 +103,9 @@ describe("ADR 0127: customers.remove includes orders.deleteByCustomer, on node:s
     assert.deepEqual(await db.all(orderQueries.byCustomer, { customer_id: "c1" } as never), []);
   });
 
-  test("a failure inside the included command leaves the customer row in place", async (t) => {
+  test("a failure inside the included command leaves the customer row in place", async () => {
     const dir = copyExample();
-    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
     addIncludedFailure(dir);
     buildInChildProcess(join(dir, "example/solarsql.config.ts"));
     const { db, customerCommands, orderCommands } = await open(dir);
@@ -120,9 +120,9 @@ describe("ADR 0127: customers.remove includes orders.deleteByCustomer, on node:s
     assert.deepEqual(await db.all(orderQueries.byCustomer, { customer_id: "c1" } as never), [{ id: "o1", status: "confirmed" }]);
   });
 
-  test("a failure in the including module's own part leaves the included part's rows in place too", async (t) => {
+  test("a failure in the including module's own part leaves the included part's rows in place too", async () => {
     const dir = copyExample();
-    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
     addOuterFailure(dir);
     buildInChildProcess(join(dir, "example/solarsql.config.ts"));
     const { db, customerCommands, orderCommands } = await open(dir);

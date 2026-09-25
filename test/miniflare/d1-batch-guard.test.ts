@@ -2,7 +2,7 @@
 // batch fail when a precondition is false, because the statements are sent
 // before any result comes back. This file measures one mechanism: a guard
 // table with one BEFORE INSERT trigger that calls raise(abort, name).
-import { after, before, describe, test } from "node:test";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { D1Harness, type WorkerOk } from "../d1.ts";
 
@@ -33,12 +33,12 @@ function rows(reply: WorkerOk): Record<string, unknown>[] {
 describe("D1 batch with a guard table", () => {
   const d1 = new D1Harness();
 
-  before(async () => {
+  beforeAll(async () => {
     const reply = await d1.batch(ddl.map((sql) => ({ sql })));
     assert.equal(reply.ok, true, JSON.stringify(reply));
   });
 
-  after(async () => {
+  afterAll(async () => {
     await d1.dispose();
   });
 

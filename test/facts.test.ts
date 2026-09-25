@@ -1,6 +1,6 @@
 // The engine answers questions about SQL by preparing it. These tests pin
 // the answers the type generator and the boundary check rely on.
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { Engine } from "../src/build/facts.ts";
 import { introspect, diff, applied } from "../src/build/migration.ts";

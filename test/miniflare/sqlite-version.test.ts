@@ -20,7 +20,7 @@
 // Boundary: reports what one local Miniflare version sees. A real Cloudflare
 // deploy is not exercised here (see skills/solarsql/references/deploy.md's
 // remote suite).
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";

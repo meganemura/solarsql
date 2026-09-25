@@ -5,7 +5,7 @@
 // inserting into d1_migrations directly (no baseline file runs), applies
 // only the later files, and checks the schema against a full replay of
 // every file on an empty database.
-import { describe, test } from "node:test";
+import { describe, test, onTestFinished } from "vitest";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -39,10 +39,10 @@ async function schemaOf(d1: D1Harness): Promise<Record<string, unknown>[]> {
 }
 
 describe("the baseline path for an existing D1 database", () => {
-  test("adopting a legacy table and applying only the later files matches a full replay", async (t) => {
+  test("adopting a legacy table and applying only the later files matches a full replay", async () => {
     const adopted = new D1Harness();
     const replayed = new D1Harness();
-    t.after(async () => {
+    onTestFinished(async () => {
       await adopted.dispose();
       await replayed.dispose();
     });

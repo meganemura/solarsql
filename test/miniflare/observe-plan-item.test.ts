@@ -4,7 +4,7 @@
 // test/observe-statements.test.ts already cover.
 // Boundary: local Miniflare evidence; a real Cloudflare deployment is not
 // exercised here.
-import { test } from "node:test";
+import { test, onTestFinished } from "vitest";
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { workerMiniflare } from "../worker.ts";
@@ -15,9 +15,9 @@ type At = { position: number; of: number; sql: string; included?: string } | { r
 type StatementRow = { rows_read: number; rows_written: number; duration?: number };
 type EventBody = { kind: string; name: string; outcome: string; at?: At; statements?: StatementRow[] };
 
-test("D1: a successful command with plan (insert, update, insert) and a returns query gives 4 statements entries; a failure gives no at and no statements", async (t) => {
+test("D1: a successful command with plan (insert, update, insert) and a returns query gives 4 statements entries; a failure gives no at and no statements", async () => {
   const mf = workerMiniflare(resolve(root, "test/observe-plan-item.worker.ts"), root, { durableObjects: { PROBE: "Probe" } });
-  t.after(() => mf.dispose());
+  onTestFinished(() => mf.dispose());
   const response = await mf.dispatchFetch("http://localhost/");
   const { ok, fail } = (await response.json()) as { ok: EventBody[]; fail: EventBody[] };
 
@@ -35,9 +35,9 @@ test("D1: a successful command with plan (insert, update, insert) and a returns 
   assert.equal("statements" in failed!, false);
 });
 
-test("Durable Object: a successful command gives 4 statements entries with no duration, none from a probe; a failure names the failing item, the same at node gives for the same shape", async (t) => {
+test("Durable Object: a successful command gives 4 statements entries with no duration, none from a probe; a failure names the failing item, the same at node gives for the same shape", async () => {
   const mf = workerMiniflare(resolve(root, "test/observe-plan-item.worker.ts"), root, { durableObjects: { PROBE: "Probe" } });
-  t.after(() => mf.dispose());
+  onTestFinished(() => mf.dispose());
   const response = await mf.dispatchFetch("http://localhost/do");
   const { ok, fail } = (await response.json()) as { ok: EventBody[]; fail: EventBody[] };
 

@@ -1,7 +1,7 @@
 // The generated types are keyed by the SQL text. This test edits one query
 // of the example without rebuilding, runs tsc on the copy, and expects the
 // error at the changed string. The unedited copy is the control.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";

@@ -3,13 +3,16 @@
 // on its own server side; ADR 0036 records what that changed.) This file generates two migrations
 // from declared DDL with node:sqlite, applies them to the local D1 engine, and
 // checks the shape, the rows, and the constraints after a table rebuild.
-import { after, before, describe, test } from "node:test";
+import { afterAll, beforeAll, describe, test, onTestFinished } from "vitest";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { resolve } from "node:path";
 import { D1Harness, type WorkerError, type WorkerOk } from "../d1.ts";
 import { applied, diff, introspect, open, render } from "../../src/build/migration.ts";
 import { splitStatements } from "../../src/build/scan.ts";
 import { constraintFailure } from "../../src/runtime/plan.ts";
+
+const root = resolve(import.meta.dirname, "../..");
 
 const v1 = [
   `create table customers (id text primary key not null, name text not null)`,
@@ -61,7 +64,7 @@ describe("D1 applies generated migrations", () => {
   const file1 = generate([], v1, 1, "initial");
   const file2 = generate([file1], v2, 2, "add_note_and_price");
 
-  before(async () => {
+  beforeAll(async () => {
     const reply = await d1.batch(splitStatements(file1).map((sql) => ({ sql })));
     assert.equal(reply.ok, true, JSON.stringify(reply));
     const seed = await d1.batch([
@@ -72,7 +75,7 @@ describe("D1 applies generated migrations", () => {
     assert.equal(seed.ok, true, JSON.stringify(seed));
   });
 
-  after(async () => {
+  afterAll(async () => {
     await d1.dispose();
   });
 
@@ -159,9 +162,9 @@ describe("D1's own end-of-batch commit still lets constraintFailure() classify a
     return render(2, "add-customer-fk", plan.statements).sql;
   }
 
-  test("with no orphaned row, the pragma-carrying rebuild applies cleanly", async (t) => {
+  test("with no orphaned row, the pragma-carrying rebuild applies cleanly", async () => {
     const d1 = new D1Harness();
-    t.after(() => d1.dispose());
+    onTestFinished(() => d1.dispose());
     const seed = await d1.batch(splitStatements(`${fkBefore.join(";\n")};`).map((sql) => ({ sql })));
     assert.equal(seed.ok, true, JSON.stringify(seed));
     const rows = await d1.batch([
@@ -173,9 +176,9 @@ describe("D1's own end-of-batch commit still lets constraintFailure() classify a
     assert.equal(reply.ok, true, JSON.stringify(reply));
   });
 
-  test("with the pragma line removed, the same orphaned row classifies as a foreign-key failure", async (t) => {
+  test("with the pragma line removed, the same orphaned row classifies as a foreign-key failure", async () => {
     const d1 = new D1Harness();
-    t.after(() => d1.dispose());
+    onTestFinished(() => d1.dispose());
     const seed = await d1.batch(splitStatements(`${fkBefore.join(";\n")};`).map((sql) => ({ sql })));
     assert.equal(seed.ok, true, JSON.stringify(seed));
     const orphan = await d1.batch([{ sql: "insert into orders values ('a', 999)" }]);
@@ -186,9 +189,9 @@ describe("D1's own end-of-batch commit still lets constraintFailure() classify a
     assert.deepEqual(constraintFailure(reply), { kind: "foreign_key" });
   });
 
-  test("with the pragma line in place, the same orphaned row still classifies as a foreign-key failure, and the batch rolls back", async (t) => {
+  test("with the pragma line in place, the same orphaned row still classifies as a foreign-key failure, and the batch rolls back", async () => {
     const d1 = new D1Harness();
-    t.after(() => d1.dispose());
+    onTestFinished(() => d1.dispose());
     const seed = await d1.batch(splitStatements(`${fkBefore.join(";\n")};`).map((sql) => ({ sql })));
     assert.equal(seed.ok, true, JSON.stringify(seed));
     const orphan = await d1.batch([{ sql: "insert into orders values ('a', 999)" }]);
@@ -216,9 +219,9 @@ describe("D1's own end-of-batch commit still lets constraintFailure() classify a
   });
 });
 
-test('D1 rebuilds retain the AUTOINCREMENT history after a deleted maximum', async t => {
+test('D1 rebuilds retain the AUTOINCREMENT history after a deleted maximum', async () => {
   const d1=new D1Harness();
-  t.after(()=>d1.dispose());
+  onTestFinished(()=>d1.dispose());
   const ddl='create table identities(id integer primary key autoincrement,value text) strict';
   const db=open([ddl]),target=open([ddl.replace('value text','value text not null')]);
   try {
@@ -235,7 +238,9 @@ test('D1 rebuilds retain the AUTOINCREMENT history after a deleted maximum', asy
 });
 
 test('focused D1 execution exits without a runtime for skipped suites', () => {
-  const child=spawnSync(process.execPath,['--test','--test-name-pattern=D1 rebuilds retain',import.meta.filename],{encoding:'utf8',timeout:20_000});
+  // Vitest reports "no test found in suite" as a failure for a describe
+  // block with no matched tests, so this needs --passWithNoTests too.
+  const child=spawnSync(process.execPath,[resolve(root,'node_modules/.bin/vitest'),'run','--project','miniflare','--testNamePattern','D1 rebuilds retain','--passWithNoTests',import.meta.filename],{encoding:'utf8',timeout:20_000,cwd:root});
   assert.equal(child.status,0,child.stdout+child.stderr+String(child.error??''));
 });
 

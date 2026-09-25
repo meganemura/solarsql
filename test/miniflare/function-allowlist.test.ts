@@ -9,7 +9,7 @@
 // local copy.
 // Boundary: no assertions about the build's own message live here;
 // test/typegen.test.ts and test/build.test.ts own those.
-import { after, before, describe, test } from "node:test";
+import { afterAll, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { D1Harness, type WorkerOk, type WorkerError } from "../d1.ts";
@@ -17,7 +17,7 @@ import { D1Harness, type WorkerOk, type WorkerError } from "../d1.ts";
 describe("D1 SQLite refuses a function outside workerd's own allowlist, and allows one on it", () => {
   const d1 = new D1Harness();
 
-  after(async () => {
+  afterAll(async () => {
     await d1.dispose();
   });
 
@@ -68,7 +68,7 @@ export default {
     durableObjects: { STORE: { className: "Store", useSQLite: true } },
   }));
 
-  after(async () => {
+  afterAll(async () => {
     await runtime?.dispose();
   });
 
@@ -101,7 +101,7 @@ export default {
 describe("D1 SQLite evaluates a DEFAULT expression's function call today (ADR 0114)", () => {
   const d1 = new D1Harness();
 
-  after(async () => {
+  afterAll(async () => {
     await d1.dispose();
   });
 
@@ -153,7 +153,7 @@ export default {
     durableObjects: { STORE: { className: "Store", useSQLite: true } },
   }));
 
-  after(async () => {
+  afterAll(async () => {
     await runtime?.dispose();
   });
 

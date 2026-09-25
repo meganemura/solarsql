@@ -9,7 +9,7 @@
 // documents the Durable Object false success as a limit that stands, and
 // on D1 the classification bareMessage() now gives the same underlying
 // failure.
-import { test } from "node:test";
+import { test, onTestFinished } from "vitest";
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import * as hegel from "@hegeldev/hegel";
@@ -21,9 +21,9 @@ const root = resolve(import.meta.dirname, "../..");
 
 type ProbeReply = { threw: boolean; result?: { ok: boolean; kind?: string }; name?: string; message?: string };
 
-test("on a Durable Object, run() classifies an immediate foreign-key violation, but a deferred one is a false success the caller never sees: the platform's own reset response replaces it", async (t) => {
+test("on a Durable Object, run() classifies an immediate foreign-key violation, but a deferred one is a false success the caller never sees: the platform's own reset response replaces it", async () => {
   const mf = workerMiniflare(resolve(root, "test/deferred-foreign-key.worker.ts"), root, { durableObjects: { PROBE: "DeferredForeignKeyProbe" } });
-  t.after(() => mf.dispose());
+  onTestFinished(() => mf.dispose());
   const send = (instance: string, body: { variant: "immediate" | "deferred"; id: string; parentId: string }) =>
     mf.dispatchFetch("http://localhost/do", { method: "POST", body: JSON.stringify({ ...body, instance }) });
 
@@ -49,9 +49,9 @@ test("on a Durable Object, run() classifies an immediate foreign-key violation, 
   assert.match(text, /FOREIGN KEY constraint failed/);
 });
 
-test("on D1, run() classifies both an immediate and a deferred foreign-key violation", async (t) => {
+test("on D1, run() classifies both an immediate and a deferred foreign-key violation", async () => {
   const mf = workerMiniflare(resolve(root, "test/deferred-foreign-key.worker.ts"), root, {});
-  t.after(() => mf.dispose());
+  onTestFinished(() => mf.dispose());
   const send = async (body: { variant: "immediate" | "deferred"; id: string; parentId: string }): Promise<ProbeReply> => {
     const response = await mf.dispatchFetch("http://localhost/d1", { method: "POST", body: JSON.stringify(body) });
     assert.equal(response.status, 200);
