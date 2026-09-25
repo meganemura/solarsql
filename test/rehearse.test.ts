@@ -7,7 +7,8 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { readdirSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { rehearseSnapshot } from '../src/build/rehearse.ts';
 import { diff, introspect, open } from '../src/build/migration.ts';
@@ -553,15 +554,25 @@ test('proposed SQL cannot use ATTACH or DETACH, including while the row diff\'s 
 });
 
 test('the row diff leaves no file behind, on success or on a migration failure', () => {
-  for (const sql of ['alter table t add column note text', 'insert into t values (1)']) {
-    const db = new DatabaseSync(':memory:');
-    try {
-      db.exec('create table t(id integer primary key) strict; insert into t values (2)');
-      rehearseSnapshot(db, sql);
-    } finally { db.close(); }
+  // A private TMPDIR, read by tmpdir() on each call: the shared one can hold
+  // another run's leftovers (an interrupted test, a mutation run) or a
+  // parallel test's live directory, and neither is this test's to judge.
+  const saved = process.env.TMPDIR;
+  const own = mkdtempSync(join(tmpdir(), 'solarsql-rehearse-tmpdir-'));
+  process.env.TMPDIR = own;
+  try {
+    for (const sql of ['alter table t add column note text', 'insert into t values (1)']) {
+      const db = new DatabaseSync(':memory:');
+      try {
+        db.exec('create table t(id integer primary key) strict; insert into t values (2)');
+        rehearseSnapshot(db, sql);
+      } finally { db.close(); }
+    }
+    assert.deepEqual(readdirSync(own), []);
+  } finally {
+    if (saved === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = saved;
+    rmSync(own, { recursive: true, force: true });
   }
-  const leftover = readdirSync(tmpdir()).filter(name => name.startsWith('solarsql-rehearse-diff-'));
-  assert.deepEqual(leftover, []);
 });
 
 test('a Hegel property: a no-op rebuild always reports 0/0/0 for every random row set', async () => {
