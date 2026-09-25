@@ -1,15 +1,9 @@
 {
   "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
-  "testRunner": "tap",
-  "tap": {
-    "testFiles": [
-      "test/!(stale).test.ts"
-    ]
-  },
+  "testRunner": "vitest",
   "mutate": [
     "src/**/*.ts"
   ],
-  "coverageAnalysis": "perTest",
   "reporters": [
     "clear-text",
     "progress",
@@ -29,5 +23,8 @@
   "disableTypeChecks": "src/**/*.ts",
   "incremental": true,
   "incrementalFile": "reports/stryker-incremental.json",
-  "tap_comment": "stale.test.ts checks tsc results. The instrumented src has @ts-nocheck and changed inferred types, so that test fails in the sandbox for reasons outside the mutant. Plain npm test still runs it."
+  "vitest": {
+    "configFile": "vitest.mutation.config.ts"
+  },
+  "vitest_comment": "vitest.mutation.config.ts selects the tests; its header says why test/slow, test/miniflare, and stale.test.ts are left out."
 }
