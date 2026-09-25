@@ -66,6 +66,8 @@
   },
   "devDependencies": {
     "@hegeldev/hegel": "0.4.5",
+    "@stryker-mutator/core": "10.0.0",
+    "@stryker-mutator/tap-runner": "10.0.0",
     "@types/node": "26.4.0",
     "miniflare": "5.20260828.0-alpha",
     "typescript": "7.0.2",

@@ -25,3 +25,7 @@ dist/
 example/wrangler.jsonc
 example/wrangler.toml
 example/.dev.vars
+
+# Stryker sandbox and reports
+.stryker-tmp/
+reports/
