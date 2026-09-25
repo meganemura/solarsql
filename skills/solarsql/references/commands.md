@@ -150,4 +150,29 @@ When one statement must serve commands that need incompatible types, give the st
 ## Bulk writes
 
 Many rows come in one array parameter and one statement: `insert ... select ... from json_each(:rows)` for inserts, `update ... where id in (select value ->> 'id' from json_each(:rows))` for updates, and `changes() = json_array_length(:rows)` as the assert that every id was known.
+
+### An idempotent bulk upsert needs `where true`
+
+```ts
+plan: [
+  `insert into order_lines (id, order_id, sku, qty, price)
+   select value ->> 'id', :id, value ->> 'sku', value ->> 'qty', value ->> 'price'
+   from json_each(:rows)
+   where true
+   on conflict (id) do update set qty = excluded.qty, price = excluded.price`,
+],
+```
+
+`INSERT ... SELECT ... ON CONFLICT` with no `WHERE` before `ON CONFLICT` is ambiguous to parse: SQLite reads `on conflict` as the start of a join clause on the `SELECT`, not as the insert's upsert clause, and refuses the statement with `near "do": syntax error` (SQLite's own docs on `UPSERT`, section 2.2, https://www.sqlite.org/lang_upsert.html). `where true` removes the ambiguity with no effect on which rows match. With it, the statement builds and types `:rows` from the insert columns (here `readonly { id: OrderLinesId; order_id: OrdersId; sku: string; qty: number; price: number }[]`); re-running the same rows gives `changes: 0` the second time, and `on conflict (id) do update` applies on every engine (node, D1, a Durable Object).
+
+### What each clause skips
+
+- `on conflict (id) do nothing` skips only a duplicate `id`. Any other failure -- a CHECK or NOT NULL violation, a foreign-key violation, a STRICT datatype error -- still rejects the whole plan.
+- `insert or ignore` skips a duplicate key, and also silently drops a row that fails a CHECK or NOT NULL constraint: the command still reports `ok: true`, with `changes` lower than the row count and no way to see which row was dropped. It does not skip a foreign-key violation or a STRICT datatype error; either still rejects the whole plan.
+- Read `changes` against the row count you sent to see whether a row was silently skipped.
+
+### Chunk rows past the per-statement ceiling
+
+The ceiling on one `json_each(:rows)` array is in `limits.md` ("What a json_each array parameter meets first"). Past it, split the array into chunks and call `db.run` once per chunk: a command is one D1 batch or one Durable Object transaction (above), so each chunk commits on its own -- a failure in one chunk leaves the earlier chunks written. Make every row's id before chunking (`newId()`, ADR 0016) and use `on conflict (id) do nothing` (or the `where true` upsert above) so any chunk can be retried from the start with no duplicate-row effect.
+
 An `insert ... on conflict (id) do update set qty = excluded.qty` types its parameters from the insert columns.

@@ -103,6 +103,8 @@ npx wrangler deploy
 
 `wrangler d1 migrations apply` takes the files of `example/migrations` in name order and keeps its own record of the applied ones.
 The Durable Object applies the same files with `migrate()` on its first request.
+
+Before a remote migration on a database with data you care about, take a restore point first: migrations.md's [Take a restore point before a remote migration](migrations.md#take-a-restore-point-before-a-remote-migration).
 The Worker refuses a request without `Authorization: Bearer <TOKEN>` once the secret is set.
 
 The remote test sends the steps of the Miniflare test to the deployed Worker, on D1 and on the Durable Object, after a reset of both:

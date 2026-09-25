@@ -11,6 +11,7 @@
 - Existing database with no migration history yet: [An existing D1 database](#an-existing-d1-database).
 - Rehearse a migration before deploy: [rehearse.md](rehearse.md).
 - A replay error naming a `code`: [Migration history integrity](#migration-history-integrity).
+- A remote migration went wrong and data needs to come back: [Take a restore point before a remote migration](#take-a-restore-point-before-a-remote-migration).
 
 ```
 npx solarsql migration <name>
@@ -287,7 +288,78 @@ A migration that fails this way rolls back atomically: the schema and `d1_migrat
 
 On node:sqlite, `migrate(db, migrations)` from `solarsql/node` applies the pending files once, in name order, and records each; it returns the names applied now.
 
-There is no down migration. A change back is the next migration.
+There is no down migration for schema: a change back is the next migration. Data a destructive migration removed comes back only through a platform restore point, below.
+
+## Take a restore point before a remote migration
+
+There is no down migration, and an automatic migration only removes a table or column when an intent file names it (ADR 0090, above); either way, recovery from a bad remote migration or a wrong backfill is a platform restore, not another migration file. This section is the one place that rule is written.
+
+### D1: Time Travel
+
+Before applying, record a bookmark:
+
+```sh
+npx wrangler d1 time-travel info <database> --json
+```
+
+Apply as usual:
+
+```sh
+npx wrangler d1 migrations apply <database> --remote
+```
+
+If the result is wrong, restore to the bookmark you recorded:
+
+```sh
+npx wrangler d1 time-travel restore <database> --bookmark=<bookmark>
+```
+
+Time Travel restores to any minute within the last 30 days (Workers Paid) or 7 days (Free); it is always on and needs no setup (Cloudflare, "Time Travel and backups"). A restore overwrites the database in place and cancels every in-flight query and transaction; it prints an undo bookmark, so restoring again undoes the restore itself. It runs at most 10 times per 10 minutes per database. It acts on the production backend only (`wrangler d1 info` shows `version: production`; an alpha database is rejected). In a non-interactive shell, the confirmation prompt defaults to yes; passing `--json` skips the prompt outright (measured against wrangler 4.127.1).
+
+A restore also rewinds `d1_migrations` (or `solarsql_migrations`) to the point in time it restores to. The next `apply` re-runs any migration file that was applied after that point, unless the file list on disk removes or replaces it first — this is the exception to "a change back is the next migration" above and to the history-integrity rule below (`MISSING_MIGRATION`, `MIGRATION_CHANGED`): a restored database's history and the currently deployed file list must agree again before the next apply.
+
+### Durable Object: Point-in-Time Recovery (PITR)
+
+Record a bookmark before migrating, in the constructor's `blockConcurrencyWhile`, before `migrate()` runs:
+
+```ts
+ctx.blockConcurrencyWhile(async () => {
+  const before = await ctx.storage.getCurrentBookmark();
+  const applied = migrate(ctx.storage, migrations);
+  if (applied.length > 0) {
+    // Store in the object's own storage (the synchronous KV API on
+    // ctx.storage): an external log cannot restore a Durable Object, and
+    // only this object's own constructor can call
+    // onNextSessionRestoreBookmark() on itself.
+    ctx.storage.put("last_good_bookmark", before);
+  }
+});
+```
+
+To restore, check on construction whether this object's own migration history names a file the deployed `migrations` list no longer contains, and whether a bookmark was stored for it; if so, restore instead of migrating:
+
+```ts
+ctx.blockConcurrencyWhile(async () => {
+  const bookmark = /* read the stored bookmark for the missing file */;
+  if (bookmark) {
+    await ctx.storage.onNextSessionRestoreBookmark(bookmark);
+    ctx.abort();
+    // Do not call migrate() this session: the object is about to restart.
+  } else {
+    migrate(ctx.storage, migrations);
+  }
+});
+```
+
+The guard must read "history names a file the deployed list no longer has," not a deployed constant: once the restore runs, history is rewound, the guard becomes false, and the object migrates normally on its next construction. A deployed constant would restore on every construction instead of once.
+
+PITR restores the whole storage — SQL and key-value data together — to any point in the past 30 days (Cloudflare, "SQLite-backed Durable Object Storage", the PITR API). The request that triggers the restore fails with HTTP 500 (the constructor never finishes normally); a write made before the last `await` before `ctx.abort()` persists, a write made after it is lost. `onNextSessionRestoreBookmark()` and `getBookmarkForTime()` are not supported in local development: Miniflare 5.20260828.0-alpha rejects both with a message containing "does not implement point-in-time recovery" — this whole recipe is not runnable locally and not verified by any test in this repository (`test/remote.test.ts` runs the example's steps only, not a migration file, per `deploy.md`). A bookmark older than 30 days cannot be restored, and an object restores only when it next wakes; keep a forward repair migration as the fallback when no bookmark is in range or the object never wakes on its own.
+
+A restored Durable Object's own `solarsql_migrations` history is rewound the same way D1's is: `migrate()` throws `MISSING_MIGRATION` (`src/durable.ts:190`) on any object that applied a file that is no longer restored, and `MIGRATION_CHANGED` (`src/durable.ts:195`) if the file's SQL is regenerated with different text under the same name. Keep the file that was in place at the bookmark's time until every affected object has restored.
+
+### Code and schema stay coupled
+
+Recovery is restore, then revert `module.ts`, remove the bad migration file, build, and redeploy — every step leaves a window where the deployed code and the just-restored schema differ. On a Durable Object, the deploy that ships the restore guard also ships the reverted `module.ts`, so that window is at most one deploy wide there; on D1, the window runs from the restore command until the next deploy completes.
 
 ## Migration history integrity
 
@@ -317,5 +389,7 @@ D1 migrations applied through wrangler retain wrangler's history behavior; this 
 | `MIGRATION_CHANGED` | Restore the file and append a new migration. |
 | `REBUILD_LOSES_COLUMN` | Regenerate the file against the current schema. |
 | `REBUILD_REVIVES_DECLARATION` | Regenerate the file against the current schema. |
+
+`MISSING_MIGRATION` and `MIGRATION_CHANGED` also fire, expectedly, on a database or object that was restored from a platform backup while others were not, or that kept an old file a restored peer no longer has: [Take a restore point before a remote migration](#take-a-restore-point-before-a-remote-migration) covers that case and how the history and the file list come back into agreement.
 
 Rehearse a migration against a snapshot of real data before you deploy it: [rehearse.md](rehearse.md).
