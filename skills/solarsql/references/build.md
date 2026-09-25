@@ -111,6 +111,7 @@ Shared SQL reports all its catalog locations.
 | `do not stabilize within 32 steps` | use CAST for the recursive expression |
 | `is the match operand of` | use it in a `<table> match :param` condition, or as the first argument of `highlight(...)`, `snippet(...)`, or `bm25(...)`, instead of selecting it directly |
 | `json_group_array over the outer join alias` | add `filter (where <alias>.<column> is not null)` |
+| `json_group_array can repeat an element` | the join through the named alias is not provably one row per group; move the one-to-many array into its own correlated subquery, or add a unique key or GROUP BY that proves it |
 | `applies to the one aggregate row, not to the child rows` | put the LIMIT/OFFSET inside an IN-subquery over the child's own primary key, ordered and capped there, not on the aggregate SELECT itself: `json((select json_group_array(json_object(...) order by <id>) from <child> where <id> in (select c2.<id> from <child> c2 where <same correlation> order by c2.<id> limit :n)))` |
 | `inside json yields JSON text` | wrap the subquery in `json(...)` |
 | `inside json has no type` | use a column reference, a cast, or `json((select json_group_array(...)))` |
@@ -125,7 +126,12 @@ Shared SQL reports all its catalog locations.
 | `is used twice` | an included command and the including command share an assert name; rename one |
 | `is not named by any statement or assert of module` | a `note` line, not a failure: an included command's parameter that no statement or assert of the including module names is a parameter nothing ties to the including row; add an assert that ties it, or give the shared value one name |
 | `the returns clause uses changes()` | read the command's changes result instead |
-| `RETURNING clause is discarded` | move the read into the command's `returns` field instead |
+| `RETURNING clause is discarded` | for INSERT, UPDATE, or REPLACE, move the read into the command's `returns` field instead; a DELETE's own `RETURNING` rows become the command's rows when it has no `returns` |
+| `A plan item cannot use OR ROLLBACK` | leave the default (ABORT) for a failure value, or use OR IGNORE to skip a row that fails a uniqueness, NOT NULL, or CHECK constraint (not a foreign key) |
+| `more than one row source` | keep one of `returns` or a DELETE ... RETURNING plan item; the message names both |
+| `again in a subquery` | a RETURNING subquery may not read the DELETE's own target table; read it before the DELETE |
+| `workerd's compiled-instruction limit` | simplify the statement (fewer VALUES rows or joins) to fit workerd's 25,000-op compile limit |
+| `string or blob too big` | shorten the statement to 100,000 bytes or fewer (workerd's own limit) |
 | `does not export it` | a module's generated file uses another module's id type that the owner's `public.ts` no longer exports; add the `export type { ... }` line the message names |
 | `use a named parameter (:name) instead of` | replace `?` with `:name` |
 | `Use its public.ts, or declare readsAll for a report module` | a read of another module's table: read through the owner's `public.ts`, or declare `readsAll` on a report module; a write (`inserts into`, `updates`, `deletes from`) moves to the owner |

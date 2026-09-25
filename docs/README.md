@@ -143,6 +143,12 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0128](adr/0128-the-generated-file-imports-id-types-through-public-ts.md) | The generated file imports id types through public.ts |
 | [0129](adr/0129-the-node-floor-tracks-the-workerd-sqlite-version.md) | The Node floor tracks the workerd SQLite version |
 | [0130](adr/0130-a-nested-aggregate-subquery-that-can-return-no-row-is-typed-nullable.md) | A nested aggregate subquery that can return no row is typed nullable |
+| [0131](adr/0131-keyset-paging-for-fixed-keys.md) | Keyset paging for a fixed key, OFFSET only for a jump or a chosen sort |
+| [0132](adr/0132-a-top-level-one-row-aggregate-subquery-is-typed-non-null.md) | A top-level one-row aggregate subquery is typed non-null |
+| [0133](adr/0133-the-build-refuses-insert-or-rollback-and-update-or-rollback-as-a-plan-item.md) | The build refuses INSERT OR ROLLBACK and UPDATE OR ROLLBACK as a plan item |
+| [0134](adr/0134-the-build-prepares-under-workerds-own-sqlite-limits.md) | The build prepares every user statement under workerd's own SQLite limits |
+| [0135](adr/0135-a-deletes-returning-rows-are-the-commands-rows.md) | A DELETE's RETURNING rows are the command's rows |
+| [0136](adr/0136-json-group-array-refuses-a-join-that-can-multiply-its-elements.md) | `json_group_array` refuses a join that can multiply its elements |
 
 ## Measurements
 
