@@ -34,8 +34,9 @@ test("node:sqlite reports kind foreign_key on a real db.run()", async () => {
 
   const raw = new DatabaseSync(":memory:");
   try {
-    // node:sqlite defaults foreign_keys off; D1 and a Durable Object do not
-    // need this pragma (both enforce foreign keys by default).
+    // node:sqlite's DatabaseSync enables foreign keys by default
+    // (enableForeignKeyConstraints), as D1 and a Durable Object do; the
+    // pragma states the precondition this test depends on.
     raw.exec("pragma foreign_keys = on");
     raw.exec(DDL);
     let message: string | null = null;
