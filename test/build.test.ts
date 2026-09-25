@@ -949,6 +949,43 @@ export const referrals = table(\`
     }
   });
 
+  // ADR 0138: a FROM-clause subquery correlated to an earlier FROM item
+  // fails prepare, and the typer names the rule instead of the engine's
+  // raw "no such column" text. Before this, a queries() entry reached that
+  // refusal too late: build.ts's own read-only precheck (engine.accesses)
+  // also prepares the statement, and ran first, so the raw engine text
+  // surfaced there while a command plan item, which skips that precheck,
+  // already reached the typer's own refusal. typer.analyze now runs first
+  // for both, so the same SQL gives the same refusal body in either place.
+  test("a queries() entry and a command plan item give the same refusal for a correlated FROM-clause subquery", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/orders/module.ts");
+      // The same SQL text is one statement (keyed by its own text, ADR
+      // 0033): using it as both a queries() entry and a command plan item
+      // gives one failure whose own locations name both, so the same
+      // message is, literally, what each one gets.
+      const correlated = "select o.id, x.id as lid from orders o, (select id from order_lines l where l.order_id = o.id limit 2) x";
+      writeFileSync(schema, readFileSync(schema, "utf8")
+        .replace("export const orderQueries = queries(generated, {", `export const orderQueries = queries(generated, {\n  brokenSubquery: \`${correlated}\`,`)
+        .replace("export const orderCommands = commands(generated, {", `export const orderCommands = commands(generated, {\n  brokenSubquery: { plan: [\`${correlated}\`] },`));
+      await assert.rejects(build(join(dir, "example/solarsql.config.ts")), (error: unknown) => {
+        assert.ok(error instanceof StatementFailures, String(error));
+        assert.equal(error.failures.length, 1);
+        const failure = error.failures[0]!;
+        assert.match(failure.message, /at: .*command orderCommands\.brokenSubquery/);
+        assert.match(failure.message, /at: .*query orderQueries\.brokenSubquery/);
+        assert.match(failure.message, /FROM-clause subquery/);
+        assert.match(failure.message, /does not see another item of the same FROM list/);
+        assert.equal(/no such column/.test(failure.message), false);
+        assert.equal(/columns of/.test(failure.message), false);
+        return true;
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a DDL-only rename collects every trigger and search-table failure of the module in one run", async () => {
     const dir = copy();
     try {

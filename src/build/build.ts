@@ -674,10 +674,19 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
       for (const [key, sql] of m.statements) {
         let analysis: Analysis;
         try {
+          // The typer's own prepare, and its refusals for a shape SQLite's
+          // raw prepare error does not name (ADR 0138), run before this
+          // read-only precheck's own engine.accesses(sql) call, which also
+          // prepares: prepared first, a statement the typer refuses (a
+          // rule and a remedy) would otherwise surface here as SQLite's own
+          // raw message instead, since engine.accesses does not know the
+          // typer's own refusals. A command plan item (never in
+          // readStatements) already reached the typer first; this makes a
+          // queries()/returns entry match it.
+          analysis = typer.analyze(sql, m.name);
           if (m.readStatements.has(key) && engine.accesses(sql).some((access) => ["insert", "update", "delete"].includes(access.action))) {
             throw new BuildError("A query or returns must not write to the database.", sql);
           }
-          analysis = typer.analyze(sql, m.name);
           // A plan item's own rows are never collected at run time; only a
           // command's `returns` clause, or (ADR 0136) a DELETE item's own
           // RETURNING reply, is. Any other write plan item with its own
