@@ -75,7 +75,8 @@ A one-file, 32-mutant run took 3 seconds under tap and 6 seconds under vitest.
 
 ## Consequences
 
-- A full run under Vitest 4.1.11 (2026-09-26) found 14,140 mutants across `src/`: 8,639 killed, 2,037 timeout, 1,773 survived, 1,689 no coverage, a mutation score of 75.51%. The timeout count runs high because this run shared the machine with other work; files with many timeouts are being re-run on their own.
+- A full run under Vitest 4.1.11 (2026-09-26) found 14,140 mutants across `src/`. The four files with the most timeouts (`scan.ts`, `typegen.ts`, `facts.ts`, `migration.ts`) were then run again on an otherwise idle machine. The result: 8,591 killed, 2,035 timeout, 1,829 survived, 1,685 no coverage, 8 unverified, a mutation score of 75.15%.
+- The timeout count barely moved on the idle rerun (2,037 to 2,035), so most timeouts are real detections: a mutated loop condition in the SQL scanner and the type generator runs until Stryker stops it.
 - A run against `src/runtime/id.ts` found five surviving mutants. They showed four gaps in the tests: the random bits, the start value of the counter in a new millisecond, the counter's ceiling (`0xfff`), and the process's first call at time 0. Tests for these gaps brought the count of surviving mutants to zero.
 - A run against `src/runtime/failure.ts` found surviving mutants in `failureClass`'s `||` conditions: each existing test message satisfied every operand, so no test told one operand apart from another. New tests isolate `sql_syntax_error`'s "sql error: near" text alone, `sqlite_busy`'s `SQLITE_BUSY` text alone, and a `D1_ERROR` prefix with zero whitespace before the reset-wrapper text.
 - `npm audit` reports two more moderate advisories, through `@stryker-mutator/core`'s dependency on `typed-rest-client`, which depends on `qs`.
