@@ -8,7 +8,8 @@
     "clear-text",
     "progress",
     "html",
-    "json"
+    "json",
+    "agent"
   ],
   "ignorePatterns": [
     ".scratch",
@@ -26,5 +27,9 @@
   "vitest": {
     "configFile": "vitest.mutation.config.ts"
   },
-  "vitest_comment": "vitest.mutation.config.ts selects the tests; its header says why test/slow, test/miniflare, and stale.test.ts are left out."
+  "vitest_comment": "vitest.mutation.config.ts selects the tests; its header says why test/slow, test/miniflare, and stale.test.ts are left out.",
+  "appendPlugins": [
+    "stryker-agent-reporter"
+  ],
+  "agentReporter_comment": "stryker-agent-reporter writes reports/mutation/agent.jsonl for a coding agent, and agent.partial.jsonl while the run goes."
 }

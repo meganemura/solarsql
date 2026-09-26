@@ -33,6 +33,8 @@ Move the pin to Vitest 5 once a release carries the fix.
 `@stryker-mutator/core` and `@stryker-mutator/vitest-runner`, both 10.0.0, are exact-pinned dev dependencies.
 `@stryker-mutator/tap-runner` is removed.
 `npm run test:mutation` runs `stryker run`.
+The `agent` reporter from `stryker-agent-reporter` 0.1.0 (a Stryker plugin by the same author) writes `reports/mutation/agent.jsonl` for a coding agent: each survivor with a stable key, a patch, its covering test files, and a command to rerun it. It also writes `agent.partial.jsonl` while the run goes.
+The dependency rule asks for a version published 7 or more days ago; this package is excluded, as the author's own package, published from its own repository through npm trusted publishing with provenance.
 CI does not run it: a full pass over `src/` takes hours.
 Incremental mode keeps `reports/stryker-incremental.json`, and a later run tests only the mutants a change could affect.
 `reports/` and `.stryker-tmp/` are gitignored.

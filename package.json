@@ -71,6 +71,7 @@
     "@stryker-mutator/vitest-runner": "10.0.0",
     "@types/node": "26.4.0",
     "miniflare": "5.20260828.0-alpha",
+    "stryker-agent-reporter": "0.1.0",
     "typescript": "7.0.2",
     "vitest": "4.1.11",
     "wrangler": "4.127.1"
