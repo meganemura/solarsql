@@ -66,6 +66,14 @@ describe("failureClass", () => {
     assert.deepEqual(failureClass(new Error(message)), { kind: "permanent", reason: "sql_syntax_error" });
   });
 
+  test("a sql-syntax-error message with only the 'sql error: near' text, no D1_EXEC_ERROR prefix, still reports sql_syntax_error", () => {
+    // sql_syntax_error's own test is an `||` of the two substrings; the
+    // example above carries both, so it cannot tell an `||` from an `&&`.
+    // This isolates the second operand.
+    const message = 'Error in line 1: INSERTZ INTO t (a) VALUES (): sql error: near "INSERTZ": syntax error';
+    assert.deepEqual(failureClass(new Error(message)), { kind: "permanent", reason: "sql_syntax_error" });
+  });
+
   test("D1_TYPE_ERROR", () => {
     assert.deepEqual(failureClass(new Error("D1_TYPE_ERROR: Type mismatch for value undefined")), { kind: "permanent", reason: "d1_type_error" });
   });
@@ -104,8 +112,25 @@ describe("failureClass", () => {
     assert.deepEqual(failureClass(new Error("UNIQUE constraint failed")), { kind: "permanent", reason: "unresolved_constraint" });
   });
 
+  test("the D1_ERROR prefix strip ahead of the reset-wrapper check tolerates zero whitespace after the colon", () => {
+    // The strip at the reset-wrapper check is `/^D1_ERROR:\s*/` -- zero or
+    // more whitespace. The boundary is 0 characters: no space at all
+    // between the colon and the wrapper text. A message with exactly one
+    // space passes even if the strip required one space, took non-space
+    // characters, or replaced the prefix instead of removing it.
+    const message = 'D1_ERROR:Durable Object was reset and rolled back to its last known good state because the application left the database in a state where constraints were violated: something the parser does not recognize';
+    assert.deepEqual(failureClass(new Error(message)), { kind: "permanent", reason: "unresolved_constraint" });
+  });
+
   test("database is locked: transient, not_applied", () => {
     assert.deepEqual(failureClass(new Error("database is locked")), { kind: "transient", outcome: "not_applied", reason: "sqlite_busy" });
+  });
+
+  test("SQLITE_BUSY alone, with neither SQLITE_LOCKED nor 'database is locked' in the text, still reports sqlite_busy", () => {
+    // sqlite_busy's test is `A || B || C`; the case above only ever
+    // exercises C. This isolates A: without it, the message would fall
+    // through to the sqlite_code catch-all.
+    assert.deepEqual(failureClass(new Error("disk I/O error: SQLITE_BUSY")), { kind: "transient", outcome: "not_applied", reason: "sqlite_busy" });
   });
 
   test("an unresolved constraint message that also carries a trailing SQLITE_CONSTRAINT code reports unresolved_constraint, not sqlite_code", () => {
