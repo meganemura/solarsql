@@ -60,10 +60,10 @@ test('rehearsal snapshots committed WAL data and rejects broken foreign keys', a
   const path = join(dir,'source.sqlite');
   const db = new DatabaseSync(path);
   // Windows refuses to remove a directory holding an open SQLite handle, so
-  // the close hook must run before the rmSync hook; Vitest runs
-  // onTestFinished hooks in registration order, so close is registered first.
-  onTestFinished(() => db.close());
-  onTestFinished(() => rmSync(dir, {recursive:true,force:true,maxRetries:5}));
+  // the handle must close before the directory goes. One hook does both, in
+  // that order: Vitest runs onTestFinished hooks in reverse registration
+  // order, so two hooks would remove the directory first.
+  onTestFinished(() => { db.close(); rmSync(dir, {recursive:true,force:true,maxRetries:5}); });
   db.exec('pragma journal_mode = wal; create table parents(id integer primary key); create table children(p integer references parents(id)); insert into parents values (1); insert into children values (1)');
   db.exec("create table identities(value text); insert into identities(rowid,value) values (42,'kept')");
   const report = await rehearse(path,'alter table children add column note text', {

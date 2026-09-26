@@ -47,9 +47,11 @@ for (const target of ["d1", "do"] as const) {
 
 test("example selection exits when no test matches", () => {
   // Vitest reports "no test suite found" as a failure unless the caller
-  // opts in with --passWithNoTests.
+  // opts in with --passWithNoTests. node_modules/.bin/vitest is a shell
+  // shim on Windows, which node cannot run; vitest.mjs is the entry point
+  // the shim itself starts.
   const result = spawnSync(process.execPath, [
-    join(root, "node_modules/.bin/vitest"), "run", "--project", "miniflare",
+    join(root, "node_modules/vitest/vitest.mjs"), "run", "--project", "miniflare",
     "--testNamePattern", "solarsql-unmatched-selection-probe", "--passWithNoTests",
     import.meta.filename,
   ], { encoding: "utf8", timeout: 20_000, cwd: root });

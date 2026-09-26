@@ -240,7 +240,9 @@ test('D1 rebuilds retain the AUTOINCREMENT history after a deleted maximum', asy
 test('focused D1 execution exits without a runtime for skipped suites', () => {
   // Vitest reports "no test found in suite" as a failure for a describe
   // block with no matched tests, so this needs --passWithNoTests too.
-  const child=spawnSync(process.execPath,[resolve(root,'node_modules/.bin/vitest'),'run','--project','miniflare','--testNamePattern','D1 rebuilds retain','--passWithNoTests',import.meta.filename],{encoding:'utf8',timeout:20_000,cwd:root});
+  // node_modules/.bin/vitest is a shell shim on Windows, which node cannot
+  // run; vitest.mjs is the entry point the shim itself starts.
+  const child=spawnSync(process.execPath,[resolve(root,'node_modules/vitest/vitest.mjs'),'run','--project','miniflare','--testNamePattern','D1 rebuilds retain','--passWithNoTests',import.meta.filename],{encoding:'utf8',timeout:20_000,cwd:root});
   assert.equal(child.status,0,child.stdout+child.stderr+String(child.error??''));
 });
 
