@@ -4,6 +4,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Changed: the test suite runs on Vitest instead of node:test; `npm test` runs `vitest run --project unit`, and `npm run test:all` adds the `slow` and `miniflare` projects. Vitest is pinned to 4.1.11 until Stryker's vitest runner supports Vitest 5.
+- Added: `npm run test:mutation` runs mutation testing over `src/` with StrykerJS and its vitest runner (ADR 0141).
 - Added: keyset paging (first page, next page, composite row-value form) documented in queries.md, with ADR 0131 partially superseding ADR 0028's OFFSET paging idiom.
 - Added: a top-level one-row aggregate scalar subquery, and `json((select json_group_array(...) ...))` at the top level, type non-null instead of always widening with `| null` (ADR 0132).
 - Added: `json_group_array` refuses a join that can multiply its aggregated elements, naming the alias and the correlated-subquery remedy (ADR 0136).

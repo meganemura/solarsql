@@ -42,14 +42,14 @@ If you want to cite an internal document, write its substance in place instead.
 
 ## Commands
 
-- `npm test` runs the in-process files directly under `test/` (node:sqlite only, 582 tests, about 9 seconds). `npm run test:all` adds two more directories: `test/slow/` (`cli.test.ts`, `cli-discovery.test.ts`, and `pack.test.ts`, which spawn `tsc`, `npm pack`, and the CLI as child processes; `rehearse-file.test.ts`, whose two tests go through `rehearse()`'s on-disk backup) and `test/miniflare/` (workerd); together about 112 seconds, though the two added directories vary with machine load. CI runs `npm run test:all`.
+- `npm test` runs `vitest run --project unit`, the in-process files directly under `test/` (node:sqlite only, 754 tests, 753 passing and 1 skipped, about 6 seconds). `npm run test:all` runs `vitest run`, all three projects: `unit` plus `test/slow/` (`cli.test.ts`, `cli-discovery.test.ts`, and `pack.test.ts`, which spawn `tsc`, `npm pack`, and the CLI as child processes; `rehearse-file.test.ts`, whose two tests go through `rehearse()`'s on-disk backup) and `test/miniflare/` (workerd); together 952 tests (951 passing, 1 skipped), about 53 seconds, though the two added directories vary with machine load. CI runs `npm run test:all`.
 - `npm run typecheck` runs `tsc --noEmit` over `src/`, `test/`, `example/`, and `spike/`.
 - `.github/workflows/ci.yml` runs the tests, the typecheck, and the example's `build --check` on Node 24 and 26, on ubuntu, macOS, and Windows, and on each line's floor (24.20.0 and 26.7.0, ubuntu only), for every push and pull request to main.
 - `.github/workflows/publish.yml` runs on a `v*` tag. The steps and the trusted-publisher settings are in `docs/releasing.md`.
 - `npm run build` emits `dist/` from `src/`. Only the pack test needs it.
 - `node src/build/cli.ts build example/solarsql.config.ts` builds the example from the source.
 - `solarsql init <module>` starts a project; it needs the installed package, so `test/slow/pack.test.ts` is where it runs.
-- `SOLARSQL_REMOTE_URL=<the Worker's URL> node --test test/remote.test.ts` runs the example's steps against a deployed Worker, on remote D1 and on a Durable Object. `npm test` skips it. The README says how to deploy; `example/wrangler.jsonc` is gitignored because it names one account's database.
+- `SOLARSQL_REMOTE_URL=<the Worker's URL> npx vitest run test/remote.test.ts` runs the example's steps against a deployed Worker, on remote D1 and on a Durable Object. `npm test` skips it. The README says how to deploy; `example/wrangler.jsonc` is gitignored because it names one account's database.
 - `node spike/<file>.ts` runs one experiment and prints the measurements that `docs/v0-measurements.md`, `docs/v1-measurements.md`, and `docs/v5-measurements.md` cite.
 - `npm run test:mutation` runs StrykerJS across all of `src/`. Incremental mode keeps its result in `reports/`. A full run takes hours, so CI does not run it. The configuration's judgment calls are in ADR 0141.
 

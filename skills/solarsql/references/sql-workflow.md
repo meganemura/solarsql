@@ -2,7 +2,7 @@
 
 This walkthrough uses a disposable local database.
 It shows query growth and repair without translating the query into another API.
-The repository test `node --test test/sql-workflow.test.ts` checks this sequence, generated caller types, and actual query results.
+The repository test `npx vitest run test/sql-workflow.test.ts` checks this sequence, generated caller types, and actual query results.
 
 ## Start with a schema and a query
 
