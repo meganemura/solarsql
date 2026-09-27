@@ -225,6 +225,11 @@ function unmatchedSchemaShape(findings: SchemaShapeFinding[], expected: Rehearsa
   return { unexpected, stale };
 }
 
+// pragma integrity_check reports exactly one row of the literal text 'ok'
+// when the database has no problem; any other row count is only reached by
+// reporting one problem per row, so a row count other than 1 always carries
+// at least one row whose own value already differs from 'ok' (measured:
+// two independent CHECK violations produced two rows, both non-'ok' text).
 function healthy(db: DatabaseSync): void {
   const integrity = db.prepare('pragma integrity_check').all();
   if (integrity.length !== 1 || Object.values(integrity[0]!)[0] !== 'ok') throw new Error('SQLite integrity_check failed');

@@ -62,6 +62,38 @@ test('rehearsal counts include legal sqlite-prefixed tables', () => {
   } finally {db.close();}
 });
 
+test('a pre-existing CHECK constraint violation fails the baseline, before any proposed SQL runs', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table t(id integer primary key, a integer check(a > 0))');
+    // ignore_check_constraints lets this insert bypass the CHECK it violates,
+    // the same way a value written before solarsql managed the schema, or by
+    // a tool that skips constraints, could reach the database.
+    db.exec('pragma ignore_check_constraints = on');
+    db.exec('insert into t values (1, -1)');
+    db.exec('pragma ignore_check_constraints = off');
+    const result = rehearseSnapshot(db, 'select 1');
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.diagnostics, [{ code: 'BASELINE_FAILED', message: 'SQLite integrity_check failed' }]);
+  } finally { db.close(); }
+});
+
+test('a pre-existing foreign key violation fails the baseline, before any proposed SQL runs', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    // foreign_keys off (SQLite's own default) lets this insert reach an
+    // orphaned row, the same way a database written before FK enforcement
+    // was turned on could carry one in.
+    db.exec('pragma foreign_keys = off');
+    db.exec('create table parents(id integer primary key)');
+    db.exec('create table children(p integer references parents(id))');
+    db.exec('insert into children values (99)');
+    const result = rehearseSnapshot(db, 'select 1');
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.diagnostics, [{ code: 'BASELINE_FAILED', message: 'SQLite foreign_key_check failed' }]);
+  } finally { db.close(); }
+});
+
 test('a case executes a representative old query with named params before and after the migration', () => {
   const db = new DatabaseSync(':memory:');
   try {
@@ -157,8 +189,7 @@ test('a case rejects a bare parameter name used with more than one prefix in the
       cases: { mixed: { sql: 'select :x as a, $x as b', params: { ':x': 1, '$x': 2 } } },
     });
     assert.equal(result.ok, false);
-    assert.equal(result.diagnostics[0]!.code, 'CHECKS_INVALID', JSON.stringify(result));
-    assert.match(result.diagnostics[0]!.message, /more than one prefix/);
+    assert.deepEqual(result.diagnostics, [{ code: 'CHECKS_INVALID', message: 'case "mixed" uses one parameter name with more than one prefix: :x, $x' }]);
   } finally { db.close(); }
 });
 
@@ -177,6 +208,33 @@ test('a case requires params keyed by the full prefixed name, not the bare name'
     assert.equal(extra.ok, false);
     assert.equal(extra.diagnostics[0]!.code, 'CHECKS_INVALID', JSON.stringify(extra));
     assert.match(extra.diagnostics[0]!.message, /unexpected parameter: id/);
+  } finally { db.close(); }
+});
+
+test('a case parameter explicitly set to undefined is reported as missing, not bound as an unsupported value', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const result = rehearseSnapshot(db, 'select 1', {
+      cases: { probe: { sql: 'select :id as id', params: { ':id': undefined } } },
+    } as unknown as Parameters<typeof rehearseSnapshot>[2]);
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.diagnostics, [{ code: 'CHECKS_INVALID', message: 'case "probe" is missing parameter: :id' }]);
+  } finally { db.close(); }
+});
+
+test('a case lists more than one missing or unexpected parameter together, pluralized', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const missing = rehearseSnapshot(db, 'select 1', {
+      cases: { probe: { sql: 'select :a as a, :b as b', params: {} } },
+    });
+    assert.equal(missing.ok, false);
+    assert.deepEqual(missing.diagnostics, [{ code: 'CHECKS_INVALID', message: 'case "probe" is missing parameters: :a, :b' }]);
+    const extra = rehearseSnapshot(db, 'select 1', {
+      cases: { probe: { sql: 'select :a as a', params: { ':a': 1, x: 2, y: 3 } } },
+    });
+    assert.equal(extra.ok, false);
+    assert.deepEqual(extra.diagnostics, [{ code: 'CHECKS_INVALID', message: 'case "probe" has unexpected parameters: x, y' }]);
   } finally { db.close(); }
 });
 
@@ -209,6 +267,44 @@ test('a case binds a boolean nested inside an array or object, only rejecting on
     });
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.deepEqual(result.cases, ['flags']);
+  } finally { db.close(); }
+});
+
+test('a case parameter nested inside an object is validated key by key, reporting the failing key\'s own path', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const result = rehearseSnapshot(db, 'select 1', {
+      cases: { probe: { sql: 'select json_extract(:o, \'$.k\') as v', params: { ':o': { k: Number.POSITIVE_INFINITY } } } },
+    });
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.diagnostics, [{ code: 'CHECKS_INVALID', message: 'case "probe" parameter :o.k must be a finite number' }]);
+  } finally { db.close(); }
+});
+
+test('a case parameter of an unsupported type nested inside an array is rejected, not silently accepted as an object', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const result = rehearseSnapshot(db, 'select 1', {
+      cases: { probe: { sql: 'select json_array_length(:p) as n', params: { ':p': [() => 1] } } },
+    } as unknown as Parameters<typeof rehearseSnapshot>[2]);
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.diagnostics, [{ code: 'CHECKS_INVALID', message: 'case "probe" parameter :p[0] has an unsupported value type' }]);
+  } finally { db.close(); }
+});
+
+test('a case binds a plain scalar parameter as itself, including null, not JSON-encoded like an array or object', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const result = rehearseSnapshot(db, 'select 1', {
+      cases: {
+        probe: {
+          sql: "select json_extract('{\"a\":1}', :path) as v, json_extract('{\"a\":1}', :none) as w",
+          params: { ':path': '$.a', ':none': null },
+        },
+      },
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.cases, ['probe']);
   } finally { db.close(); }
 });
 
@@ -251,6 +347,69 @@ test('checks.cases rejects malformed case definitions', () => {
       assert.match(result.diagnostics[0]!.message, message);
     } finally { db.close(); }
   }
+});
+
+test('checks.cases itself must be a plain, non-array object', () => {
+  const message = 'cases must be an object of names and case definitions';
+  for (const bad of [null, 5, 'x', []] as unknown[]) {
+    const db = new DatabaseSync(':memory:');
+    try {
+      const result = rehearseSnapshot(db, 'select 1', { cases: bad } as unknown as Parameters<typeof rehearseSnapshot>[2]);
+      assert.equal(result.ok, false, JSON.stringify(bad));
+      assert.deepEqual(result.diagnostics, [{ code: 'CHECKS_INVALID', message }], JSON.stringify(bad));
+    } finally { db.close(); }
+  }
+});
+
+test('a case entry itself must be a plain, non-array object', () => {
+  const message = 'case "probe" must be an object with sql and params';
+  for (const bad of [null, 5, 'x', []] as unknown[]) {
+    const db = new DatabaseSync(':memory:');
+    try {
+      const result = rehearseSnapshot(db, 'select 1', { cases: { probe: bad } } as unknown as Parameters<typeof rehearseSnapshot>[2]);
+      assert.equal(result.ok, false, JSON.stringify(bad));
+      assert.deepEqual(result.diagnostics, [{ code: 'CHECKS_INVALID', message }], JSON.stringify(bad));
+    } finally { db.close(); }
+  }
+});
+
+test('a case entry with no sql field is rejected with the field\'s own message', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const result = rehearseSnapshot(db, 'select 1', { cases: { probe: { params: {} } } } as unknown as Parameters<typeof rehearseSnapshot>[2]);
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.diagnostics, [{ code: 'CHECKS_INVALID', message: 'case "probe".sql must be a string' }]);
+  } finally { db.close(); }
+});
+
+test('a case entry\'s params must be a plain, non-array object', () => {
+  const message = 'case "probe".params must be an object';
+  for (const bad of [null, 5, 'x', []] as unknown[]) {
+    const db = new DatabaseSync(':memory:');
+    try {
+      const result = rehearseSnapshot(db, 'select 1', { cases: { probe: { sql: 'select 1', params: bad } } } as unknown as Parameters<typeof rehearseSnapshot>[2]);
+      assert.equal(result.ok, false, JSON.stringify(bad));
+      assert.deepEqual(result.diagnostics, [{ code: 'CHECKS_INVALID', message }], JSON.stringify(bad));
+    } finally { db.close(); }
+  }
+});
+
+test('a case entry with exactly one unknown field reports it singular, not pluralized', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const result = rehearseSnapshot(db, 'select 1', { cases: { probe: { sql: 'select 1', params: {}, a: 1 } } } as unknown as Parameters<typeof rehearseSnapshot>[2]);
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.diagnostics, [{ code: 'CHECKS_INVALID', message: 'case "probe" has unknown field: a' }]);
+  } finally { db.close(); }
+});
+
+test('a case entry with more than one unknown field lists them together, pluralized', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const result = rehearseSnapshot(db, 'select 1', { cases: { probe: { sql: 'select 1', params: {}, a: 1, b: 2 } } } as unknown as Parameters<typeof rehearseSnapshot>[2]);
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.diagnostics, [{ code: 'CHECKS_INVALID', message: 'case "probe" has unknown fields: a, b' }]);
+  } finally { db.close(); }
 });
 
 test('checks itself must be a plain, non-array object', () => {
@@ -471,6 +630,39 @@ test('two unexpected findings appear together in one message', () => {
     assert.equal(result.ok, false);
     assert.equal(result.diagnostics[0]!.code, 'SCHEMA_SHAPE_CHANGED', JSON.stringify(result));
     assert.equal(result.diagnostics[0]!.message, 'Schema shape changed unexpectedly: dropped items.note, dropped retired');
+  } finally { db.close(); }
+});
+
+// A dropped column and a same-keyed expected.retyped declaration must not
+// cancel each other out: only a genuine retype may excuse a retyped
+// declaration, so a caller that pre-authorized a retype for a column the
+// migration actually dropped still owes a review of that drop.
+test('a stale expected.retyped entry is reported even when the same column was actually dropped', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table items(id integer primary key, note text) strict');
+    const result = rehearseSnapshot(db, 'alter table items drop column note', {
+      expected: { dropped: [{ table: 'items', column: 'note' }], retyped: [{ table: 'items', column: 'note' }] },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics[0]!.code, 'SCHEMA_SHAPE_CHANGED', JSON.stringify(result));
+    assert.equal(result.diagnostics[0]!.message, 'Schema shape changed unexpectedly: expected retyped items.note did not happen');
+  } finally { db.close(); }
+});
+
+// The reverse of the test above: a genuine retype must not excuse a
+// same-keyed expected.dropped declaration that never actually happened.
+test('a stale expected.dropped entry is reported even when the same column was actually retyped', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table items(id integer primary key, qty integer) strict');
+    const rebuild = 'create table "_new_items"(id integer primary key, qty text) strict; insert into "_new_items" select id, qty from items; drop table items; alter table "_new_items" rename to items';
+    const result = rehearseSnapshot(db, rebuild, {
+      expected: { retyped: [{ table: 'items', column: 'qty' }], dropped: [{ table: 'items', column: 'qty' }] },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics[0]!.code, 'SCHEMA_SHAPE_CHANGED', JSON.stringify(result));
+    assert.equal(result.diagnostics[0]!.message, 'Schema shape changed unexpectedly: expected dropped items.qty did not happen');
   } finally { db.close(); }
 });
 
