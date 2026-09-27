@@ -65,6 +65,12 @@ export function applied(files: readonly string[], names?: readonly string[]): Da
       const action = `Delete ${label} and run \`solarsql migration\` again against the merged schema.`;
       const unknown = actual.columns.map((c) => c.name).find((n) => !recorded.has(n));
       if (unknown !== undefined) {
+        // introducedBy always has an entry here: applied() always starts
+        // from an empty in-memory database, and the loop at the bottom of
+        // this function attributes every column of every table to the file
+        // that (re-)introduced it, for every file processed so far. A
+        // column already present in `actual` (the schema this file starts
+        // from) was necessarily introduced by one of those earlier files.
         const addedBy = introducedBy.get(`${table} ${unknown}`);
         const attribution = addedBy === undefined
           ? "added by an earlier migration"
@@ -100,6 +106,9 @@ export function applied(files: readonly string[], names?: readonly string[]): Da
           action,
         );
       }
+      // The unknown-column check above already refused unless every name in
+      // actual.columns is a key of `recorded`, so recorded.get(c.name) is
+      // always defined here and the ?? "" fallback is never used.
       const changed = actual.columns.find((c) => c.def !== (recorded.get(c.name) ?? ""));
       if (changed) {
         throw new BuildError(
@@ -120,6 +129,14 @@ export function applied(files: readonly string[], names?: readonly string[]): Da
           action,
         );
       }
+      // badIndex and badTrigger (used just below and further down) can fail
+      // to parse: SQLite accepts a string-literal name (`create index 'qi'
+      // on ...`) and stores it back verbatim, so created(), which only
+      // names an identifier token, returns null for it (measured). The ??
+      // fallback to the raw declaration text below is that case's error
+      // message. revivedIndex and revivedTrigger (further below) do not
+      // need the same fallback: revivedDeclaration's byName branch only
+      // returns an entry whose own created()?.name is already defined.
       const actualIndexSql = [...schema.indexes.values()].filter((i) => i.table === table).map((i) => normalize(i.sql));
       const badIndex = unknownDeclaration(indexes, actualIndexSql);
       if (badIndex !== undefined) {
@@ -182,6 +199,9 @@ export function applied(files: readonly string[], names?: readonly string[]): Da
         );
       }
     }
+    // Reassigned below, before `ordinal` (next) is ever non-null: the catch
+    // block only reads `statements.length` when `ordinal` is non-null, so
+    // this placeholder is never read.
     let statements: string[] = [];
     // Non-null only while a specific statement of this file is running, so
     // a failure at "begin" or "commit" itself (for example a deferred
@@ -212,6 +232,11 @@ export function applied(files: readonly string[], names?: readonly string[]): Da
       for (const column of table.columns) {
         const key = `${tableName} ${column.name}`;
         if (before.has(key)) continue;
+        // By the time `r?.table === tableName` is true, `r` is already
+        // known truthy: `tableName` is a real Map key, never undefined, and
+        // `r?.table` can equal a real string only when `r` itself is not
+        // null or undefined. The `?.` on `r?.to`, just after, only repeats
+        // a check `&&` already guarantees at that point.
         const rename = statements.map(renamedColumn).find((r) => r?.table === tableName && r?.to === column.name);
         introducedBy.set(key, rename ? { label, renamedFrom: rename.from } : { label });
       }
@@ -234,10 +259,22 @@ export function introspect(db: DatabaseSync): Schema {
     .all() as { type: string; name: string; tbl_name: string; sql: string }[];
   for (const row of rows) {
     const table = attributes.get(row.name);
+    // `attributes` is keyed by name alone, and a trigger does not share a
+    // table's namespace the way an index or a view does (SQLite accepts a
+    // trigger and a table, or a trigger and a search table, under the exact
+    // same name), so every branch below checks `row.type` itself first: a
+    // trigger row named the same as some virtual table must still become a
+    // trigger, not get folded into `virtuals` by name alone.
     if (row.type === "table" && table?.type === "shadow") continue;
     if (row.type === "table" && table?.type === "virtual") {
       virtuals.set(row.name, { name: row.name, sql: row.sql });
     } else if (row.type === "table") {
+      // definitions() returns null only when a CREATE TABLE has no top-level
+      // parenthesized body. SQLite never stores a live table's own schema SQL
+      // without one -- even `CREATE TABLE ... AS SELECT` is normalized to a
+      // plain column list in sqlite_schema -- so `defs` is never null here:
+      // the `?.` on `defs?.columns` and `defs?.constraints` below is never
+      // exercised, and their `?? ""` / `?? []` fallbacks are never read.
       const defs = definitions(row.sql);
       // hidden 2 and 3 are generated columns; they take part in the shape
       // and are left out of a rebuild's copy.
@@ -266,6 +303,17 @@ export function introspect(db: DatabaseSync): Schema {
         strict: table!.strict === 1,
         // INTEGER PRIMARY KEY DESC has a separate primary-key index and
         // therefore does not alias rowid. Let SQLite distinguish that case.
+        // The `pragma_index_list ... origin = 'pk'` check below is the
+        // deciding term: SQLite gives a table a pk autoindex for every PK
+        // shape except a single-column INTEGER PRIMARY KEY without DESC on
+        // a rowid table (measured, including WITHOUT ROWID: even its own
+        // sole INTEGER PRIMARY KEY column gets one, since there is no rowid
+        // for it to alias), so whenever the earlier terms of this chain
+        // (whether it is a rowid table, the column count, the pk flag, and
+        // the INTEGER type) would matter on their own, that autoindex is
+        // already present and the chain is false regardless -- true
+        // whether an earlier term is widened to `true` outright or only
+        // loosened from `&&` to `||` against a neighboring term.
         rowidAlias: table!.wr === 0 && columns.filter(c => c.pk > 0).length === 1
           && columns.some(c => c.pk > 0 && c.type.toUpperCase() === "INTEGER")
           && !db.prepare(`select 1 from pragma_index_list(?) where origin = 'pk'`).get(row.name)
@@ -276,6 +324,9 @@ export function introspect(db: DatabaseSync): Schema {
     } else if (row.type === "trigger") {
       triggers.set(row.name, { name: row.name, table: row.tbl_name, sql: row.sql });
     } else if (row.type === "view") {
+      // sqlite_schema's own "type" column has exactly four values (table,
+      // index, trigger, view); the three checked above already exclude the
+      // first three, so a row reaching this branch is always a view.
       views.set(row.name, { name: row.name, sql: row.sql });
     }
   }

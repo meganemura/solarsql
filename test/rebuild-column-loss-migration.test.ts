@@ -5,9 +5,61 @@ import { test } from "vitest";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { applied, diff, introspect, open, render } from "../src/build/migration.ts";
-import { splitStatements } from "../src/build/scan.ts";
+import { REBUILD_HEADER, splitStatements } from "../src/build/scan.ts";
 import { BuildError } from "../src/build/typegen.ts";
 import { migrate, MigrationHistoryError } from "../src/node.ts";
+
+test("a column's attribution to the file that introduced it survives an unrelated later file's own change to the same table", () => {
+  const base = "create table t (id text primary key not null, a text not null, b text not null) strict";
+  const addC = "alter table t add column c text";
+  // A hand-crafted rebuild header: it knows about "id", "b", and "c" (added
+  // by addC), but not "a" -- so "a" is the unknown column, and it must still
+  // be named as added by the base file, not by the unrelated addC file that
+  // ran afterward and touched the same table.
+  const stale = `${REBUILD_HEADER}${JSON.stringify([{ table: "t", columns: [{ name: "id", def: "" }, { name: "b", def: "" }, { name: "c", def: "" }], constraints: [], indexes: [], triggers: [] }])}\nselect 1;`;
+  assert.throws(
+    () => applied([base + ";", addC + ";", stale], ["0001_base.sql", "0002_add_c.sql", "0003_stale.sql"]),
+    (e: unknown) => {
+      assert.ok(e instanceof BuildError, String(e));
+      assert.match(e.message, /0003_stale\.sql rebuilds table "t" without knowledge of column "a", added by 0001_base\.sql/);
+      return true;
+    },
+  );
+});
+
+test("a rebuild-refusal error does not misattribute an unrelated new column to a sibling rename in the same file", () => {
+  const base = "create table t (id text primary key not null, a text not null, other text not null) strict";
+  // One file both renames "a" to "b" and, unrelatedly, adds "c".
+  const renameAndAddC = "alter table t rename column a to b; alter table t add column c text;";
+  const stale = `${REBUILD_HEADER}${JSON.stringify([{ table: "t", columns: [{ name: "id", def: "" }, { name: "b", def: "" }, { name: "other", def: "" }], constraints: [], indexes: [], triggers: [] }])}\nselect 1;`;
+  assert.throws(
+    () => applied([base + ";", renameAndAddC, stale], ["0001_base.sql", "0002_rename_a_add_c.sql", "0003_stale.sql"]),
+    (e: unknown) => {
+      assert.ok(e instanceof BuildError, String(e));
+      assert.match(e.message, /0003_stale\.sql rebuilds table "t" without knowledge of column "c", added by 0002_rename_a_add_c\.sql/);
+      assert.doesNotMatch(e.message, /renamed from/);
+      return true;
+    },
+  );
+});
+
+test("a rebuild-refusal error does not misattribute a new column to another table's rename that happens to share its target name", () => {
+  const base = "create table t1 (id text primary key not null, x text not null) strict; "
+    + "create table t2 (id text primary key not null, other text not null) strict";
+  // One file renames t1.x to t1.shared and, unrelatedly, adds t2.shared: two
+  // different tables, coincidentally the same target column name.
+  const renameT1AddT2 = "alter table t1 rename column x to shared; alter table t2 add column shared text;";
+  const stale = `${REBUILD_HEADER}${JSON.stringify([{ table: "t2", columns: [{ name: "id", def: "" }, { name: "other", def: "" }], constraints: [], indexes: [], triggers: [] }])}\nselect 1;`;
+  assert.throws(
+    () => applied([base + ";", renameT1AddT2, stale], ["0001_base.sql", "0002_rename_t1_add_t2.sql", "0003_stale.sql"]),
+    (e: unknown) => {
+      assert.ok(e instanceof BuildError, String(e));
+      assert.match(e.message, /0003_stale\.sql rebuilds table "t2" without knowledge of column "shared", added by 0002_rename_t1_add_t2\.sql/);
+      assert.doesNotMatch(e.message, /renamed from/);
+      return true;
+    },
+  );
+});
 
 test("a rebuild that never knew about a concurrently added column refuses to replay, instead of silently losing it", () => {
   const base = "create table customers (id text primary key not null, email text not null, name text not null) strict";
@@ -271,6 +323,7 @@ test("two independent rebuilds of the same table, each dropping NOT NULL on a di
     (e: unknown) => {
       assert.ok(e instanceof BuildError, String(e));
       assert.match(e.message, /0003_a_nullable\.sql rebuilds table "t" with a stale declaration of column "c"/);
+      assert.match(e.message, /A database that replays 0003_a_nullable\.sql loses that change\./);
       return true;
     },
   );
@@ -379,6 +432,7 @@ test("a table-level constraint added by one rebuild is lost when a sibling rebui
       assert.ok(e instanceof BuildError, String(e));
       assert.match(e.message, /0003_add_check\.sql rebuilds table "t" without knowledge of a table-level constraint it already has/);
       assert.match(e.message, /unique\(a,b\)/);
+      assert.match(e.message, /A database that replays 0003_add_check\.sql loses that constraint\./);
       return true;
     },
   );
@@ -447,6 +501,7 @@ test("an index added by one branch is lost when an unrelated rebuild of the same
     (e: unknown) => {
       assert.ok(e instanceof BuildError, String(e));
       assert.match(e.message, /0003_a_nullable\.sql rebuilds table "t" without knowledge of index "idx_b" it already has/);
+      assert.match(e.message, /A database that replays 0003_a_nullable\.sql loses that index\./);
       return true;
     },
   );
@@ -513,6 +568,7 @@ test("a trigger added by one branch is lost when an unrelated rebuild of the sam
     (e: unknown) => {
       assert.ok(e instanceof BuildError, String(e));
       assert.match(e.message, /0003_a_nullable\.sql rebuilds table "t" without knowledge of trigger "trg_b" it already has/);
+      assert.match(e.message, /A database that replays 0003_a_nullable\.sql loses that trigger and the behavior it maintains\./);
       return true;
     },
   );

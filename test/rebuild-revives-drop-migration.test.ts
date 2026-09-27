@@ -7,7 +7,7 @@ import { test } from "vitest";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { applied, diff, introspect, open, render } from "../src/build/migration.ts";
-import { parseRebuildRecords, redeclaredByFile, splitStatements } from "../src/build/scan.ts";
+import { normalize, parseRebuildRecords, redeclaredByFile, splitStatements } from "../src/build/scan.ts";
 import { BuildError } from "../src/build/typegen.ts";
 import { migrate, MigrationHistoryError } from "../src/node.ts";
 
@@ -40,6 +40,7 @@ test("applied() refuses a rebuild that would restore a table-level constraint a 
       assert.match(e.message, /0003_add_check\.sql rebuilds table "t" and would restore a table-level constraint an earlier migration already removed/);
       assert.match(e.message, /unique\(a,b\)/);
       assert.match(e.message, /run `solarsql migration` again/);
+      assert.match(e.message, /A database that replays 0003_add_check\.sql would bring that constraint back\./);
       return true;
     },
   );
@@ -110,6 +111,7 @@ test("applied() refuses a rebuild that would restore an index a sibling migratio
     (e: unknown) => {
       assert.ok(e instanceof BuildError, String(e));
       assert.match(e.message, /0004_a_nullable\.sql rebuilds table "t" and would restore index "idx1", which an earlier migration already removed/);
+      assert.match(e.message, /A database that replays 0004_a_nullable\.sql would bring that index back\./);
       return true;
     },
   );
@@ -183,6 +185,7 @@ test("applied() refuses a rebuild that would restore a trigger a sibling migrati
     (e: unknown) => {
       assert.ok(e instanceof BuildError, String(e));
       assert.match(e.message, /0004_a_nullable\.sql rebuilds table "t" and would restore trigger "trg1", which an earlier migration already removed/);
+      assert.match(e.message, /A database that replays 0004_a_nullable\.sql would bring that trigger, and the behavior it maintains, back\./);
       return true;
     },
   );
@@ -359,6 +362,51 @@ test("a Durable Object's runtime migrate() also refuses a revived index matched 
       assert.ok(e instanceof MigrationHistoryError, String(e));
       assert.equal(e.code, "REBUILD_REVIVES_DECLARATION");
       assert.match(e.message, /rebuilds table "t" and would restore index "idx1", which an earlier migration already removed/);
+      return true;
+    },
+  );
+});
+
+// The trigger mirror of the index case above: a revived trigger is matched
+// by its name, not by its exact text, so a sibling's own unrelated
+// redeclaration (a changed trigger body, same name) does not hide the revival.
+
+test("applied() refuses a revived trigger matched by name, even though the file's own redeclaration changed the trigger's body", () => {
+  const baseTable = "create table t (id text primary key not null, a integer not null, b integer not null) strict";
+  const baseTrigger = "create trigger trg1 after insert on t begin update t set b = b + 1 where id = new.id; end";
+  const targetBTable = "create table t (id text primary key not null, a integer not null, b integer not null) strict"; // branch B: drops trg1 entirely
+  const targetATable = "create table t (id text primary key not null, a integer, b integer not null) strict"; // branch A: drops NOT NULL on a (forces a rebuild), unaware of B
+  const targetATrigger = "create trigger trg1 after insert on t begin update t set b = b + 2 where id = new.id; end"; // ...and independently redefines trg1's own body
+
+  const currentDb = open([baseTable, baseTrigger]);
+  const planB = diff(introspect(currentDb), introspect(open([targetBTable])));
+  assert.equal(planB.kind, "ok");
+  if (planB.kind !== "ok") return;
+  const fileB = render(2, "drop_trg1", planB.statements, planB.rebuilds ?? []);
+
+  const planA = diff(introspect(currentDb), introspect(open([targetATable, targetATrigger])));
+  assert.equal(planA.kind, "ok");
+  if (planA.kind !== "ok") return;
+  const fileA = render(3, "a_nullable", planA.statements, planA.rebuilds ?? []);
+
+  // Confirm the file's own redeclaration really does carry the new body, not
+  // the recorded one, so this test exercises the name-based match rather
+  // than an accidental text match.
+  const recorded = parseRebuildRecords(fileA.sql)[0]!;
+  assert.deepEqual(recorded.triggers, [normalize(baseTrigger)]);
+  const redeclared = redeclaredByFile(fileA.sql, "t");
+  assert.deepEqual(redeclared.triggers, [normalize(targetATrigger)]);
+
+  const live = new DatabaseSync(":memory:");
+  live.exec(baseTable);
+  live.exec(baseTrigger);
+  for (const s of splitStatements(fileB.sql)) live.exec(s);
+
+  assert.throws(
+    () => applied([baseTable + ";", baseTrigger + ";", fileB.sql, fileA.sql], ["0001_base.sql", "0002_base_trigger.sql", "0003_drop_trg1.sql", "0004_a_nullable.sql"]),
+    (e: unknown) => {
+      assert.ok(e instanceof BuildError, String(e));
+      assert.match(e.message, /0004_a_nullable\.sql rebuilds table "t" and would restore trigger "trg1", which an earlier migration already removed/);
       return true;
     },
   );

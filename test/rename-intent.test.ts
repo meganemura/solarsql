@@ -36,6 +36,53 @@ test("a singleton rename repair is structured, shell-safe, and composes with an 
   }
 });
 
+// A declared rename names one table. renameRepairPlan() (the generator's own
+// suggestion when a rename is missing) must not apply another table's rename
+// to a table it was never declared for, even when the two tables' column
+// changes happen to share the same "to" spelling.
+test("a rename declared for one table does not repair an unrelated column change on another table", () => {
+  const current = open([
+    "create table t1 (id integer primary key not null, a text not null) strict",
+    "create table t2 (id integer primary key not null, x text not null) strict",
+  ]);
+  const target = open([
+    "create table t1 (id integer primary key not null, b text not null) strict",
+    "create table t2 (id integer primary key not null, y text not null) strict",
+  ]);
+  try {
+    const plan = diff(introspect(current), introspect(target), [{ table: "t1", from: "a", to: "b" }]);
+    assert.equal(plan.kind, "blocked");
+    if (plan.kind !== "blocked") return;
+    // t1's own rename already explains its change: only t2 needs a repair.
+    assert.deepEqual(plan.renameCandidates, [{ table: "t2", from: ["x"], to: ["y"] }]);
+    assert.deepEqual(plan.renames, [{ table: "t2", from: "x", to: "y" }]);
+  } finally {
+    current.close();
+    target.close();
+  }
+});
+
+// A rename's own "to" column must count as already accounted for on its own
+// table: renameRepairPlan()'s working copy of that table's columns adds the
+// "to" name back in after removing the "from" name, so a sibling column
+// change on the SAME table does not mistake the rename's own target for
+// something still missing.
+test("a rename's own target column does not leak into a sibling repair candidate for the same table", () => {
+  const current = open(["create table t (id integer primary key not null, x text not null, y text not null) strict"]);
+  const target = open(["create table t (id integer primary key not null, z text not null, w text not null) strict"]);
+  try {
+    const plan = diff(introspect(current), introspect(target), [{ table: "t", from: "x", to: "z" }]);
+    assert.equal(plan.kind, "blocked");
+    if (plan.kind !== "blocked") return;
+    // The rename already explains x -> z: only y -> w needs a repair.
+    assert.deepEqual(plan.renameCandidates, [{ table: "t", from: ["y"], to: ["w"] }]);
+    assert.deepEqual(plan.renames, [{ table: "t", from: "y", to: "w" }]);
+  } finally {
+    current.close();
+    target.close();
+  }
+});
+
 test("a two-column rename candidate has no exact mapping and both orders remain candidates", () => {
   const current = open(['create table "order.lines" (id integer primary key, "old.a" text, "old.b" text)']);
   const target = open(['create table "order.lines" (id integer primary key, "new.a" text, "new.b" text)']);

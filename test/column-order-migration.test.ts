@@ -16,6 +16,16 @@ import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
 import { applied, diff, introspect, open } from "../src/build/migration.ts";
 
+test("introspect()'s rowid alias always names the actual primary-key column, even when it is not the table's first column", () => {
+  const db = open(["create table t (a text, id integer primary key not null) strict"]);
+  try {
+    const table = introspect(db).tables.get("t")!;
+    assert.equal(table.rowidAlias, "id");
+  } finally {
+    db.close();
+  }
+});
+
 test("a table reorder with a dependent view is a no-op, not a rebuild", () => {
   // Mirrors example/modules/customers/module.ts (name/email swapped) and
   // example/modules/reports/module.ts's confirmed_orders view, which reads
