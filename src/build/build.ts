@@ -20,7 +20,7 @@ import { sqliteName } from "./scope.ts";
 import { shellArgument } from "./shell.ts";
 import { writeGeneratedFile } from "./output.ts";
 import { BuildError, Typer, brandName, isSelect, type Analysis, type Brand } from "./typegen.ts";
-import { catalogStatement } from "./statements.ts";
+import { catalogStatement, refuseTransactionEndingSchemaConflict } from "./statements.ts";
 
 export type Module = {
   name: string;
@@ -499,6 +499,8 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
 
   const applyDdl = (m: Module, sql: string, at: string): boolean => {
     try {
+      const declaration = created(sql);
+      if (declaration?.kind === "table" || declaration?.kind === "trigger") refuseTransactionEndingSchemaConflict(sql, declaration.kind);
       engine = new Engine([sql], engine.db);
       applied.push(sql);
       return true;

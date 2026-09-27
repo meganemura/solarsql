@@ -1,6 +1,6 @@
-# ADR 0133: The build refuses INSERT OR ROLLBACK and UPDATE OR ROLLBACK as a plan item
+# ADR 0133: The build refuses transaction-ending conflict clauses
 
-Status: accepted (2026-09-25). Extends ADR 0045.
+Status: accepted (2026-09-25), amended (2026-09-27). Extends ADR 0045.
 
 ## Context
 
@@ -19,15 +19,26 @@ This is the same shape ADR 0117 refused for a deferred foreign key: a declaratio
 
 `catalogStatement` (`src/build/statements.ts`, role `"plan"`) refuses a plan item whose outer verb, after any leading `WITH`, is `INSERT OR ROLLBACK` or `UPDATE OR ROLLBACK`. The message: the adapter owns the transaction; leave the default (`ABORT`) to get a failure value, or use `OR IGNORE` to skip a row that fails a uniqueness, `NOT NULL`, or `CHECK` constraint (not a foreign key).
 
-`ON CONFLICT ROLLBACK` in table DDL and `RAISE(ROLLBACK, ...)` in a trigger body are out of scope: neither was measured, and both reach the database through DDL the build already checks by a different path (ADR 0045's schema-change refusal already keeps transaction-ending DDL out of a plan item).
+The original decision incorrectly excluded `ON CONFLICT ROLLBACK` in table DDL and `RAISE(ROLLBACK, ...)` in a trigger body because the schema checks did not inspect either clause.
+
+Node measurements showed that `ON CONFLICT ROLLBACK` and `RAISE(ROLLBACK, ...)` ended a caller-owned transaction, removed the caller's earlier row, and caused failed savepoint cleanup.
+
+A trigger body can run `INSERT OR ROLLBACK` or `UPDATE OR ROLLBACK`; on `node()`, each statement also ended the caller-owned transaction.
+
+The build refuses `ON CONFLICT ROLLBACK` in a column or table constraint, plus `OR ROLLBACK` and `RAISE(ROLLBACK, ...)` in a trigger body.
+
+The checks use SQL tokens, so strings and comments do not match. Other conflict actions and `RAISE(IGNORE)` remain valid in triggers.
 
 ## Why
 
 `run()` cannot classify or catch this failure on any of the three targets, and a Durable Object's case can lose a write the caller already observed as `{ ok: true }` in the same request -- the same failure pair ADR 0117 refused a deferred foreign key for. `ABORT` already gives a typed failure value with no loss, so refusing `OR ROLLBACK` removes a trap with no working alternative it replaces.
 
+`ON CONFLICT ROLLBACK`, trigger-body `OR ROLLBACK`, and `RAISE(ROLLBACK, ...)` have the transaction-ending effect of a plan item's `OR ROLLBACK`. The adapter must own that transaction to keep its rollback guarantee.
+
 ## Consequences
 
 - A plan item cannot use `OR ROLLBACK`. `INSERT OR IGNORE`, `INSERT OR REPLACE`, `INSERT OR ABORT`, `INSERT OR FAIL`, and `UPDATE OR IGNORE` (and the rest of that family other than `ROLLBACK`) still build.
+- A schema cannot use `ON CONFLICT ROLLBACK`. A trigger body cannot use `OR ROLLBACK` or `RAISE(ROLLBACK, ...)`.
 - This refusal narrows ADR 0072's own claim that a transaction-ending conflict such as `INSERT OR ROLLBACK` can roll back the caller's outer transaction: that claim now holds only for direct SQL a caller writes by hand outside a built plan (`test/node.test.ts`'s hand-built-`Command` test keeps running unchanged, since `catalogStatement` runs only at build time, not at `run()`). `skills/solarsql/references/running.md` is reworded to say so.
-- `test/statement-contract.test.ts` pins the refusal for `INSERT OR ROLLBACK`, `UPDATE OR ROLLBACK`, and the `WITH ... INSERT OR ROLLBACK` form, and confirms the other conflict-resolution keywords still build.
+- `test/statement-contract.test.ts` pins each plan-item and trigger-body `OR ROLLBACK` refusal. It confirms that other conflict-resolution keywords still build.
 - `test/miniflare/or-rollback.test.ts` pins today's run-time behavior a caller can no longer reach through a built plan: D1's unclassified `run()` rejection with no plan row remaining, and a Durable Object's HTTP 500 with no plan row remaining in a later request.

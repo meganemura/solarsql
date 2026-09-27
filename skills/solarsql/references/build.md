@@ -128,6 +128,9 @@ Shared SQL reports all its catalog locations.
 | `the returns clause uses changes()` | read the command's changes result instead |
 | `RETURNING clause is discarded` | for INSERT, UPDATE, or REPLACE, move the read into the command's `returns` field instead; a DELETE's own `RETURNING` rows become the command's rows when it has no `returns` |
 | `A plan item cannot use OR ROLLBACK` | leave the default (ABORT) for a failure value, or use OR IGNORE to skip a row that fails a uniqueness, NOT NULL, or CHECK constraint (not a foreign key) |
+| `schema cannot use ON CONFLICT ROLLBACK` | leave the default (ABORT), or use ON CONFLICT IGNORE, REPLACE, or FAIL when that outcome is intentional |
+| `trigger cannot use RAISE(ROLLBACK` | use RAISE(ABORT, ...), RAISE(FAIL, ...), or RAISE(IGNORE) |
+| `trigger body cannot use OR ROLLBACK` | leave the default (ABORT), or use OR IGNORE or OR REPLACE when that outcome is intentional |
 | `more than one row source` | keep one of `returns` or a DELETE ... RETURNING plan item; the message names both |
 | `again in a subquery` | a RETURNING subquery may not read the DELETE's own target table; read it before the DELETE |
 | `workerd's compiled-instruction limit` | simplify the statement (fewer VALUES rows or joins) to fit workerd's 25,000-op compile limit |

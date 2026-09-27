@@ -100,6 +100,74 @@ test('schema-only analysis rejects invalid inputs and shares duplicate SQL metad
   assert.equal(same.generated.match(/params: \{ n: number \}/g)?.length,1);
 });
 
+test('schema-only analysis refuses ON CONFLICT ROLLBACK in each supported constraint', () => {
+  for (const constraint of [
+    'id text primary key on conflict rollback not null',
+    'id text primary key not null, value text, unique(value) on conflict rollback',
+    'id text primary key not null, value text not null on conflict rollback',
+    'id text primary key not null, value integer, check(value > 0) on conflict rollback',
+  ]) {
+    assert.throws(
+      () => analyzeSchema(`create table items(${constraint}) strict`, {}),
+      /schema cannot use ON CONFLICT ROLLBACK.*default \(ABORT\).*ON CONFLICT IGNORE/s,
+    );
+  }
+});
+
+test('schema-only analysis refuses RAISE(ROLLBACK, ...) in a trigger body', () => {
+  const ddl = `create table items(id text primary key not null, value integer not null) strict;
+    create trigger items_nonnegative before insert on items when new.value < 0 begin select raise(rollback, 'negative'); end`;
+  assert.throws(() => analyzeSchema(ddl, {}), /trigger cannot use RAISE\(ROLLBACK.*RAISE\(ABORT.*RAISE\(FAIL/s);
+});
+
+test('schema-only analysis permits non-ROLLBACK conflict actions', () => {
+  for (const action of ['abort', 'ignore', 'replace', 'fail']) {
+    analyzeSchema(`create table items(id text primary key on conflict ${action} not null, value text) strict`, {});
+  }
+  for (const action of ['abort', 'fail']) {
+    analyzeSchema(`create table items(id text primary key not null, value integer not null) strict;
+      create trigger items_nonnegative before insert on items when new.value < 0 begin select raise(${action}, 'negative'); end`, {});
+  }
+  analyzeSchema(`create table items(id text primary key not null, value integer not null) strict;
+    create trigger items_skip before insert on items when new.value < 0 begin select raise(ignore); end`, {});
+  analyzeSchema(`create table items(id text primary key not null) strict;
+    create table log(k text primary key not null) strict;
+    create trigger items_log after insert on items begin
+      insert or ignore into log(k) values (new.id);
+      insert or replace into log(k) values (new.id);
+    end`, {});
+});
+
+test('schema-only analysis ignores rollback spellings in strings and comments', () => {
+  analyzeSchema(`create table items(
+    id text primary key not null,
+    value text default 'on conflict rollback' /* on conflict rollback */
+  ) strict;
+  create trigger items_note after insert on items begin
+    select 'raise(rollback, ignored)';
+    select 'insert or rollback into ignored values (1)';
+    /* raise(rollback, ignored); update or rollback ignored set value = 1; */
+  end`, {});
+});
+
+test('schema rollback checks ignore keyword case and whitespace', async () => {
+  const { test: property } = await import('@hegeldev/hegel');
+  const gs = await import('@hegeldev/hegel/generators');
+  property(tc => {
+    const keyword = (value: string): string => [...value].map(letter => tc.draw(gs.booleans()) ? letter.toUpperCase() : letter).join('');
+    const gap = (): string => tc.draw(gs.sampledFrom([' ', '\n', '\t', ' /* gap */ ']));
+    const table = `create table items(id text primary key ${keyword('on')}${gap()}${keyword('conflict')}${gap()}${keyword('rollback')} not null) strict`;
+    assert.throws(() => analyzeSchema(table, {}), /ON CONFLICT ROLLBACK/);
+    const trigger = `create table items(id text primary key not null) strict;
+      create trigger items_guard before insert on items begin select ${keyword('raise')}${gap()}(${gap()}${keyword('rollback')}${gap()}, 'stop'); end`;
+    assert.throws(() => analyzeSchema(trigger, {}), /RAISE\(ROLLBACK/);
+    const triggerStatement = `create table items(id text primary key not null) strict;
+      create table log(k text primary key not null) strict;
+      create trigger items_log after insert on items begin insert ${keyword('or')}${gap()}${keyword('rollback')} into log(k) values (new.id); end`;
+    assert.throws(() => analyzeSchema(triggerStatement, {}), /trigger body cannot use OR ROLLBACK/);
+  });
+});
+
 test('database analysis uses existing WAL schema and compiles a caller without copying DDL', () => {
   const dir = fixtureDir('solarsql-existing-');
   const source = join(dir, 'source.sqlite');

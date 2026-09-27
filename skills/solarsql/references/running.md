@@ -192,6 +192,6 @@ The Node adapter uses savepoints, so direct SQL and typed commands can share a c
 An ordinary command failure rolls back its work. The caller still owns the outer COMMIT or ROLLBACK.
 Deferred constraints can fail at that outer commit after an inner command returned success.
 `migrate()` uses the same savepoints, so a deferred constraint that a migration adds also fails at the outer commit.
-A built command's plan cannot contain a transaction-ending conflict clause: the build refuses `INSERT OR ROLLBACK` and `UPDATE OR ROLLBACK` (ADR 0133), the same way it refuses `BEGIN`, `COMMIT`, and `ROLLBACK` (ADR 0045). Direct SQL a caller writes by hand is outside the build's reach, so a transaction-ending conflict there can still roll back the outer transaction.
+A built command and its module schema cannot contain a transaction-ending conflict clause. The build refuses plan-item `OR ROLLBACK` and schema `ON CONFLICT ROLLBACK`. It also refuses trigger-body `OR ROLLBACK` and `RAISE(ROLLBACK, ...)` (ADR 0133). The build refuses `BEGIN`, `COMMIT`, and `ROLLBACK` in a plan item too (ADR 0045). Direct SQL remains outside the build's reach and can roll back the outer transaction.
 Failed savepoint cleanup throws an `AggregateError`; inspect its original cause and do not continue as if the outer transaction survived.
 This behavior applies to Node; D1 uses its batch API (ADR 0072).

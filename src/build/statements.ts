@@ -1,7 +1,32 @@
-// Responsibility: constrain catalog SQL to one statement with its declared role.
-// Boundary: SQLite validates the grammar; this scanner identifies the outer verb.
+// Responsibility: constrain catalog roles and reject transaction-ending schema conflicts.
+// Boundary: SQLite validates the grammar; this scanner recognizes only these fixed shapes.
 import { isKeyword, significant, splitStatements, tokenize } from "./scan.ts";
 import { BuildError } from "./typegen.ts";
+
+// These clauses end the transaction that the adapter needs for a command's
+// rollback guarantee, even when the command's own statements use plain SQL.
+export function refuseTransactionEndingSchemaConflict(sql: string, kind: "table" | "trigger"): void {
+  const tokens = significant(tokenize(sql));
+  const hasKeywordsAt = (at: number, ...words: string[]): boolean => words.every((word, offset) => isKeyword(tokens[at + offset], word));
+  if (kind === "table" && tokens.some((_, i) => hasKeywordsAt(i, "on", "conflict", "rollback"))) {
+    throw new BuildError(
+      "A schema cannot use ON CONFLICT ROLLBACK: the adapter owns the transaction. Leave the default (ABORT) to get a failure value, or use ON CONFLICT IGNORE, REPLACE, or FAIL when that outcome is intentional.",
+      sql,
+    );
+  }
+  if (kind === "trigger" && tokens.some((_, i) => hasKeywordsAt(i, "raise") && tokens[i + 1]?.text === "(" && hasKeywordsAt(i + 2, "rollback") && tokens[i + 3]?.text === ",")) {
+    throw new BuildError(
+      "A trigger cannot use RAISE(ROLLBACK, ...): the adapter owns the transaction. Use RAISE(ABORT, ...), RAISE(FAIL, ...), or RAISE(IGNORE) instead.",
+      sql,
+    );
+  }
+  if (kind === "trigger" && tokens.some((_, i) => hasKeywordsAt(i, "or", "rollback"))) {
+    throw new BuildError(
+      "A trigger body cannot use OR ROLLBACK: the adapter owns the transaction. Leave the default (ABORT) to get a failure value, or use OR IGNORE or OR REPLACE when that outcome is intentional.",
+      sql,
+    );
+  }
+}
 
 export function catalogStatement(sql: string, role: "read" | "plan"): string {
   if (splitStatements(sql).length !== 1) throw new BuildError("Use exactly one SQL statement per catalog entry or plan item.", sql);

@@ -7,19 +7,28 @@ import { test } from "vitest";
 import { build } from "../src/build/build.ts";
 import { fixtureDir, librarySpecifier } from "./fixture-dir.ts";
 
-async function project(body: string, rejects: boolean | RegExp): Promise<void> {
-  const dir = fixtureDir("solarsql-role-");
+async function fixtureProject(prefix: string, module: (dir: string) => string, rejects: boolean | RegExp): Promise<void> {
+  const dir = fixtureDir(prefix);
   try {
     mkdirSync(join(dir, "items"));
-    writeFileSync(join(dir, "items/module.ts"), `import { table, queries, commands, assert } from ${JSON.stringify(librarySpecifier(join(dir, "items")))};
-import { generated } from "./solarsql.generated.ts";
-export const items = table("create table items(id text primary key not null, value text not null) strict");
-${body}`);
+    writeFileSync(join(dir, "items/module.ts"), module(dir));
     const config = join(dir, "solarsql.config.ts");
     writeFileSync(config, 'export default { modules: ["./items"], migrations: "./migrations" };');
     if (rejects) await assert.rejects(build(config), rejects instanceof RegExp ? rejects : /module\.ts:.*(?:query|command)/s);
     else await build(config);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
+async function project(body: string, rejects: boolean | RegExp): Promise<void> {
+  return fixtureProject("solarsql-role-", dir => `import { table, queries, commands, assert } from ${JSON.stringify(librarySpecifier(join(dir, "items")))};
+import { generated } from "./solarsql.generated.ts";
+export const items = table("create table items(id text primary key not null, value text not null) strict");
+${body}`, rejects);
+}
+
+async function schemaProject(body: string, rejects: boolean | RegExp): Promise<void> {
+  return fixtureProject("solarsql-schema-role-", dir => `import { table, trigger } from ${JSON.stringify(librarySpecifier(join(dir, "items")))};
+${body}`, rejects);
 }
 
 for (const sql of ["delete from items", "update items set value='x' returning id", "with x as (select id from items) delete from items"]) {
@@ -66,6 +75,27 @@ for (const sql of [
   test(`plan still allows ${sql}`, () => project(`export const c = commands(generated, { good: { plan: [${JSON.stringify(sql)}] } });`, false));
 }
 test("plan still allows a bare select with output columns", () => project(`export const c = commands(generated, { good: { plan: ["select id from items"] } });`, false));
+
+test("schema refuses ON CONFLICT ROLLBACK in a table constraint", () => schemaProject(
+  `export const items = table("create table items(id text primary key not null, value text, unique(value) on conflict rollback) strict");`,
+  /schema cannot use ON CONFLICT ROLLBACK/,
+));
+test("schema refuses RAISE(ROLLBACK, ...) in a trigger body", () => schemaProject(
+  `export const items = table("create table items(id text primary key not null, value integer not null) strict");
+export const guard = trigger("create trigger items_guard before insert on items when new.value < 0 begin select raise(rollback, 'negative'); end");`,
+  /trigger cannot use RAISE\(ROLLBACK/,
+));
+for (const statement of [
+  "insert or rollback into log(k) values (new.id)",
+  "update or rollback log set k = new.id",
+]) {
+  test(`schema refuses ${statement} in a trigger body`, () => schemaProject(
+    `export const items = table("create table items(id text primary key not null) strict");
+export const log = table("create table log(k text primary key not null) strict");
+export const guard = trigger(${JSON.stringify(`create trigger items_guard after insert on items begin ${statement}; end`)});`,
+    /trigger body cannot use OR ROLLBACK.*default \(ABORT\).*OR IGNORE/s,
+  ));
+}
 test("CTEs, read plans, and quoted or commented semicolons remain valid", () => project(`
 export const q = queries(generated, { good: "with x as (select id from items) select id from x; -- trailing ;" });
 export const c = commands(generated, { good: { plan: [

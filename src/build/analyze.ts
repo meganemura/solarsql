@@ -7,14 +7,16 @@ import { Engine } from "./facts.ts";
 import { emitGenerated } from "./emit.ts";
 import { busyTimeoutMs, isLockError, lockMessage } from "./lock-timeout.ts";
 import { created, splitStatements } from "./scan.ts";
-import { catalogStatement } from "./statements.ts";
+import { catalogStatement, refuseTransactionEndingSchemaConflict } from "./statements.ts";
 import { BuildError, Typer } from "./typegen.ts";
 
 export function analyzeSchema(schema: string, catalog: unknown, library = "solarsql") {
   const engine = new Engine([]);
   try {
     for (const sql of splitStatements(schema)) {
-      if (!created(sql)) throw new BuildError("The schema must contain CREATE statements. Supply schema DDL without data or PRAGMAs.", sql);
+      const declaration = created(sql);
+      if (!declaration) throw new BuildError("The schema must contain CREATE statements. Supply schema DDL without data or PRAGMAs.", sql);
+      if (declaration.kind === "table" || declaration.kind === "trigger") refuseTransactionEndingSchemaConflict(sql, declaration.kind);
       try { engine.db.exec(sql); }
       catch (e) { throw new BuildError((e as Error).message, sql); }
     }
