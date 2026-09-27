@@ -110,7 +110,7 @@ The Worker refuses a request without `Authorization: Bearer <TOKEN>` once the se
 The remote test sends the steps of the Miniflare test to the deployed Worker, on D1 and on the Durable Object, after a reset of both:
 
 ```sh
-SOLARSQL_REMOTE_URL=https://solarsql-example.<your subdomain>.workers.dev SOLARSQL_REMOTE_TOKEN=<the secret> node --test test/remote.test.ts
+SOLARSQL_REMOTE_URL=https://solarsql-example.<your subdomain>.workers.dev SOLARSQL_REMOTE_TOKEN=<the secret> npx vitest run test/remote.test.ts
 ```
 
 `npm test` skips it without the URL. The observe test is skipped on remote D1, because a deployed Worker runs several isolates and the hook's events live in one.
