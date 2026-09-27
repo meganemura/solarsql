@@ -253,6 +253,71 @@ test('checks.cases rejects malformed case definitions', () => {
   }
 });
 
+test('checks itself must be a plain, non-array object', () => {
+  const message = 'Checks must be an object with queries, assertions, and/or cases';
+  for (const bad of [null, 5, 'x', []] as unknown[]) {
+    const db = new DatabaseSync(':memory:');
+    try {
+      const result = rehearseSnapshot(db, 'select 1', bad as Parameters<typeof rehearseSnapshot>[2]);
+      assert.equal(result.ok, false, JSON.stringify(bad));
+      assert.deepEqual(result.diagnostics, [{ code: 'CHECKS_INVALID', message }], JSON.stringify(bad));
+    } finally { db.close(); }
+  }
+});
+
+test('an unknown checks field name is rejected, not silently ignored', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const result = rehearseSnapshot(db, 'select 1', { assertion: { kept: 'select 1' } } as unknown as Parameters<typeof rehearseSnapshot>[2]);
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.diagnostics, [{ code: 'CHECKS_INVALID', message: 'Unknown checks field assertion; use queries, assertions, cases, or expected' }]);
+  } finally { db.close(); }
+});
+
+test('checks.queries must be an object of names and SQL strings', () => {
+  const bad: unknown[] = [null, 5, 'select 1', ['select 1'], { a: 5 }, { a: 'select 1', b: 5 }];
+  for (const queries of bad) {
+    const db = new DatabaseSync(':memory:');
+    try {
+      const result = rehearseSnapshot(db, 'select 1', { queries } as unknown as Parameters<typeof rehearseSnapshot>[2]);
+      assert.equal(result.ok, false, JSON.stringify(queries));
+      assert.deepEqual(result.diagnostics, [{ code: 'CHECKS_INVALID', message: 'queries must be an object of names and SQL strings' }], JSON.stringify(queries));
+    } finally { db.close(); }
+  }
+  const db = new DatabaseSync(':memory:');
+  try {
+    const result = rehearseSnapshot(db, 'select 1', { queries: {} });
+    assert.equal(result.ok, true, JSON.stringify(result));
+  } finally { db.close(); }
+});
+
+test('a case parameter accepts null, at the top level and nested inside an array', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const result = rehearseSnapshot(db, 'select 1', {
+      cases: {
+        probe: {
+          sql: 'select :top as top, json_array_length(:nested) as n',
+          params: { ':top': null, ':nested': [null, 1] },
+        },
+      },
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.cases, ['probe']);
+  } finally { db.close(); }
+});
+
+test('a case parameter array is validated element by element, and reports the failing element\'s own index', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const result = rehearseSnapshot(db, 'select 1', {
+      cases: { probe: { sql: 'select json_array_length(:p) as n', params: { ':p': [1, Number.POSITIVE_INFINITY] } } },
+    });
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.diagnostics, [{ code: 'CHECKS_INVALID', message: 'case "probe" parameter :p[1] must be a finite number' }]);
+  } finally { db.close(); }
+});
+
 test('an assertion rejects a named or anonymous parameter, instead of silently binding it to NULL', () => {
   const db = new DatabaseSync(':memory:');
   try {
@@ -269,6 +334,15 @@ test('an assertion rejects a named or anonymous parameter, instead of silently b
     assert.equal(anonymous.ok, false);
     assert.equal(anonymous.diagnostics[0]!.code, 'CHECKS_INVALID', JSON.stringify(anonymous));
     assert.match(anonymous.diagnostics[0]!.message, /assertion "bad" takes no parameters, but uses \?/);
+  } finally { db.close(); }
+});
+
+test('an assertion using more than one bound parameter lists them all, comma-separated', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const result = rehearseSnapshot(db, 'select 1', { assertions: { probe: 'select :x, :y' } });
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.diagnostics, [{ code: 'CHECKS_INVALID', message: 'assertion "probe" takes no parameters, but uses :x, :y; bind real values with a case instead' }]);
   } finally { db.close(); }
 });
 
@@ -426,6 +500,43 @@ test('malformed expected is rejected with a message naming the field', () => {
       assert.equal(result.diagnostics[0]!.code, 'CHECKS_INVALID', JSON.stringify(result));
       assert.match(result.diagnostics[0]!.message, message);
     }
+  } finally { db.close(); }
+});
+
+test('an unexpected field on an expected entry is reported by name, and pluralizes when there is more than one', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const one = rehearseSnapshot(db, 'select 1', { expected: { dropped: [{ table: 'x', extra: 1 }] } } as unknown as Parameters<typeof rehearseSnapshot>[2]);
+    assert.equal(one.ok, false);
+    assert.deepEqual(one.diagnostics, [{ code: 'CHECKS_INVALID', message: 'expected.dropped entry has unknown field: extra' }]);
+    const two = rehearseSnapshot(db, 'select 1', { expected: { dropped: [{ table: 'x', extra: 1, other: 2 }] } } as unknown as Parameters<typeof rehearseSnapshot>[2]);
+    assert.equal(two.ok, false);
+    assert.deepEqual(two.diagnostics, [{ code: 'CHECKS_INVALID', message: 'expected.dropped entry has unknown fields: extra, other' }]);
+  } finally { db.close(); }
+});
+
+test('expected.dropped rejects a non-string column with the field\'s own message', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const result = rehearseSnapshot(db, 'select 1', { expected: { dropped: [{ table: 't', column: 5 }] } } as unknown as Parameters<typeof rehearseSnapshot>[2]);
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.diagnostics, [{ code: 'CHECKS_INVALID', message: 'expected.dropped entry\'s column must be a string' }]);
+  } finally { db.close(); }
+});
+
+// The dropped-only column check keys off the entry's own kind
+// (expected.dropped), not merely "a column field is readable": an
+// expected.deleted entry allows no column field at all, but Object.keys
+// skips an inherited property, so a non-string value reachable only
+// through the entry's own prototype must still pass.
+test('an expected.deleted entry with an inherited non-string column still passes', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table customers(id integer primary key, name text) strict; insert into customers values (1,'a')");
+    const entry = Object.create({ column: 5 }) as { table: string };
+    entry.table = 'customers';
+    const result = rehearseSnapshot(db, 'delete from customers where id = 1', { expected: { deleted: [entry] } } as unknown as Parameters<typeof rehearseSnapshot>[2]);
+    assert.equal(result.ok, true, JSON.stringify(result));
   } finally { db.close(); }
 });
 

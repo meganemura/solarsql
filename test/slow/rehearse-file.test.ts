@@ -66,17 +66,53 @@ test('rehearsal snapshots committed WAL data and rejects broken foreign keys', a
   onTestFinished(() => { db.close(); rmSync(dir, {recursive:true,force:true,maxRetries:5}); });
   db.exec('pragma journal_mode = wal; create table parents(id integer primary key); create table children(p integer references parents(id)); insert into parents values (1); insert into children values (1)');
   db.exec("create table identities(value text); insert into identities(rowid,value) values (42,'kept')");
+  const started = performance.now();
   const report = await rehearse(path,'alter table children add column note text', {
     assertions: { identity: "select count(*) = 1 and min(rowid) = 42 and min(value) = 'kept' from identities" },
   });
+  const elapsed = performance.now() - started;
   assert.equal(report.ok,true,JSON.stringify(report));
   assert.deepEqual(report.before,{children:1,identities:1,parents:1});
   assert.deepEqual(events.filter(e => e.event === 'start').map(e => e.phase), ['open-source','backup','close-source','open-copy','validate','close-copy','cleanup']);
   assert.deepEqual(events.filter(e => e.event === 'end').map(e => e.phase), events.filter(e => e.event === 'start').map(e => e.phase));
-  assert.ok(events.filter(e => e.event === 'end').every(e => Number.isFinite(e.ms) && e.ms! >= 0));
+  // The upper bound (not just >= 0) catches an end event's own elapsed ms
+  // being computed as a sum instead of a difference from its start.
+  assert.ok(events.filter(e => e.event === 'end').every(e => Number.isFinite(e.ms) && e.ms! >= 0 && e.ms! <= elapsed));
   const failed = await rehearse(path,'pragma defer_foreign_keys = on; delete from parents');
   assert.equal(failed.ok,false);
   assert.equal(db.prepare('select count(*) as n from parents').get()!.n,1);
+});
+
+test('a subscriber that joins mid-rehearsal receives no end event for a phase whose start it missed', async () => {
+  const events: { phase: string; event: string }[] = [];
+  const observe = (message: unknown) => events.push(message as typeof events[number]);
+  let joined = false;
+  // rehearse() reads checks.queries more than once while phase('validate')
+  // is open (validateChecks's own Object.entries(checks) is the first read),
+  // so the guard keeps this subscribing only on the first read.
+  const checks = {
+    get queries() {
+      if (!joined) { joined = true; subscribe('solarsql.rehearse', observe); }
+      return {};
+    },
+  } as unknown as Parameters<typeof rehearse>[2];
+  const dir = mkdtempSync(join(tmpdir(), 'solarsql-rehearsal-latejoin-'));
+  onTestFinished(() => rmSync(dir, {recursive:true,force:true}));
+  const path = join(dir,'source.sqlite');
+  const db = new DatabaseSync(path);
+  db.exec('create table t(id integer primary key) strict');
+  db.close();
+  try {
+    const report = await rehearse(path,'select 1',checks);
+    assert.equal(report.ok,true,JSON.stringify(report));
+    // validate's phase() ran while there were no subscribers, so it
+    // published no start and set up no end. A subscriber that joins
+    // mid-way through validate sees every later phase's start and end,
+    // and neither of validate's own events.
+    assert.deepEqual(events.map(e => `${e.phase} ${e.event}`), ['close-copy start','close-copy end','cleanup start','cleanup end']);
+  } finally {
+    if (joined) unsubscribe('solarsql.rehearse', observe);
+  }
 });
 
 test('rehearsal snapshots a one-row database quickly, plain and WAL', async () => {

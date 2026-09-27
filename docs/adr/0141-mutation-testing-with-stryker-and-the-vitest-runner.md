@@ -39,8 +39,9 @@ CI does not run it: a full pass over `src/` takes hours.
 Incremental mode keeps `reports/stryker-incremental.json`, and a later run tests only the mutants a change could affect.
 `reports/` and `.stryker-tmp/` are gitignored.
 
-Stryker's own vitest run selects tests through a separate config file, `vitest.mutation.config.ts`: `test/*.test.ts`, minus `test/stale.test.ts`.
+Stryker's own vitest run selects tests through a separate config file, `vitest.mutation.config.ts`: `test/*.test.ts`, minus `test/stale.test.ts`, plus one file from `test/slow/`.
 `test/slow/` and `test/miniflare/` run code in a child process or in workerd, where Stryker cannot see which mutant the code reached, so they are left out.
+`test/slow/rehearse-file.test.ts` is the one exception: its tests call `rehearse()` in the same process, so Stryker sees which mutant they reach the same way it does for `test/*.test.ts`; the file is in `test/slow/` because `rehearse()`'s own on-disk backup step is slow, not because it spawns a child process or workerd.
 `test/stale.test.ts` checks the result of `tsc`; Stryker's instrumented `src` carries `@ts-nocheck` and code that changes the inferred types, so this test fails with no mutant active.
 `npm test` still runs it on its own.
 
