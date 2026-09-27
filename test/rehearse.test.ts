@@ -66,8 +66,12 @@ test('a case executes a representative old query with named params before and af
   const db = new DatabaseSync(':memory:');
   try {
     db.exec("create table payloads(id integer primary key, payload text not null) strict; insert into payloads values (1, '{\"id\":1}')");
+    // The migration SQL's own :id sits unbound (db.exec runs it as raw text,
+    // not through a parameter binding), so json_set writes null there and
+    // genuinely rewrites the row; declare it, the same as any other update.
     const result = rehearseSnapshot(db, "update payloads set payload = json_set(payload, '$.id', :id)", {
       cases: { reader: { sql: "select json_extract(payload, '$.id') as id from payloads where id = :id", params: { ':id': 1 } } },
+      expected: { updated: [{ table: 'payloads' }] },
     });
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.deepEqual(result.cases, ['reader']);
@@ -83,6 +87,7 @@ test('a case catches a migration that keeps the result shape but breaks stored J
     db.exec("create table payloads(id integer primary key, payload text not null) strict; insert into payloads values(1, '{\"id\":1}')");
     const asQuery = rehearseSnapshot(db, "update payloads set payload = 'not-json'", {
       queries: { reader: "select json_extract(payload, '$.id') as id from payloads" },
+      expected: { updated: [{ table: 'payloads' }] },
     });
     assert.equal(asQuery.ok, true, JSON.stringify(asQuery));
   } finally { db.close(); }
@@ -403,6 +408,16 @@ test('malformed expected is rejected with a message naming the field', () => {
     [{ expected: { retyped: [{ table: 'x' }] } }, /needs a column string/],
     [{ expected: { dropped: [{ table: 'x', extra: 1 }] } }, /unknown field/],
     [{ expected: { moved: [] } }, /Unknown expected field/],
+    [{ expected: { deleted: 'oops' } }, /expected\.deleted must be an array/],
+    [{ expected: { updated: [{ table: 'x', column: 'y' }] } }, /unknown field/],
+    [{ expected: { deleted: [{}] } }, /needs a table string/],
+    [{ expected: null }, /expected must be an object with dropped, retyped, deleted, and\/or updated/],
+    [{ expected: 'oops' }, /expected must be an object with dropped, retyped, deleted, and\/or updated/],
+    [{ expected: [] }, /expected must be an object with dropped, retyped, deleted, and\/or updated/],
+    [{ expected: { dropped: [null] } }, /expected\.dropped entries must be objects with table and column/],
+    [{ expected: { dropped: ['oops'] } }, /expected\.dropped entries must be objects with table and column/],
+    [{ expected: { dropped: [[]] } }, /expected\.dropped entries must be objects with table and column/],
+    [{ expected: { deleted: [null] } }, /expected\.deleted entries must be objects with table$/],
   ];
   try {
     for (const [checks, message] of malformed) {
@@ -450,7 +465,7 @@ test('rows reports updated for a value rewrite that keeps the same rows', () => 
   const db = new DatabaseSync(':memory:');
   try {
     db.exec("create table customers(id integer primary key, name text) strict; insert into customers values (1,'a'),(2,'B')");
-    const result = rehearseSnapshot(db, 'update customers set name = upper(name)');
+    const result = rehearseSnapshot(db, 'update customers set name = upper(name)', { expected: { updated: [{ table: 'customers' }] } });
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.deepEqual(result.rows, { customers: { compared: true, inserted: 0, deleted: 0, updated: 1 } });
   } finally { db.close(); }
@@ -460,7 +475,7 @@ test('rows reports deleted for a lost row', () => {
   const db = new DatabaseSync(':memory:');
   try {
     db.exec("create table customers(id integer primary key, name text) strict; insert into customers values (1,'a'),(2,'b'),(3,'c')");
-    const result = rehearseSnapshot(db, "delete from customers where id = 3");
+    const result = rehearseSnapshot(db, "delete from customers where id = 3", { expected: { deleted: [{ table: 'customers' }] } });
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.deepEqual(result.rows, { customers: { compared: true, inserted: 0, deleted: 1, updated: 0 } });
   } finally { db.close(); }
@@ -481,7 +496,7 @@ test('rows reports updated for a note column moving to and from NULL', () => {
   const db = new DatabaseSync(':memory:');
   try {
     db.exec("create table t(id integer primary key, note text); insert into t values (1,null),(2,'kept'),(3,null)");
-    const result = rehearseSnapshot(db, "update t set note = 'filled' where note is null");
+    const result = rehearseSnapshot(db, "update t set note = 'filled' where note is null", { expected: { updated: [{ table: 't' }] } });
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 2 } });
   } finally { db.close(); }
@@ -546,7 +561,7 @@ test('rows reports deleted when a NULL-keyed row is actually removed, if it is t
   const db = new DatabaseSync(':memory:');
   try {
     db.exec("create table t(k text primary key, v int); insert into t values (null,1),('a',2)");
-    const result = rehearseSnapshot(db, 'delete from t where k is null');
+    const result = rehearseSnapshot(db, 'delete from t where k is null', { expected: { deleted: [{ table: 't' }] } });
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 1, updated: 0 } });
   } finally { db.close(); }
@@ -556,7 +571,7 @@ test('rows reports updated when a NULL-keyed row is rewritten, if it is the only
   const db = new DatabaseSync(':memory:');
   try {
     db.exec("create table t(k text primary key, v int); insert into t values (null,1),('a',2)");
-    const result = rehearseSnapshot(db, 'update t set v = 9 where k is null');
+    const result = rehearseSnapshot(db, 'update t set v = 9 where k is null', { expected: { updated: [{ table: 't' }] } });
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 1 } });
   } finally { db.close(); }
@@ -586,7 +601,7 @@ test('rows reports compared:false when only the before-copy has a duplicate NULL
   const db = new DatabaseSync(':memory:');
   try {
     db.exec("create table t(k text primary key, v int); insert into t values (null,1),(null,2),('a',3)");
-    const result = rehearseSnapshot(db, 'delete from t where k is null and v = 1');
+    const result = rehearseSnapshot(db, 'delete from t where k is null and v = 1', { expected: { deleted: [{ table: 't' }] } });
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.deepEqual(result.rows, { t: { compared: false, reason: 'more than one row shares the same primary key containing NULL, so rows cannot be matched one to one' } });
   } finally { db.close(); }
@@ -607,7 +622,7 @@ test('rows reports updated for upper() on a COLLATE NOCASE column and for a rety
     const db = new DatabaseSync(':memory:');
     try {
       db.exec("create table t(id integer primary key, name text collate nocase) strict; insert into t values (1,'abc'),(2,'def')");
-      const result = rehearseSnapshot(db, "update t set name = upper(name) where id = 1");
+      const result = rehearseSnapshot(db, "update t set name = upper(name) where id = 1", { expected: { updated: [{ table: 't' }] } });
       assert.equal(result.ok, true, JSON.stringify(result));
       assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 1 } });
     } finally { db.close(); }
@@ -615,12 +630,249 @@ test('rows reports updated for upper() on a COLLATE NOCASE column and for a rety
   {
     const db = new DatabaseSync(':memory:');
     try {
-      db.exec('create table t(id integer primary key, n); insert into t values (1,1)');
-      const result = rehearseSnapshot(db, 'update t set n = 1.0 where id = 1', { expected: { retyped: [] } });
+      db.exec("create table items(id integer primary key, qty integer) strict; insert into items values (1,5),(2,7)");
+      const rebuild = 'create table "_new_items"(id integer primary key, qty text) strict; insert into "_new_items" select id, qty from items; drop table items; alter table "_new_items" rename to items';
+      // expected.retyped alone accounts for the retyped column's own
+      // storage-class change in every kept row, with no separate
+      // expected.updated entry (ADR 0139): a retype declaration already
+      // predicts that column's own values will differ.
+      const result = rehearseSnapshot(db, rebuild, { expected: { retyped: [{ table: 'items', column: 'qty' }] } });
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.deepEqual(result.rows, { items: { compared: true, inserted: 0, deleted: 0, updated: 2 } });
+    } finally { db.close(); }
+  }
+});
+
+// ADR 0139 (2026-09-27): a rehearsal fails by default when a compared
+// table's own row diff shows a deleted or an updated row, unless
+// checks.json declares it under expected.deleted or expected.updated.
+test('a rehearsal fails when a compared table loses or rewrites rows without a declaration', () => {
+  {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec("create table customers(id integer primary key, name text) strict; insert into customers values (1,'a'),(2,'b')");
+      const result = rehearseSnapshot(db, 'delete from customers where id = 2');
+      assert.equal(result.ok, false);
+      assert.equal(result.diagnostics[0]!.code, 'ROWS_LOST_OR_CHANGED', JSON.stringify(result));
+      assert.equal(result.diagnostics[0]!.message, 'Rows lost or changed unexpectedly: deleted customers (1)');
+      assert.equal(db.prepare('select count(*) as n from customers').get()!.n, 2);
+    } finally { db.close(); }
+  }
+  {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec("create table customers(id integer primary key, name text) strict; insert into customers values (1,'a')");
+      const result = rehearseSnapshot(db, "update customers set name = 'A'");
+      assert.equal(result.ok, false);
+      assert.equal(result.diagnostics[0]!.code, 'ROWS_LOST_OR_CHANGED', JSON.stringify(result));
+      assert.equal(result.diagnostics[0]!.message, 'Rows lost or changed unexpectedly: updated customers (1)');
+    } finally { db.close(); }
+  }
+});
+
+// An uncompared table (no usable primary key here) cannot report a count,
+// but a shrinking row count is still evidence of a loss; a same-size or
+// growing uncompared table is not flagged (ADR 0139: a delete-and-insert
+// pair could still hide inside it, but only a per-row comparison this table
+// cannot do would catch that).
+test('a rehearsal fails when an uncompared table has fewer rows after than before, unless declared', () => {
+  {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec("create table t(k text primary key, v int); insert into t values (null,1),(null,2),('a',3)");
+      const result = rehearseSnapshot(db, 'delete from t where k is null and v = 1');
+      assert.equal(result.ok, false);
+      assert.equal(result.diagnostics[0]!.code, 'ROWS_LOST_OR_CHANGED', JSON.stringify(result));
+      assert.equal(result.diagnostics[0]!.message, 'Rows lost or changed unexpectedly: deleted t (before 3, after 2)');
+    } finally { db.close(); }
+  }
+  {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec("create table t(k text primary key, v int); insert into t values (null,1),(null,2),('a',3)");
+      const result = rehearseSnapshot(db, 'delete from t where k is null and v = 1', { expected: { deleted: [{ table: 't' }] } });
+      assert.equal(result.ok, true, JSON.stringify(result));
+    } finally { db.close(); }
+  }
+});
+
+// expected.retyped names one column; it excuses only that column's own
+// contribution to updated, and never a deleted row, even on the same table.
+test('expected.retyped excuses that column\'s own updated rows, but not a deleted row or a different column\'s update, on the same table', () => {
+  {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec("create table t(id integer primary key, n integer) strict; insert into t values (1,1),(2,2)");
+      // The rebuild both retypes n (declared) and drops id 2's row (not
+      // declared): the retype excuses id 1's own updated row, but the lost
+      // row still needs its own expected.deleted entry.
+      const rebuild = 'create table "_new_t"(id integer primary key, n text) strict; insert into "_new_t" select id, n from t where id = 1; drop table t; alter table "_new_t" rename to t';
+      const result = rehearseSnapshot(db, rebuild, { expected: { retyped: [{ table: 't', column: 'n' }] } });
+      assert.equal(result.ok, false);
+      assert.equal(result.diagnostics[0]!.code, 'ROWS_LOST_OR_CHANGED', JSON.stringify(result));
+      assert.equal(result.diagnostics[0]!.message, 'Rows lost or changed unexpectedly: deleted t (1)');
+    } finally { db.close(); }
+  }
+  {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec("create table t(id integer primary key, n integer, note text) strict; insert into t values (1,1,'kept')");
+      // The rebuild retypes n (declared) and also rewrites note (not
+      // declared) for the same row: the retype excuses n's own change, but
+      // note's own change still needs its own expected.updated entry.
+      const rebuild = "create table \"_new_t\"(id integer primary key, n text, note text) strict; insert into \"_new_t\" select id, n, 'changed' from t; drop table t; alter table \"_new_t\" rename to t";
+      const result = rehearseSnapshot(db, rebuild, { expected: { retyped: [{ table: 't', column: 'n' }] } });
+      assert.equal(result.ok, false);
+      assert.equal(result.diagnostics[0]!.code, 'ROWS_LOST_OR_CHANGED', JSON.stringify(result));
+      assert.equal(result.diagnostics[0]!.message, 'Rows lost or changed unexpectedly: updated t (1)');
+    } finally { db.close(); }
+  }
+});
+
+// Owner amendment, 2026-09-27: expected.retyped excuses a retyped column's
+// own updated rows only when SQLite's own comparison affinity says the
+// value itself is unchanged; a genuine value change on that same column
+// still needs expected.updated, the same as any other column.
+test('expected.retyped does not excuse a retyped column whose own value actually changed', () => {
+  {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec("create table t(id integer primary key, q integer) strict; insert into t values (1,5)");
+      const rebuild = 'create table "_new_t"(id integer primary key, q text) strict; insert into "_new_t" select id, null from t; drop table t; alter table "_new_t" rename to t';
+      const result = rehearseSnapshot(db, rebuild, { expected: { retyped: [{ table: 't', column: 'q' }] } });
+      assert.equal(result.ok, false);
+      assert.equal(result.diagnostics[0]!.code, 'ROWS_LOST_OR_CHANGED', JSON.stringify(result));
+      assert.equal(result.diagnostics[0]!.message, 'Rows lost or changed unexpectedly: updated t (1)');
+    } finally { db.close(); }
+  }
+  {
+    // A lossy cast (1.5 truncated to 1) counts the same as a wipe to NULL.
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec("create table t(id integer primary key, q real) strict; insert into t values (1,1.5)");
+      const rebuild = 'create table "_new_t"(id integer primary key, q integer) strict; insert into "_new_t" select id, cast(q as integer) from t; drop table t; alter table "_new_t" rename to t';
+      const result = rehearseSnapshot(db, rebuild, { expected: { retyped: [{ table: 't', column: 'q' }] } });
+      assert.equal(result.ok, false);
+      assert.equal(result.diagnostics[0]!.code, 'ROWS_LOST_OR_CHANGED', JSON.stringify(result));
+      assert.equal(result.diagnostics[0]!.message, 'Rows lost or changed unexpectedly: updated t (1)');
+    } finally { db.close(); }
+  }
+  {
+    // Naming the table under expected.updated too accepts the wipe.
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec("create table t(id integer primary key, q integer) strict; insert into t values (1,5)");
+      const rebuild = 'create table "_new_t"(id integer primary key, q text) strict; insert into "_new_t" select id, null from t; drop table t; alter table "_new_t" rename to t';
+      const result = rehearseSnapshot(db, rebuild, { expected: { retyped: [{ table: 't', column: 'q' }], updated: [{ table: 't' }] } });
       assert.equal(result.ok, true, JSON.stringify(result));
       assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 1 } });
     } finally { db.close(); }
   }
+});
+
+// Second review round, 2026-09-27: the relaxed predicate's plain `IS NOT`
+// used to run under the after column's own declared collation, so a rebuild
+// that also declares NOCASE or RTRIM on the retyped column let a genuine
+// rewrite escape as "value-preserving". `COLLATE BINARY` on the relaxed
+// predicate closes this: it governs only the collating sequence for a text
+// comparison, not SQLite's own comparison affinity conversion between a
+// TEXT-affinity value and a NUMERIC-affinity value, so a value-preserving
+// retype (same number, different affinity) still passes.
+test('expected.retyped does not excuse a genuine rewrite hidden by a NOCASE collation on the retyped column', () => {
+  {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec("create table t(id integer primary key, q varchar); insert into t values (1,'abc')");
+      const rebuild = "create table \"_new_t\"(id integer primary key, q text collate nocase); insert into \"_new_t\" select id, upper(q) from t; drop table t; alter table \"_new_t\" rename to t";
+      const result = rehearseSnapshot(db, rebuild, { expected: { retyped: [{ table: 't', column: 'q' }] } });
+      assert.equal(result.ok, false);
+      assert.equal(result.diagnostics[0]!.code, 'ROWS_LOST_OR_CHANGED', JSON.stringify(result));
+      assert.equal(result.diagnostics[0]!.message, 'Rows lost or changed unexpectedly: updated t (1)');
+    } finally { db.close(); }
+  }
+  {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec("create table t(id integer primary key, q integer) strict; insert into t values (1,5)");
+      const rebuild = 'create table "_new_t"(id integer primary key, q text collate nocase) strict; insert into "_new_t" select id, q from t; drop table t; alter table "_new_t" rename to t';
+      const result = rehearseSnapshot(db, rebuild, { expected: { retyped: [{ table: 't', column: 'q' }] } });
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 1 } });
+    } finally { db.close(); }
+  }
+});
+
+test('expected.retyped does not excuse a genuine rewrite hidden by an RTRIM collation on the retyped column', () => {
+  {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec("create table t(id integer primary key, q varchar); insert into t values (1,'abc')");
+      const rebuild = "create table \"_new_t\"(id integer primary key, q text collate rtrim); insert into \"_new_t\" select id, q || '   ' from t; drop table t; alter table \"_new_t\" rename to t";
+      const result = rehearseSnapshot(db, rebuild, { expected: { retyped: [{ table: 't', column: 'q' }] } });
+      assert.equal(result.ok, false);
+      assert.equal(result.diagnostics[0]!.code, 'ROWS_LOST_OR_CHANGED', JSON.stringify(result));
+      assert.equal(result.diagnostics[0]!.message, 'Rows lost or changed unexpectedly: updated t (1)');
+    } finally { db.close(); }
+  }
+  {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec("create table t(id integer primary key, q integer) strict; insert into t values (1,5)");
+      const rebuild = 'create table "_new_t"(id integer primary key, q text collate rtrim) strict; insert into "_new_t" select id, q from t; drop table t; alter table "_new_t" rename to t';
+      const result = rehearseSnapshot(db, rebuild, { expected: { retyped: [{ table: 't', column: 'q' }] } });
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 1 } });
+    } finally { db.close(); }
+  }
+});
+
+// schemaShapeFindings keys a retyped finding by the before-side column name
+// (it iterates beforeColumns); the row-change exemption above now matches
+// the same way, so a rebuild that also changes a retyped column's case
+// (Qty -> qty) still passes here after SCHEMA_SHAPE_CHANGED already passed.
+test('expected.retyped matches a retyped column by its before-side name, even when the rebuild also changes its case', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table items(id integer primary key, Qty integer) strict; insert into items values (1,5),(2,7)");
+    const rebuild = 'create table "_new_items"(id integer primary key, qty text) strict; insert into "_new_items" select id, Qty from items; drop table items; alter table "_new_items" rename to items';
+    const result = rehearseSnapshot(db, rebuild, { expected: { retyped: [{ table: 'items', column: 'Qty' }] } });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows, { items: { compared: true, inserted: 0, deleted: 0, updated: 2 } });
+  } finally { db.close(); }
+});
+
+test('a declared expected.deleted or expected.updated table with no matching loss is a stale entry', () => {
+  {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec("create table customers(id integer primary key, name text) strict; insert into customers values (1,'a')");
+      const result = rehearseSnapshot(db, 'select 1', { expected: { deleted: [{ table: 'customers' }] } });
+      assert.equal(result.ok, false);
+      assert.equal(result.diagnostics[0]!.code, 'ROWS_LOST_OR_CHANGED', JSON.stringify(result));
+      assert.equal(result.diagnostics[0]!.message, 'Rows lost or changed unexpectedly: expected deleted customers did not happen');
+    } finally { db.close(); }
+  }
+  {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec("create table customers(id integer primary key, name text) strict; insert into customers values (1,'a')");
+      const result = rehearseSnapshot(db, 'select 1', { expected: { updated: [{ table: 'customers' }] } });
+      assert.equal(result.ok, false);
+      assert.equal(result.diagnostics[0]!.code, 'ROWS_LOST_OR_CHANGED', JSON.stringify(result));
+      assert.equal(result.diagnostics[0]!.message, 'Rows lost or changed unexpectedly: expected updated customers did not happen');
+    } finally { db.close(); }
+  }
+});
+
+test('two unexpected row changes on different tables appear together in one message', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table a(id integer primary key, v text) strict; create table b(id integer primary key, v text) strict; insert into a values (1,'x'); insert into b values (1,'y')");
+    const result = rehearseSnapshot(db, "delete from a where id = 1; update b set v = 'z'");
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics[0]!.code, 'ROWS_LOST_OR_CHANGED', JSON.stringify(result));
+    assert.equal(result.diagnostics[0]!.message, 'Rows lost or changed unexpectedly: deleted a (1), updated b (1)');
+  } finally { db.close(); }
 });
 
 test('proposed SQL cannot use ATTACH or DETACH, including while the row diff\'s own attachment exists', () => {

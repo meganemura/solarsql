@@ -28,7 +28,8 @@ export type RehearsalCaseValue = string | number | boolean | null | RehearsalCas
 export type RehearsalCase = { sql: string; params: Record<string, RehearsalCaseValue> };
 export type ExpectedDrop = { table: string; column?: string };
 export type ExpectedRetype = { table: string; column: string };
-export type RehearsalExpected = { dropped?: ExpectedDrop[]; retyped?: ExpectedRetype[] };
+export type ExpectedRowChange = { table: string };
+export type RehearsalExpected = { dropped?: ExpectedDrop[]; retyped?: ExpectedRetype[]; deleted?: ExpectedRowChange[]; updated?: ExpectedRowChange[] };
 export type RehearsalChecks = { queries?: Record<string, string>; assertions?: Record<string, string>; cases?: Record<string, RehearsalCase>; expected?: RehearsalExpected };
 export type RehearsalColumn = { name: string; type: string; notnull: 0 | 1; pk: number };
 export type RowDiff = { compared: true; inserted: number; deleted: number; updated: number } | { compared: false; reason: string };
@@ -59,17 +60,21 @@ function validateChecks(checks: unknown): asserts checks is RehearsalChecks {
   }
 }
 
-// expected names a schema-shape change the caller already reviewed, so a
-// malformed entry must fail loudly rather than silently match nothing.
+// expected names a schema-shape change, or a row loss or rewrite, the caller
+// already reviewed, so a malformed entry must fail loudly rather than
+// silently match nothing. deleted and updated (ADR 0139) name a table only:
+// unlike a dropped or retyped column, a lost or rewritten row is never
+// scoped to one column, so a per-column entry would claim a precision the
+// row diff cannot back.
 function validateExpected(expected: unknown): asserts expected is RehearsalExpected {
-  if (!expected || typeof expected !== 'object' || Array.isArray(expected)) throw new Error('expected must be an object with dropped and/or retyped');
+  if (!expected || typeof expected !== 'object' || Array.isArray(expected)) throw new Error('expected must be an object with dropped, retyped, deleted, and/or updated');
   for (const [key, entries] of Object.entries(expected)) {
-    if (key !== 'dropped' && key !== 'retyped') throw new Error(`Unknown expected field ${key}; use dropped or retyped`);
+    if (key !== 'dropped' && key !== 'retyped' && key !== 'deleted' && key !== 'updated') throw new Error(`Unknown expected field ${key}; use dropped, retyped, deleted, or updated`);
     if (!Array.isArray(entries)) throw new Error(`expected.${key} must be an array`);
+    const allowed = key === 'dropped' || key === 'retyped' ? ['table', 'column'] : ['table'];
     for (const entry of entries) {
-      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error(`expected.${key} entries must be objects with table and column`);
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error(`expected.${key} entries must be objects with ${allowed.join(' and ')}`);
       const fields = Object.keys(entry);
-      const allowed = ['table', 'column'];
       const unexpected = fields.filter(f => !allowed.includes(f));
       if (unexpected.length > 0) throw new Error(`expected.${key} entry has unknown field${unexpected.length > 1 ? 's' : ''}: ${unexpected.join(', ')}`);
       if (typeof (entry as Record<string, unknown>).table !== 'string') throw new Error(`expected.${key} entry needs a table string`);
@@ -324,30 +329,79 @@ function duplicateNullKeyCount(db: DatabaseSync, tableRef: string, columns: stri
 // key` table, shows the anti-join's inner lookup as `SEARCH b USING
 // COVERING INDEX ... (k=?)`, the same as under `=`, not a table scan), so a
 // NOCASE primary key still matches keys case-insensitively here too.
-function diffTable(db: DatabaseSync, table: string, beforeTable: string, pk: ColumnPair[], nonPk: ColumnPair[]): { inserted: number; deleted: number; updated: number } {
+// valuePreservingColumns (ADR 0139 amendment, 2026-09-27) names a column
+// `expected.retyped` declared: the type change alone must not count toward
+// `remainingUpdated`, but a value the rebuild actually changed (wiped to
+// NULL, a lossy cast) still must, the same as any other column. That column
+// still takes part in the same `changed` disjunction as every other common
+// column, just with its own `typeof` disjunct dropped -- `COLLATE BINARY`
+// stays on both the strict and the relaxed predicate (COLLATE governs a
+// text comparison's collating sequence, not SQLite's own comparison
+// affinity conversion between a TEXT-affinity value and a NUMERIC-affinity
+// value; dropping it, as an earlier version of this predicate did, let a
+// genuine rewrite on a NOCASE- or RTRIM-collated retyped column pass
+// unnoticed). One query computes both `updated` (the strict count this
+// function always reported) and `remainingUpdated` (the declaration-aware
+// count `unmatchedRowChanges` needs) with two `count(*) filter (where ...)`
+// aggregates over the same join, so a table is diffed once regardless of
+// whether `expected.retyped` names any of its columns.
+function diffTable(db: DatabaseSync, table: string, beforeTable: string, pk: ColumnPair[], nonPk: ColumnPair[], valuePreservingColumns: Set<string> = new Set()): { inserted: number; deleted: number; updated: number; remainingUpdated: number } {
   const mainTable = `main.${quoteIdent(table)}`;
   const beforeTableRef = `${quoteIdent(BEFORE_SCHEMA)}.${quoteIdent(beforeTable)}`;
   const pkJoin = pk.map(p => `a.${quoteIdent(p.after)} is b.${quoteIdent(p.before)}`).join(' and ');
   const inserted = Number(db.prepare(`select count(*) as n from ${mainTable} a where not exists (select 1 from ${beforeTableRef} b where ${pkJoin})`).get()!.n);
   const deleted = Number(db.prepare(`select count(*) as n from ${beforeTableRef} b where not exists (select 1 from ${mainTable} a where ${pkJoin})`).get()!.n);
   let updated = 0;
+  let remainingUpdated = 0;
   if (nonPk.length > 0) {
-    const changed = nonPk.map(c => `(a.${quoteIdent(c.after)} is not b.${quoteIdent(c.before)} collate binary or typeof(a.${quoteIdent(c.after)}) is not typeof(b.${quoteIdent(c.before)}))`).join(' or ');
-    updated = Number(db.prepare(`select count(*) as n from ${mainTable} a join ${beforeTableRef} b on ${pkJoin} where ${changed}`).get()!.n);
+    const strictTerms = nonPk.map(c => `(a.${quoteIdent(c.after)} is not b.${quoteIdent(c.before)} collate binary or typeof(a.${quoteIdent(c.after)}) is not typeof(b.${quoteIdent(c.before)}))`);
+    const relaxedTerms = nonPk.map((c, i) => valuePreservingColumns.has(c.before) ? `(a.${quoteIdent(c.after)} is not b.${quoteIdent(c.before)} collate binary)` : strictTerms[i]!);
+    const row = db.prepare(`select count(*) filter (where ${strictTerms.join(' or ')}) as updated, count(*) filter (where ${relaxedTerms.join(' or ')}) as remaining from ${mainTable} a join ${beforeTableRef} b on ${pkJoin}`).get();
+    updated = Number(row!.updated);
+    remainingUpdated = Number(row!.remaining);
   }
-  return { inserted, deleted, updated };
+  return { inserted, deleted, updated, remainingUpdated };
+}
+
+// The before-side column name a caller's expected.retyped entry names,
+// grouped by table: schemaShapeFindings (above) keys a retyped finding the
+// same way, by iterating beforeColumns, so a rebuild that also changes a
+// column's name case (Qty -> qty) is matched here the way SCHEMA_SHAPE_CHANGED
+// already matched it, instead of failing ROWS_LOST_OR_CHANGED right after
+// passing that check.
+function retypedColumnsByTable(expected: RehearsalExpected | undefined): Map<string, Set<string>> {
+  const byTable = new Map<string, Set<string>>();
+  // A guard, not a default-empty-array fallback: `expected.retyped` may
+  // genuinely be absent, and a fallback array here would only ever add a
+  // phantom entry no real table name could match, giving a mutant nothing
+  // for a test to observe.
+  if (expected?.retyped) {
+    for (const r of expected.retyped) {
+      const columns = byTable.get(r.table) ?? new Set<string>();
+      columns.add(r.column);
+      byTable.set(r.table, columns);
+    }
+  }
+  return byTable;
 }
 
 // Every table present (by name, case-insensitively) both before and after,
-// excluding a virtual or shadow table on either side.
+// excluding a virtual or shadow table on either side. `remainingUpdated`,
+// alongside the reported `rows`, is `diffTable`'s own declaration-aware
+// updated count for every compared table (ADR 0139 amendment): computed
+// here, in the same query that already produces `rows[table].updated`, so
+// `unmatchedRowChanges` can read it back without diffing the table a second
+// time.
 function diffAllTables(
   db: DatabaseSync,
   before: Record<string, number>, after: Record<string, number>,
   beforeColumns: Record<string, RehearsalColumn[]>, afterColumns: Record<string, RehearsalColumn[]>,
   beforeTypes: Map<string, string>, afterTypes: Map<string, string>,
-): Record<string, RowDiff> {
+  retypedColumns: Map<string, Set<string>>,
+): { rows: Record<string, RowDiff>; remainingUpdated: Record<string, number> } {
   const beforeByLower = new Map(Object.keys(before).map(name => [name.toLowerCase(), name]));
   const rows: Record<string, RowDiff> = {};
+  const remainingUpdated: Record<string, number> = {};
   for (const table of Object.keys(after)) {
     const beforeTable = beforeByLower.get(table.toLowerCase());
     if (beforeTable === undefined) continue;
@@ -364,9 +418,87 @@ function diffAllTables(
       continue;
     }
     const nonPk = commonColumns(beforeColumns[beforeTable] ?? [], afterColumns[table] ?? [], pk);
-    rows[table] = { compared: true, ...diffTable(db, table, beforeTable, pk, nonPk) };
+    const diffed = diffTable(db, table, beforeTable, pk, nonPk, retypedColumns.get(table));
+    rows[table] = { compared: true, inserted: diffed.inserted, deleted: diffed.deleted, updated: diffed.updated };
+    remainingUpdated[table] = diffed.remainingUpdated;
   }
-  return rows;
+  return { rows, remainingUpdated };
+}
+
+// A lost or rewritten row fails the rehearsal by default (owner decision,
+// 2026-09-27): a migration that drops or rewrites data the caller did not
+// review is exactly the failure a rehearsal exists to catch. `expected`
+// gains two more arrays beside `dropped` and `retyped`: `deleted` and
+// `updated` each name only a table (not a column: a row loss is never
+// scoped to one column the way a dropped or retyped column is), the same
+// way `dropped` names a whole table with no `column`.
+//
+// A `compared: false` table cannot report deleted/updated counts, but a row
+// count that shrank is still evidence of a loss, so that table also needs a
+// `deleted` declaration once `after` is smaller than `before`; `updated`
+// carries no signal there, since a `compared: false` table's rewritten
+// values are invisible either way. A table that only grows, or stays the
+// same size, is not flagged: `compared: false`'s own reason already says its
+// contents cannot be verified (ADR 0139), and a same-size table could hide a
+// delete-and-insert pair no count-only check can see -- accepted, since only
+// a per-row comparison could catch it, and that comparison is exactly what
+// `compared: false` means the diff could not do.
+//
+// A column drop already excludes that column from `nonPk` (`commonColumns`
+// above only pairs columns present on both sides), so the value it carried
+// away never counts as an update; test 'rows compares over the columns a
+// rebuild kept' pins this.
+//
+// `retyped` on a column excuses only the type change itself, not a genuine
+// value change alongside it (owner decision, 2026-09-27, amending the
+// initial ADR 0139 row-loss decision): a row where that column's own value
+// is unchanged once SQLite's own comparison affinity is applied (an
+// integer retyped to the text of the same number) is not "updated" on
+// account of that column, but a row where the value actually changed (wiped
+// to NULL, a lossy cast, a botched `cast()`) still is, the same as any other
+// column, and still needs its own `updated` declaration. `remainingUpdated`
+// (one entry per compared table, from `diffAllTables`) already carries this:
+// it is `diffTable`'s own declaration-aware count, computed in the same
+// query as the reported `updated`, so this function only compares counts
+// and never touches `db` itself. `retyped` never excuses `deleted`, and
+// never a different column's own change on the same row.
+function unmatchedRowChanges(
+  rows: Record<string, RowDiff>, before: Record<string, number>, after: Record<string, number>,
+  remainingUpdated: Record<string, number>,
+  expected: RehearsalExpected | undefined,
+): { unexpected: string[]; stale: string[] } {
+  const deletedDeclared = new Set((expected?.deleted ?? []).map(r => r.table));
+  const updatedDeclared = new Set((expected?.updated ?? []).map(r => r.table));
+  const beforeByLower = new Map(Object.keys(before).map(name => [name.toLowerCase(), name]));
+  const unexpected: string[] = [];
+  const matchedDeleted = new Set<string>();
+  const matchedUpdated = new Set<string>();
+  for (const [table, diff] of Object.entries(rows)) {
+    if (diff.compared) {
+      if (diff.deleted > 0) {
+        if (deletedDeclared.has(table)) matchedDeleted.add(table);
+        else unexpected.push(`deleted ${table} (${diff.deleted})`);
+      }
+      const updated = remainingUpdated[table]!;
+      if (updated > 0) {
+        if (updatedDeclared.has(table)) matchedUpdated.add(table);
+        else unexpected.push(`updated ${table} (${updated})`);
+      }
+    } else {
+      const beforeTable = beforeByLower.get(table.toLowerCase())!;
+      const beforeCount = before[beforeTable]!;
+      const afterCount = after[table]!;
+      if (afterCount < beforeCount) {
+        if (deletedDeclared.has(table)) matchedDeleted.add(table);
+        else unexpected.push(`deleted ${table} (before ${beforeCount}, after ${afterCount})`);
+      }
+    }
+  }
+  const stale = [
+    ...[...deletedDeclared].filter(t => !matchedDeleted.has(t)).map(t => `deleted ${t}`),
+    ...[...updatedDeclared].filter(t => !matchedUpdated.has(t)).map(t => `updated ${t}`),
+  ].map(s => `expected ${s} did not happen`);
+  return { unexpected, stale };
 }
 
 export async function rehearse(database: string, sql: string, checks: RehearsalChecks = {}, effectiveTimeoutMs = 30_000): Promise<RehearsalResult> {
@@ -523,7 +655,14 @@ export function rehearseSnapshot(db: DatabaseSync, sql: string, checks: Rehearsa
       return constants.SQLITE_OK;
     });
     db.exec(`attach database ${sqlString(beforeCopyPath)} as ${quoteIdent(BEFORE_SCHEMA)}`);
-    result.rows = diffAllTables(db, result.before, result.after, result.columns.before, result.columns.after, beforeTypes, afterTypes);
+    const diffed = diffAllTables(db, result.before, result.after, result.columns.before, result.columns.after, beforeTypes, afterTypes, retypedColumnsByTable(checks.expected));
+    result.rows = diffed.rows;
+    stage = 'ROWS_LOST_OR_CHANGED';
+    {
+      const { unexpected, stale } = unmatchedRowChanges(result.rows, result.before, result.after, diffed.remainingUpdated, checks.expected);
+      const messages = [...unexpected, ...stale];
+      if (messages.length > 0) throw new Error(`Rows lost or changed unexpectedly: ${messages.join(', ')}`);
+    }
     // finally's rollback only undoes an open transaction, so every check
     // must run before commit for a failed check to undo the migration.
     stage = 'MIGRATION_FAILED';

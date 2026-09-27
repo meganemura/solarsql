@@ -105,7 +105,8 @@ Save `checks.json`:
 npx solarsql rehearse app.sqlite change.sql checks.json
 ```
 
-The report lists row counts before and after, checked query and case names, and passed assertion names.
+The report lists row counts before and after, `result.rows`' per-table deleted/updated/inserted counts, checked query and case names, and passed assertion names.
+A migration that loses or rewrites a row fails by default; declare an intended one under `checks.json`'s `expected.deleted` or `expected.updated` (see [the rehearsal reference](rehearse.md)).
 Rehearsal checks a disposable backup and leaves the source database unchanged.
 A case also executes with its named parameters, before and after the change, not only its result columns; see the complete `cases` contract in [the rehearsal reference](rehearse.md).
 A misspelled field such as `assertion` fails with `CHECKS_INVALID`.
