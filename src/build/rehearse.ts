@@ -289,6 +289,26 @@ function commonColumns(beforeColumns: RehearsalColumn[], afterColumns: Rehearsal
   return pairs;
 }
 
+// A rowid table stores NULL in a non-INTEGER primary-key column (SQLite
+// only special-cases a lone INTEGER PRIMARY KEY as the rowid alias); `=`
+// never matches NULL to NULL, so an untouched NULL-keyed row would join to
+// nothing on either side and get reported as both inserted and deleted.
+// Counted here as "rows whose primary-key tuple has NULL in at least one
+// column and shares its full tuple with at least one other row" -- SQLite's
+// own PRIMARY KEY/UNIQUE index already forbids a duplicate tuple that has
+// no NULL at all, so a duplicate tuple can only arise where every row that
+// shares it has NULL in the same column(s). With more than one row sharing
+// such a tuple, `IS` joins them many to many, so a delete or an update
+// among them cannot be counted; the table reports `compared: false` rather
+// than a count that could be wrong.
+function duplicateNullKeyCount(db: DatabaseSync, tableRef: string, columns: string[]): number {
+  const quoted = columns.map(quoteIdent);
+  const anyNull = quoted.map(c => `${c} is null`).join(' or ');
+  const groupBy = quoted.join(', ');
+  const row = db.prepare(`select count(*) as n from (select 1 from ${tableRef} where ${anyNull} group by ${groupBy} having count(*) > 1) x`).get();
+  return Number(row!.n);
+}
+
 // Inserted: primary key present after, absent before. Deleted: the reverse.
 // Updated: primary key in both, and at least one common column differs --
 // `IS NOT ... COLLATE BINARY` catches a value change even across a NOCASE
@@ -296,13 +316,18 @@ function commonColumns(beforeColumns: RehearsalColumn[], afterColumns: Rehearsal
 // alone misses an upper() rewrite on a COLLATE NOCASE column), and
 // `typeof(a) IS NOT typeof(b)` catches a storage-class change (e.g.
 // integer 1 -> real 1.0, or TEXT -> INTEGER) `IS NOT` alone treats as
-// equal. The primary-key join itself uses no COLLATE override, so it runs
-// under the column's own declared collation and can use its index; a
-// NOCASE primary key therefore matches keys case-insensitively here too.
+// equal. The primary-key join uses `IS`, not `=`, so a row whose primary
+// key is NULL in one or more of its columns still matches itself across the
+// copies (ADR 0139); it runs under the column's own declared collation and
+// can still use its own index for the correlated lookup (measured: `explain
+// query plan` on this function's inserted count, against a `text primary
+// key` table, shows the anti-join's inner lookup as `SEARCH b USING
+// COVERING INDEX ... (k=?)`, the same as under `=`, not a table scan), so a
+// NOCASE primary key still matches keys case-insensitively here too.
 function diffTable(db: DatabaseSync, table: string, beforeTable: string, pk: ColumnPair[], nonPk: ColumnPair[]): { inserted: number; deleted: number; updated: number } {
   const mainTable = `main.${quoteIdent(table)}`;
   const beforeTableRef = `${quoteIdent(BEFORE_SCHEMA)}.${quoteIdent(beforeTable)}`;
-  const pkJoin = pk.map(p => `a.${quoteIdent(p.after)} = b.${quoteIdent(p.before)}`).join(' and ');
+  const pkJoin = pk.map(p => `a.${quoteIdent(p.after)} is b.${quoteIdent(p.before)}`).join(' and ');
   const inserted = Number(db.prepare(`select count(*) as n from ${mainTable} a where not exists (select 1 from ${beforeTableRef} b where ${pkJoin})`).get()!.n);
   const deleted = Number(db.prepare(`select count(*) as n from ${beforeTableRef} b where not exists (select 1 from ${mainTable} a where ${pkJoin})`).get()!.n);
   let updated = 0;
@@ -330,6 +355,14 @@ function diffAllTables(
     if (beforeTypes.get(lower) !== 'table' || afterTypes.get(lower) !== 'table') continue;
     const pk = pkPairs(beforeColumns[beforeTable] ?? [], afterColumns[table] ?? []);
     if (!pk) { rows[table] = { compared: false, reason: 'no primary key, or a changed primary key' }; continue; }
+    const mainTable = `main.${quoteIdent(table)}`;
+    const beforeTableRef = `${quoteIdent(BEFORE_SCHEMA)}.${quoteIdent(beforeTable)}`;
+    const duplicateNullKeys = duplicateNullKeyCount(db, mainTable, pk.map(p => p.after)) > 0
+      || duplicateNullKeyCount(db, beforeTableRef, pk.map(p => p.before)) > 0;
+    if (duplicateNullKeys) {
+      rows[table] = { compared: false, reason: 'more than one row shares the same primary key containing NULL, so rows cannot be matched one to one' };
+      continue;
+    }
     const nonPk = commonColumns(beforeColumns[beforeTable] ?? [], afterColumns[table] ?? [], pk);
     rows[table] = { compared: true, ...diffTable(db, table, beforeTable, pk, nonPk) };
   }

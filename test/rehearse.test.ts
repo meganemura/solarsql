@@ -519,6 +519,89 @@ test('rows reports a changed primary key as not compared', () => {
   } finally { db.close(); }
 });
 
+// ADR 0139: a rowid table stores NULL in a non-INTEGER primary-key column;
+// `=` never matches NULL to NULL, so a no-op rehearsal used to report an
+// untouched NULL-keyed row as both inserted and deleted.
+test('rows reports compared:false for a no-op rehearsal on a table with two NULL-keyed rows', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table t(k text primary key, v int); insert into t values (null,1),(null,2),('a',3)");
+    const result = rehearseSnapshot(db, 'select 1');
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows, { t: { compared: false, reason: 'more than one row shares the same primary key containing NULL, so rows cannot be matched one to one' } });
+  } finally { db.close(); }
+});
+
+test('rows reports 0/0/0 for a no-op rehearsal on a table with one NULL-keyed row', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table t(k text primary key, v int); insert into t values (null,1),('a',2)");
+    const result = rehearseSnapshot(db, 'select 1');
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 0 } });
+  } finally { db.close(); }
+});
+
+test('rows reports deleted when a NULL-keyed row is actually removed, if it is the only NULL-keyed row', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table t(k text primary key, v int); insert into t values (null,1),('a',2)");
+    const result = rehearseSnapshot(db, 'delete from t where k is null');
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 1, updated: 0 } });
+  } finally { db.close(); }
+});
+
+test('rows reports updated when a NULL-keyed row is rewritten, if it is the only NULL-keyed row', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table t(k text primary key, v int); insert into t values (null,1),('a',2)");
+    const result = rehearseSnapshot(db, 'update t set v = 9 where k is null');
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 1 } });
+  } finally { db.close(); }
+});
+
+test('rows reports 0/0/0 for a no-op rehearsal on a composite primary key with a partial NULL column', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table t(a text, b integer not null, v int, primary key (a, b)); insert into t values (null,1,10),(null,2,20),(\'x\',1,30)');
+    const result = rehearseSnapshot(db, 'select 1');
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 0 } });
+  } finally { db.close(); }
+});
+
+test('rows reports compared:false for a composite primary key where two rows share the same NULL-inclusive tuple', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table t(a text, b integer not null, v int, primary key (a, b)); insert into t values (null,1,10),(null,1,20)');
+    const result = rehearseSnapshot(db, 'select 1');
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows, { t: { compared: false, reason: 'more than one row shares the same primary key containing NULL, so rows cannot be matched one to one' } });
+  } finally { db.close(); }
+});
+
+test('rows reports compared:false when only the before-copy has a duplicate NULL-keyed pair, even after one is deleted', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table t(k text primary key, v int); insert into t values (null,1),(null,2),('a',3)");
+    const result = rehearseSnapshot(db, 'delete from t where k is null and v = 1');
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows, { t: { compared: false, reason: 'more than one row shares the same primary key containing NULL, so rows cannot be matched one to one' } });
+  } finally { db.close(); }
+});
+
+test('rows reports compared:false when only the after-copy has a duplicate NULL-keyed pair, newly inserted', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table t(k text primary key, v int); insert into t values (null,1),('a',2)");
+    const result = rehearseSnapshot(db, 'insert into t values (null,5)');
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows, { t: { compared: false, reason: 'more than one row shares the same primary key containing NULL, so rows cannot be matched one to one' } });
+  } finally { db.close(); }
+});
+
 test('rows reports updated for upper() on a COLLATE NOCASE column and for a retyped storage class', () => {
   {
     const db = new DatabaseSync(':memory:');
