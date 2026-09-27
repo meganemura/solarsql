@@ -273,6 +273,71 @@ test("a rename intent that differs from the declared DDL only in case is rejecte
   }
 });
 
+// renameRepairPlan() offers an inferred rename only when EVERY candidate
+// table has exactly one removed and one added column: a singleton pair on
+// one table does not make an ambiguous pair on another table safe to guess,
+// whichever side (removed or added) of that other table is the ambiguous
+// one.
+test("an inferred rename requires every candidate table to be an exact singleton pair, not just one of them", () => {
+  const cases: readonly [removed: number, added: number][] = [[1, 1], [1, 2], [2, 1], [2, 2]];
+  for (const [removed, added] of cases) {
+    const column = (n: number, prefix: string) => (n === 0 ? "" : `, ${Array.from({ length: n }, (_, i) => `${prefix}${i} text`).join(", ")}`);
+    const current = open([
+      "create table t1 (id integer primary key, old_t1_0 text)",
+      `create table t2 (id integer primary key${column(removed, "old_t2_")})`,
+    ]);
+    const target = open([
+      "create table t1 (id integer primary key, new_t1_0 text)",
+      `create table t2 (id integer primary key${column(added, "new_t2_")})`,
+    ]);
+    try {
+      const plan = diff(introspect(current), introspect(target));
+      assert.equal(plan.kind, "blocked", `${removed},${added}`);
+      if (plan.kind !== "blocked") continue;
+      if (removed === 1 && added === 1) {
+        assert.deepEqual(plan.renames, [
+          { table: "t1", from: "old_t1_0", to: "new_t1_0" },
+          { table: "t2", from: "old_t2_0", to: "new_t2_0" },
+        ], `${removed},${added}`);
+      } else {
+        assert.equal(plan.renames, undefined, `${removed},${added}: t1 alone is an exact pair, but t2 is not`);
+      }
+    } finally {
+      current.close();
+      target.close();
+    }
+  }
+});
+
+// The blocked reason joins each table's removed names with ", ", its added
+// names with ", ", and joins more than one table's own message with "; ".
+// A single-column table on either side never exercises the join, so this
+// needs at least one multi-column table and at least two candidate tables.
+test("the rename-repair reason joins removed and added column names, and joins more than one table's message", () => {
+  const current = open([
+    "create table t1 (id integer primary key, old_t1_0 text, old_t1_1 text)",
+    "create table t2 (id integer primary key, old_t2_0 text, old_t2_1 text)",
+  ]);
+  const target = open([
+    "create table t1 (id integer primary key, new_t1_0 text, new_t1_1 text)",
+    "create table t2 (id integer primary key, new_t2_0 text, new_t2_1 text)",
+  ]);
+  try {
+    const plan = diff(introspect(current), introspect(target));
+    assert.equal(plan.kind, "blocked");
+    if (plan.kind !== "blocked") return;
+    assert.equal(
+      plan.reason,
+      "table t1: columns [old_t1_0, old_t1_1] removed and [new_t1_0, new_t1_1] added in one change; "
+      + "table t2: columns [old_t2_0, old_t2_1] removed and [new_t2_0, new_t2_1] added in one change. "
+      + "Declare a rename if the data must move, or split the change into two migrations.",
+    );
+  } finally {
+    current.close();
+    target.close();
+  }
+});
+
 test("a generated rename preserves populated values and row identifiers", () => {
   let cases = 0;
   hegel.test(tc => {

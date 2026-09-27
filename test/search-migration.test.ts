@@ -112,6 +112,22 @@ test("two INSERT triggers into the same search table leave a comment", () => {
   assert.equal(plan.statements[0]!.startsWith(commentLine), true);
 });
 
+// The candidate search is scoped to triggers that insert into THIS search
+// table (triggerInsertTarget(sql)?.search === v.name): an unrelated trigger
+// on another table entirely must not count as a second candidate and turn
+// one matching trigger into an ambiguous pair.
+test("an unrelated trigger on another table does not turn one matching search trigger into an ambiguous pair", () => {
+  const logs = "create table logs (id integer primary key, msg text)";
+  const unrelatedTrigger = "create trigger logs_touch after insert on logs begin update logs set msg = new.msg where id = new.id; end";
+  const current = [orders, logs];
+  const target = [orders, logs, searchDDL, matchingTrigger, unrelatedTrigger];
+  const plan = diff(introspect(open(current)), introspect(open(target)));
+  assert.equal(plan.kind, "ok");
+  if (plan.kind !== "ok") return;
+  assert.equal(plan.statements[0]!.startsWith(commentLine), false);
+  assert.ok(plan.statements.some((s) => s.startsWith(`insert into "order_search"`)));
+});
+
 test("a search table with no trigger at all leaves a comment", () => {
   const current = [orders];
   const target = [orders, searchDDL];

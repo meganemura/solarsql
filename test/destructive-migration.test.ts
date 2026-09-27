@@ -82,6 +82,29 @@ test("a destructive intent that differs from the declared DDL only in case is re
   }
 });
 
+// SQLite's own column names are case-insensitive, so a column kept but
+// re-spelled under a different case is, to SQLite, the same column: not a
+// removed-and-added pair, and not reviewed by a drop intent. An index whose
+// own text names that column still blocks the cheap ALTER the case change
+// would otherwise take (SQLite refuses to DROP COLUMN a column an index
+// still names), so this needs a rebuild, and the rebuild still carries the
+// index's original text forward unchanged.
+test("a column kept under a different case, with an index naming it, rebuilds instead of taking a cheap ALTER an index would refuse", () => {
+  const current = open(["create table t (id integer primary key, B text)", "create index i on t(b)"]);
+  const target = open(["create table t (id integer primary key, b text)", "create index i on t(b)"]);
+  try {
+    const plan = diff(introspect(current), introspect(target), [], [{ kind: "column", table: "t", column: "B" }]);
+    assert.equal(plan.kind, "ok", plan.kind === "blocked" ? plan.reason : "");
+    if (plan.kind !== "ok") return;
+    assert.equal(plan.rebuilds?.length, 1, "a cheap ALTER here is exactly what the live index below refuses");
+    for (const statement of plan.statements) current.exec(statement);
+    assert.deepEqual(shape(introspect(current)), shape(introspect(target)));
+  } finally {
+    current.close();
+    target.close();
+  }
+});
+
 test("a rename consumes its source column before the drop check", () => {
   const current = open([schema(["before"])]);
   const target = open([schema(["after"])]);
@@ -133,6 +156,47 @@ test("parent removal checks delete actions in both schema versions", () => {
       current.close();
       target.close();
     }
+  }
+});
+
+// The removed-parent check below skips a table absent from the target, so a
+// child that is ALSO being removed in this same migration never triggers
+// it, even when that child cascades from the parent also being removed:
+// dropping both tables together needs no explicit migration of its own.
+test("a removed parent and its cascading child, both dropped in the same migration, need no explicit migration", () => {
+  const current = open([
+    "pragma foreign_keys = on",
+    "create table parents (id integer primary key)",
+    "create table children (id integer primary key, parent_id integer references parents(id) on delete cascade)",
+  ]);
+  const target = open([]);
+  try {
+    const plan = diff(introspect(current), introspect(target), [], [{ kind: "table", table: "parents" }, { kind: "table", table: "children" }]);
+    assert.equal(plan.kind, "ok", plan.kind === "blocked" ? plan.reason : "");
+    if (plan.kind === "ok") assert.deepEqual(new Set(plan.statements), new Set(['drop table "children"', 'drop table "parents"']));
+  } finally {
+    current.close();
+    target.close();
+  }
+});
+
+// A foreign key with no declared ON DELETE reads back as "NO ACTION"
+// (pragma_foreign_key_list): removing its referenced table needs no
+// explicit migration, because SQLite runs no delete action for it.
+test("a removed parent referenced only by a default (NO ACTION) foreign key needs no explicit migration", () => {
+  const current = open([
+    "pragma foreign_keys = on",
+    "create table parents (id integer primary key)",
+    "create table children (id integer primary key, parent_id integer references parents(id))",
+  ]);
+  const target = open(["create table children (id integer primary key, parent_id integer references parents(id))"]);
+  try {
+    const plan = diff(introspect(current), introspect(target), [], [{ kind: "table", table: "parents" }]);
+    assert.equal(plan.kind, "ok", plan.kind === "blocked" ? plan.reason : "");
+    if (plan.kind === "ok") assert.deepEqual(plan.statements, ['drop table "parents"']);
+  } finally {
+    current.close();
+    target.close();
   }
 });
 

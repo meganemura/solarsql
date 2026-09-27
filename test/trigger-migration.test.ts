@@ -31,3 +31,18 @@ test("a trigger the diff leaves alone is not created again for its case", () => 
   const plan = diff(introspect(open([table, upper])), introspect(open([table, lower])));
   assert.deepEqual(plan, { kind: "ok", statements: [] });
 });
+
+// A trigger whose body changed, keeping its own name, drops the old
+// declaration before creating the new one: a name collision would fail the
+// generated CREATE TRIGGER on a database that still has the old trigger.
+test("a trigger whose body changed under the same name is dropped, then created again", () => {
+  const before = `create trigger notes_touch after update on notes begin update notes set body = new.body where id = new.id; end`;
+  const after = `create trigger notes_touch after update on notes begin update notes set body = upper(new.body) where id = new.id; end`;
+  const plan = diff(introspect(open([table, before])), introspect(open([table, after])));
+  assert.equal(plan.kind, "ok");
+  if (plan.kind !== "ok") return;
+  assert.deepEqual(plan.statements, [
+    'drop trigger "notes_touch"',
+    `CREATE TRIGGER notes_touch after update on notes BEGIN update notes set body = upper(new.body) where id = new.id; END`,
+  ]);
+});

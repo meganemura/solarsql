@@ -502,3 +502,31 @@ test("the existing forward check still refuses first when a sibling changed an i
     },
   );
 });
+
+// --- A rebuild's own recorded indexes and triggers name only its own table ---
+
+// The two checks above replay a rebuild against every index and trigger its
+// own record names. A record that leaked an unrelated table's index or
+// trigger would make those same checks compare the wrong objects, so the
+// record itself must hold only the rebuilt table's own.
+test("a rebuilt table's recorded indexes and triggers name only that table's own, not a sibling table's", () => {
+  const a = "create table a (id integer primary key, x integer)";
+  const aIndex = "create unique index ix_a_x on a(x)";
+  const aTrigger = "create trigger a_trg after insert on a begin update a set x = x + 1 where id = new.id; end";
+  const b = "create table b (id integer primary key, y integer)";
+  const bIndex = "create unique index ix_b_y on b(y)";
+  const bTrigger = "create trigger b_trg after insert on b begin update b set y = y + 1 where id = new.id; end";
+  const current = open([a, aIndex, aTrigger, b, bIndex, bTrigger]);
+  const target = open(["create table a (id integer primary key, x text)", aIndex, aTrigger, b, bIndex, bTrigger]);
+  try {
+    const plan = diff(introspect(current), introspect(target));
+    assert.equal(plan.kind, "ok", plan.kind === "blocked" ? plan.reason : "");
+    if (plan.kind !== "ok") return;
+    assert.equal(plan.rebuilds?.length, 1);
+    assert.deepEqual(plan.rebuilds![0]!.indexes, [normalize(aIndex)]);
+    assert.deepEqual(plan.rebuilds![0]!.triggers, [normalize(aTrigger)]);
+  } finally {
+    current.close();
+    target.close();
+  }
+});

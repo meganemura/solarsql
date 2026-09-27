@@ -732,6 +732,14 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
   for (const [name, index] of current.indexes) {
     const t = target.indexes.get(name);
     if (!t || normalize(t.sql) !== normalize(index.sql)) dropIndexOf.set(name, index.table);
+    // SQLite's column names are case-insensitive, but the removed/added
+    // comparison in tableStatements() below compares names exactly as
+    // spelled. An index whose own text is unchanged can still name a column
+    // by a different case than the one being dropped, and SQLite refuses to
+    // DROP COLUMN a column an index still names. Carrying this index into
+    // the scratch database lets that refusal steer such a case-only rename
+    // to a rebuild instead of a cheap ALTER that a live database would
+    // refuse the same way.
     else keptIndexes.set(index.table, [...(keptIndexes.get(index.table) ?? []), index.sql]);
   }
   const dropTriggerOf = new Map<string, string>();
@@ -800,6 +808,10 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
       changeTables.push(target_.sql);
       continue;
     }
+    // tableStatements() below recomputes this same shape check as its first
+    // cheap-ALTER candidate. Called on two tables whose shapes already
+    // match, it always finds zero columns to add or remove and returns the
+    // same empty statement list this skip already returns.
     if (same(tableShape(current_), tableShape(target_))) continue;
     const plan = tableStatements(current_, target_, renames, drops, keptIndexes.get(name) ?? []);
     if (plan.kind === "blocked") return plan;
@@ -864,9 +876,16 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
 // them for the diff, so the file and the declaration still compare equal.
 function triggerForD1(sql: string): string {
   const tokens = tokenize(sql);
+  // tokenize() (scan.ts) keeps a quoted identifier's or a string literal's
+  // surrounding quote characters as part of its text, so only a bare,
+  // unquoted spelling of begin or end can match below; restricting the
+  // check to ident tokens excludes no token type actually reachable here.
   const bare = (t: Token, word: string) => t.type === "ident" && t.text.toLowerCase() === word;
   const begin = tokens.find((t) => bare(t, "begin"));
   const end = tokens.findLast((t) => bare(t, "end"));
+  // Every caller passes a trigger's own SQL from introspect(), read back
+  // from SQLite's own sqlite_schema. SQLite only stores that row once the
+  // trigger's required BEGIN and END parsed, so both are always found here.
   if (!begin || !end) return sql;
   let out = sql;
   for (const t of [end, begin]) out = out.slice(0, t.start) + t.text.toUpperCase() + out.slice(t.end);
