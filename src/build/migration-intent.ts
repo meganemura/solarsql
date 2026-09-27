@@ -7,13 +7,21 @@ import { BuildError } from "./typegen.ts";
 
 export type MigrationIntent = { drops: DropIntent[]; renames: Rename[] };
 
+// A weaker gate here (loosening the null, typeof, or array check) cannot be
+// observed from a JSON-parsed value: object()'s cast lets a primitive or an
+// array through as if it were the record, but Object.keys() of that value
+// never contains a name the checks below expect (a string yields its index
+// keys, a number or boolean yields none, an array yields its indices), so
+// the exact-key check, a truthiness check, or a later named-property check
+// still rejects it the same way.
 function object(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
+// Every caller already requires each expected key present and correctly
+// typed on its own, so only an extra, unexpected key still needs rejecting.
 function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  const actual = Object.keys(value).sort();
-  return actual.length === keys.length && actual.every((key, index) => key === [...keys].sort()[index]);
+  return Object.keys(value).every(key => keys.includes(key));
 }
 
 function fail(path: string, message: string): never {
