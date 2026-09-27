@@ -689,19 +689,26 @@ export function rehearseSnapshot(db: DatabaseSync, sql: string, checks: Rehearsa
       if (rows.length !== 1 || Object.keys(rows[0]!).length !== 1 || Object.values(rows[0]!)[0] !== 1) throw new Error(`Assertion ${name} must return one row and one value equal to 1`);
       result.assertions.push(name);
     }
-    // Last, after every check: the proposed SQL and every check above have
-    // already run under the deny-all authorizer, so this narrower one (ATTACH
-    // only for the exact before-copy path, DETACH only for the reserved
-    // schema) never governs a statement this call did not itself generate.
+    // This authorizer sees every action any statement performs while it is
+    // installed, not just the ones the two statements below issue: a
+    // function the caller registered on db, called from a query this call
+    // runs (a generated column's own expression, for example), can run its
+    // own nested statement, and that statement's actions reach this
+    // authorizer too. The checks below hold for any of those, not only for
+    // the ATTACH and DETACH this call's own code issues.
     stage = 'ROW_DIFF_FAILED';
     db.setAuthorizer((action, arg) => {
-      // The only ATTACH this call runs from here on is the very next
-      // statement, whose own argument is always exactly beforeCopyPath.
+      // This call's own code issues exactly one ATTACH from here on, whose
+      // argument is always beforeCopyPath; any other ATTACH is denied.
       if (action === constants.SQLITE_ATTACH) return arg === beforeCopyPath ? constants.SQLITE_OK : constants.SQLITE_DENY;
-      // The finally block clears this authorizer with setAuthorizer(null)
-      // before it runs its own DETACH, so no DETACH action ever reaches
-      // this authorizer at all.
+      // This call's own code detaches only the reserved before-schema name,
+      // and only after clearing this authorizer first, in the finally
+      // block below; any DETACH seen here is denied unless it names that
+      // same reserved schema.
       if (action === constants.SQLITE_DETACH) return arg === BEFORE_SCHEMA ? constants.SQLITE_OK : constants.SQLITE_DENY;
+      // node:sqlite always passes a PRAGMA action's own name as arg, never
+      // null or undefined, so the fallback empty string here never
+      // substitutes for a real value.
       if (action === constants.SQLITE_PRAGMA && ['writable_schema', 'temp_store_directory', 'data_store_directory'].includes((arg ?? '').toLowerCase())) return constants.SQLITE_DENY;
       return constants.SQLITE_OK;
     });

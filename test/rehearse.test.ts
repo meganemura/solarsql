@@ -1604,3 +1604,220 @@ test('a TMPDIR containing a single quote is escaped correctly in the row diff\'s
     rmSync(own, { recursive: true, force: true });
   }
 });
+
+// The row-diff authorizer denies only a PRAGMA action on one of these three
+// names; a table sharing one of those names is still read normally, since a
+// table read is a different action.
+test('a table named after a denied pragma name still has its rows diffed, not authorization-denied', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table writable_schema(id integer primary key, v text) strict; insert into writable_schema values (1, 'a')");
+    const result = rehearseSnapshot(db, "update writable_schema set v = 'b' where id = 1", { expected: { updated: [{ table: 'writable_schema' }] } });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows, { writable_schema: { compared: true, inserted: 0, deleted: 0, updated: 1 } });
+  } finally { db.close(); }
+});
+
+// A generated column's expression runs a registered SQL function during the
+// row diff's own SELECT, so a function that issues its own nested statement
+// reaches the row-diff authorizer while it is active, not just the ATTACH
+// this call issues itself.
+test('the row-diff authorizer denies a nested PRAGMA on each of the three reserved names', () => {
+  for (const name of ['writable_schema', 'temp_store_directory', 'data_store_directory']) {
+    const db = new DatabaseSync(':memory:');
+    try {
+      // The healthy() integrity check also evaluates this generated column,
+      // under the deny-all first authorizer, which denies this PRAGMA too --
+      // so a plain call count can't tell that phase apart from the row-diff
+      // one this test means to check. A DETACH of the row diff's own schema
+      // only reports SQLite's own "is locked" (rather than the authorizer's
+      // "not authorized") once that authorizer is the one running, so it
+      // marks which phase this particular call belongs to.
+      const pragmaResults: string[] = [];
+      db.function('probe', { deterministic: true }, () => {
+        let pragmaResult: string;
+        try { db.exec(`pragma ${name}`); pragmaResult = 'allowed'; }
+        catch (e) { pragmaResult = e instanceof Error ? e.message : String(e); }
+        let inRowDiff = false;
+        try { db.exec('detach solarsql_rehearse_before'); }
+        catch (e) { inRowDiff = (e instanceof Error ? e.message : String(e)) === 'database solarsql_rehearse_before is locked'; }
+        if (inRowDiff) pragmaResults.push(pragmaResult);
+        return 1;
+      });
+      db.exec('create table t(id integer primary key, v integer, g integer generated always as (probe()) virtual) strict');
+      db.exec('insert into t (id, v) values (1, 10)');
+      const result = rehearseSnapshot(db, 'insert into t (id, v) values (2, 20)');
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.ok(pragmaResults.length > 0, name);
+      assert.ok(pragmaResults.every(r => r === 'not authorized'), JSON.stringify({ name, pragmaResults }));
+    } finally { db.close(); }
+  }
+});
+
+test('the row-diff authorizer allows a nested DETACH only for its own reserved schema name', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    // Each call records both outcomes as one pair, so the test can read the
+    // last pair. Earlier calls run before any authorizer exists, where a
+    // DETACH of "main" gets SQLite's own refusal, or under the first
+    // (deny-all) authorizer, where it gets "not authorized" too. Telling the
+    // row-diff authorizer apart by that message alone would hide a change
+    // scoped to only the row-diff authorizer.
+    const pairs: string[] = [];
+    db.function('probe', { deterministic: true }, () => {
+      let main: string; let before: string;
+      try { db.exec('detach main'); main = 'allowed'; }
+      catch (e) { main = e instanceof Error ? e.message : String(e); }
+      try { db.exec('detach solarsql_rehearse_before'); before = 'allowed'; }
+      catch (e) { before = e instanceof Error ? e.message : String(e); }
+      pairs.push(`${main} | ${before}`);
+      return 1;
+    });
+    db.exec('create table t(id integer primary key, v integer, g integer generated always as (probe()) virtual) strict');
+    db.exec('insert into t (id, v) values (1, 10)');
+    const result = rehearseSnapshot(db, 'select 1');
+    assert.equal(result.ok, true, JSON.stringify(result));
+    // The last pair is the row diff's own read, run under the row-diff
+    // authorizer: a DETACH of "main" is refused by the authorizer itself
+    // ("not authorized"); a DETACH of the row-diff's own reserved schema
+    // clears the authorizer's own denial and instead meets SQLite's refusal
+    // to detach a database an active statement is still reading ("database
+    // solarsql_rehearse_before is locked"), a message that only a genuine
+    // SQLITE_OK from the authorizer produces.
+    assert.equal(pairs[pairs.length - 1], 'not authorized | database solarsql_rehearse_before is locked', JSON.stringify(pairs));
+  } finally { db.close(); }
+});
+
+test('the row-diff authorizer denies a nested ATTACH of anything other than its own before-copy path', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    // Same marker as the DETACH test above: a nested detach of the row
+    // diff's own reserved schema names "is locked" only once that
+    // authorizer is the one running, so it isolates the calls this test
+    // means to check from the ones that run earlier, under the first
+    // (deny-all) authorizer, where a nested ATTACH is denied for a
+    // different reason and would otherwise look the same.
+    const attachResults: string[] = [];
+    db.function('probe', { deterministic: true }, () => {
+      let attachResult: string;
+      try { db.exec("attach ':memory:' as bogus"); attachResult = 'allowed'; try { db.exec('detach bogus'); } catch { /* best effort cleanup */ } }
+      catch (e) { attachResult = e instanceof Error ? e.message : String(e); }
+      let inRowDiff = false;
+      try { db.exec('detach solarsql_rehearse_before'); }
+      catch (e) { inRowDiff = (e instanceof Error ? e.message : String(e)) === 'database solarsql_rehearse_before is locked'; }
+      if (inRowDiff) attachResults.push(attachResult);
+      return 1;
+    });
+    db.exec('create table t(id integer primary key, v integer, g integer generated always as (probe()) virtual) strict');
+    db.exec('insert into t (id, v) values (1, 10)');
+    const result = rehearseSnapshot(db, 'select 1');
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.ok(attachResults.length > 0, JSON.stringify(attachResults));
+    assert.ok(attachResults.every(r => r === 'not authorized'), JSON.stringify(attachResults));
+  } finally { db.close(); }
+});
+
+test('rehearseSnapshot returns a result, rather than throwing, when its own temp directory is gone by cleanup time', () => {
+  // os.tmpdir() reads TMPDIR on POSIX, but TEMP or TMP on Windows; setting
+  // all three keeps mkdtempSync landing under `own` on every platform CI runs.
+  const savedVars = ['TMPDIR', 'TEMP', 'TMP'].map(name => [name, process.env[name]] as const);
+  const own = mkdtempSync(join(tmpdir(), 'solarsql-rehearse-wipe-'));
+  for (const [name] of savedVars) process.env[name] = own;
+  try {
+    const db = new DatabaseSync(':memory:');
+    try {
+      // healthy()'s own pragma integrity_check evaluates every generated
+      // column while it validates the schema, so this generated column's
+      // own function call runs before the migration, once for the baseline
+      // and once after the migration; it removes every directory this call
+      // has created under `own` so far, so by the time the row diff's own
+      // ATTACH runs, its before-copy directory is already gone -- standing
+      // in for another process racing this call's own cleanup.
+      db.function('wipe', { deterministic: true }, () => {
+        for (const name of readdirSync(own)) {
+          try { rmSync(join(own, name), { recursive: true, force: true }); } catch { /* already gone */ }
+        }
+        return 1;
+      });
+      db.exec('create table t(id integer primary key, v integer, g integer generated always as (wipe()) virtual) strict');
+      db.exec('insert into t (id, v) values (1, 10)');
+      const result = rehearseSnapshot(db, 'select 1');
+      assert.equal(result.ok, false);
+      assert.equal(result.diagnostics.length, 1);
+      assert.equal(result.diagnostics[0]!.code, 'ROW_DIFF_FAILED');
+      assert.match(result.diagnostics[0]!.message, /^unable to open database: .*before\.sqlite$/);
+    } finally { db.close(); }
+  } finally {
+    for (const [name, value] of savedVars) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+    rmSync(own, { recursive: true, force: true });
+  }
+});
+
+test('a migration that fails before the row-diff ATTACH leaves exactly one diagnostic, not a masked detach failure', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table t(id integer primary key) strict');
+    const result = rehearseSnapshot(db, 'not valid sql at all');
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.diagnostics, [{ code: 'MIGRATION_FAILED', message: 'near "not": syntax error' }]);
+  } finally { db.close(); }
+});
+
+test('the row-diff schema is detached after a failed rehearsal, so a second call on the same db still succeeds', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table t(id integer primary key, v text) strict; insert into t values (1, 'a')");
+    const first = rehearseSnapshot(db, "update t set v = 'b' where id = 1");
+    assert.equal(first.ok, false);
+    assert.deepEqual(first.diagnostics, [{ code: 'ROWS_LOST_OR_CHANGED', message: 'Rows lost or changed unexpectedly: updated t (1)' }]);
+    const second = rehearseSnapshot(db, 'select 1');
+    assert.equal(second.ok, true, JSON.stringify(second));
+    assert.deepEqual(second.diagnostics, []);
+  } finally { db.close(); }
+});
+
+test('a detach failure other than "no such database" is reported with its own message, after a successful commit', () => {
+  const db = new DatabaseSync(':memory:');
+  const originalExec = db.exec.bind(db);
+  try {
+    db.exec('create table t(id integer primary key) strict');
+    (db as unknown as { exec: typeof db.exec }).exec = ((sql: string) => {
+      if (sql.startsWith('detach ')) throw new Error('boom');
+      return originalExec(sql);
+    }) as typeof db.exec;
+    const result = rehearseSnapshot(db, 'insert into t values (1)');
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.diagnostics, [{ code: 'DETACH_FAILED', message: 'boom' }]);
+  } finally {
+    (db as unknown as { exec: typeof db.exec }).exec = originalExec;
+    db.close();
+  }
+});
+
+test('a successful rehearsal actually commits the migration to the caller\'s own db, not just to the reported result', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table t(id integer primary key) strict');
+    const result = rehearseSnapshot(db, 'insert into t values (1)');
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(db.prepare('select count(*) as n from t').get()!.n, 1);
+  } finally { db.close(); }
+});
+
+test('a failed commit reports MIGRATION_FAILED with the commit error, leaving ok false', () => {
+  const db = new DatabaseSync(':memory:');
+  const originalExec = db.exec.bind(db);
+  try {
+    db.exec('create table t(id integer primary key) strict');
+    (db as unknown as { exec: typeof db.exec }).exec = ((sql: string) => {
+      if (sql === 'commit') throw new Error('commit boom');
+      return originalExec(sql);
+    }) as typeof db.exec;
+    const result = rehearseSnapshot(db, 'insert into t values (1)');
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.diagnostics, [{ code: 'MIGRATION_FAILED', message: 'commit boom' }]);
+  } finally {
+    (db as unknown as { exec: typeof db.exec }).exec = originalExec;
+    db.close();
+  }
+});
