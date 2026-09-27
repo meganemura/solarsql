@@ -380,6 +380,14 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
       // rebuild's own generator chose to drop it, the case ADR 0099 and ADR
       // 0102 already permit.
       const redeclared = redeclaredByFile(file.sql, table);
+      // defs is null here when this RebuildRecord's own `table` field now
+      // names a view rather than a table (measured directly: pragma_table_
+      // xinfo() above still reports a view's own columns, but this
+      // schemaRow's `type = 'table'` filter then finds no row for it). The
+      // fallback empty array, on that path, stands in for a constraint list
+      // no live table declares; a live table's own real constraint text
+      // never equals it, so which literal value this fallback carries does
+      // not change whether any of `constraints` below counts as missing.
       const revivedConstraint = revivedDeclaration(constraints, defs?.constraints ?? [], redeclared.constraints, false);
       if (revivedConstraint !== undefined) {
         throw new MigrationHistoryError(
@@ -392,6 +400,13 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
       if (revivedIndex !== undefined) {
         throw new MigrationHistoryError(
           "REBUILD_REVIVES_DECLARATION",
+          // revivedDeclaration() (src/build/scan.ts), called with byName
+          // true above, only ever returns an entry whose own
+          // `created(r)?.name` is already defined (its own byName search
+          // requires that before it matches a name at all); created() is a
+          // pure function of its argument, so calling it again here on that
+          // same revivedIndex returns that same defined name, and the
+          // fallback to the raw text never runs.
           `Migration ${file.name} rebuilds table ${quoteIdent(table)} and would restore index ${quoteIdent(created(revivedIndex)?.name ?? revivedIndex)}, which an earlier migration already removed: ${JSON.stringify(revivedIndex)}. This file's target schema was generated before that removal and still declares it. Regenerate ${file.name} against the current schema.`,
           file.name,
         );
@@ -400,6 +415,11 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
       if (revivedTrigger !== undefined) {
         throw new MigrationHistoryError(
           "REBUILD_REVIVES_DECLARATION",
+          // The same guarantee as revivedIndex's above, for triggers:
+          // revivedDeclaration()'s own byName search already required
+          // `created(r)?.name` to be defined before it returned this value,
+          // and created() is a pure function of its argument, so the
+          // fallback to the raw text never runs here either.
           `Migration ${file.name} rebuilds table ${quoteIdent(table)} and would restore trigger ${quoteIdent(created(revivedTrigger)?.name ?? revivedTrigger)}, which an earlier migration already removed: ${JSON.stringify(revivedTrigger)}. This file's target schema was generated before that removal and still declares it. Regenerate ${file.name} against the current schema.`,
           file.name,
         );
@@ -431,6 +451,11 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
           before = new Set();
         } else {
           const afterKeys = violationKeys(storage, violations);
+          // `before` only ever holds the string keys violationKeys() itself
+          // returned as non-null (the `if (key !== null) before.add(key)`
+          // loop below this closure), so `before.has(null)` is always false;
+          // dropping the `key !== null` guard here would still short-circuit
+          // .every() to false on a null key by that same route.
           const allPredate = afterKeys.every((key) => key !== null && before.has(key));
           if (allPredate) {
             throw new Error(`Migration ${file.name}: FOREIGN KEY constraint failed (pragma_foreign_key_check): ${JSON.stringify(violations)}. Every violation listed predates ${file.name}. This file's own statements did not introduce it. Repair the violation, then apply ${file.name} again.`);
@@ -558,11 +583,23 @@ function violationKeys(storage: StorageLike, violations: Record<string, unknown>
   const pkColumn = new Map<string, PkResolution>();
   const foreignKeys = new Map<string, { from: string[]; to: string[] } | null>();
   return violations.map((row) => {
+    // pragma_foreign_key_check always reports a rowid column (measured
+    // directly: its value is SQL NULL on a WITHOUT ROWID table, never an
+    // absent property), so row.rowid is always either a real value or the
+    // JS value null, never undefined; the `=== undefined` half of this
+    // check never turns the result from true to false on real input.
     if (row.rowid === null || row.rowid === undefined) return null;
     const table = String(row.table);
     let resolution = pkColumn.get(table);
     if (resolution === undefined) {
-      const info = storage.sql.exec(`pragma table_info(${quoteIdent(table)})`).toArray();
+      // Schema-qualified: pragma_foreign_key_check (which named `table`)
+      // only ever looks at main (measured directly), but an unqualified
+      // `pragma table_info(...)` or `select ... from ...` resolves against
+      // a same-named TEMP table first when one exists, silently reading the
+      // wrong table's shape. `pragma main.foreign_key_list` and `select ...
+      // from main."t"` below carry the same qualification for the same
+      // reason.
+      const info = storage.sql.exec(`pragma main.table_info(${quoteIdent(table)})`).toArray();
       const pks = info.filter((c) => Number(c.pk) !== 0);
       if (pks.length !== 1) {
         resolution = null;
@@ -573,6 +610,11 @@ function violationKeys(storage: StorageLike, violations: Record<string, unknown>
         // table's own declaration, the same way tableStatements()
         // (src/build/migration.ts) already does, to tell an AUTOINCREMENT
         // one (see the block comment above) from a plain one.
+        // table was already confirmed present, on this same connection with
+        // no write between the two queries, by the pragma table_info() call
+        // above (info.length > 0 is implied by pks.length === 1 above it);
+        // this schemaRow lookup for the same table therefore always finds a
+        // row, and schemaRow is never undefined here.
         const schemaRow = storage.sql.exec(`select sql from sqlite_schema where type = 'table' and lower(name) = lower(?)`, table).toArray()[0];
         const auto = schemaRow !== undefined && tokenize(String(schemaRow.sql)).some((t) => isKeyword(t, "autoincrement"));
         resolution = auto ? { kind: "rowid" } : null;
@@ -583,12 +625,46 @@ function violationKeys(storage: StorageLike, violations: Record<string, unknown>
     const cacheKey = JSON.stringify([table, row.fkid]);
     let fk = foreignKeys.get(cacheKey);
     if (fk === undefined) {
-      const fkList = storage.sql.exec(`pragma foreign_key_list(${quoteIdent(table)})`).toArray()
+      // pragma_foreign_key_list already returns one foreign key's own rows
+      // in ascending seq order, measured directly even when the FOREIGN KEY
+      // clause's own column order does not match the table's declared
+      // column order (a clause naming its columns back-to-front against the
+      // table's own declaration still comes back seq 0, 1, 2, ... in the
+      // clause's own left-to-right order), so this sort does not reorder
+      // them on real input; it is kept for a shape not measured to occur.
+      // A broken comparator would not necessarily undo that either: V8's
+      // own sort, measured directly on inputs this size (a handful of
+      // columns), does not reorder an already-ascending array when handed a
+      // comparator that always returns the same sign regardless of its
+      // arguments (an arithmetic mistake that always returns a positive
+      // number for these non-negative seq values, or one that always
+      // returns undefined, both left an already-ascending three-element
+      // array unchanged).
+      const fkList = storage.sql.exec(`pragma main.foreign_key_list(${quoteIdent(table)})`).toArray()
         .filter((r) => Number(r.id) === Number(row.fkid))
         .sort((a, b) => Number(a.seq) - Number(b.seq));
+      // row.fkid, from pragma_foreign_key_check (which only ever looks at
+      // main, measured directly: a TEMP table's own violation never
+      // appears in its result), always names one of main's own foreign
+      // keys on this table; this pragma is schema-qualified to main too,
+      // reading the same table pragma_foreign_key_check named rather than a
+      // same-named TEMP table that might shadow it, so it always finds that
+      // same foreign key. This filter therefore always keeps at least one
+      // row, and fk is never the null (not-found) branch.
       fk = fkList.length > 0 ? { from: fkList.map((r) => String(r.from)), to: fkList.map((r) => String(r.to)) } : null;
       foreignKeys.set(cacheKey, fk);
     }
+    // fk.to tells apart two foreign keys that share both fk.from and the
+    // parent table (two FOREIGN KEY clauses naming the same column with
+    // different REFERENCES targets, the block comment above measures
+    // SQLite accepts this): the violating row's own primary-key value does
+    // not substitute for it, because a file that only changes which column
+    // of that same parent the row's own unchanged value matches -- not the
+    // row itself -- moves the violation from one such foreign key to the
+    // other while the row's own key value stays the same throughout
+    // (measured directly: a plain update swapping the parent's own two
+    // UNIQUE column values moves a child row's violation from one fkid to
+    // the other with no write to the child row at all).
     if (fk === null) return null;
     // AUTOINCREMENT's rowid-alias column is not part of this select: it
     // would only read back the same row.rowid already in hand (see the
@@ -601,10 +677,21 @@ function violationKeys(storage: StorageLike, violations: Record<string, unknown>
     // key needs.
     const pkColumns = resolution.kind === "column" ? [resolution.name] : [];
     const selectList = [...pkColumns, ...fk.from].map((c, i) => `${quoteIdent(c)} as v${i}`).join(", ");
-    const readback = storage.sql.exec(`select ${selectList} from ${quoteIdent(table)} where rowid = ?`, row.rowid).toArray()[0];
+    // row.rowid, from pragma_foreign_key_check (main only, as above), names
+    // a row in main this same synchronous connection just confirmed
+    // violating, with no write between that check and this readback; this
+    // select is schema-qualified to main too, so it reads that same row
+    // rather than a same-named TEMP table's own row at that rowid, and
+    // always finds it. readback is never undefined here.
+    const readback = storage.sql.exec(`select ${selectList} from main.${quoteIdent(table)} where rowid = ?`, row.rowid).toArray()[0];
     if (readback === undefined) return null;
     const values = [...pkColumns, ...fk.from].map((_, i) => readback[`v${i}`]);
     const pkValue = resolution.kind === "rowid" ? row.rowid : values[0];
+    // For "column" resolution, pkColumns has this column's own name, so
+    // values[0] already holds its value and equals pkValue above; using
+    // `values` in place of `values.slice(1)` here would just carry that
+    // same value again, one position later, never changing whether two
+    // keys built from it are equal.
     const referencingValues = resolution.kind === "rowid" ? values : values.slice(1);
     return JSON.stringify([table, String(row.parent), fk.from, fk.to, pkValue, ...referencingValues]);
   });

@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { migrate, MigrationHistoryError, node } from "../src/node.ts";
 import { diff, introspect, open, render } from "../src/build/migration.ts";
-import { splitStatements } from "../src/build/scan.ts";
+import { REBUILD_HEADER, splitStatements } from "../src/build/scan.ts";
 import { read, type Observed } from "../src/index.ts";
 import { migrations } from "../example/migrations/index.ts";
 import { customerCommands, type CustomersId } from "../example/modules/customers/public.ts";
@@ -970,5 +970,457 @@ test('migrate() skips its pre-loop pragma foreign_key_check when every listed mi
     assert.deepEqual(migrateStorage(storage, files), []);
     assert.equal(foreignKeyCheckCalls, callsAfterFirstRun, 'migrate() must not call pragma foreign_key_check again once every listed file is already applied');
     assert.deepEqual(raw.prepare('select name from solarsql_migrations').all().map(r => ({ ...r })), [{ name: files[0]!.name }]);
+  } finally { raw.close(); }
+});
+
+// violationKeys() (src/durable.ts) caches a table's primary-key resolution
+// and, per (table, fkid), its foreign-key column names, for the lifetime of
+// one violationKeys() call: two violating rows on the same table, sharing
+// the same single foreign key, must resolve both without a second
+// `pragma table_info` or `pragma foreign_key_list` call. This counts both
+// pragmas through a wrapped StorageLike across two separate violationKeys()
+// calls (the before-snapshot and the one unrelated file's own after-check),
+// each holding both rows: two calls, one pragma each, is two total; a cache
+// miss on the second row of either call would make it four.
+test('violationKeys() resolves a table primary key and a foreign key only once per call, for two violating rows sharing the same table and foreign key', async () => {
+  const { storageOf } = await import('../src/node.ts');
+  const { migrate: migrateStorage } = await import('../src/durable.ts');
+  const raw = new DatabaseSync(':memory:');
+  try {
+    raw.exec('create table parent (id text primary key not null)');
+    raw.exec('create table child (id text primary key not null, parent_id text references parent(id))');
+    raw.exec('pragma foreign_keys=off');
+    raw.exec("insert into child values ('c1', 'missing-1')");
+    raw.exec("insert into child values ('c2', 'missing-2')");
+
+    const inner = storageOf(raw);
+    let tableInfoCalls = 0;
+    let foreignKeyListCalls = 0;
+    const storage = {
+      ...inner,
+      sql: {
+        exec: (sql: string, ...bindings: unknown[]) => {
+          if (sql.includes('table_info("child")')) tableInfoCalls++;
+          if (sql.includes('foreign_key_list("child")')) foreignKeyListCalls++;
+          return inner.sql.exec(sql, ...bindings);
+        },
+      },
+    };
+    const file = { name: '0001_unrelated.sql', sql: 'create table unrelated (id text primary key not null);' };
+    assert.throws(() => migrateStorage(storage, [file]), (e: unknown) => {
+      assert.ok(!(e instanceof MigrationHistoryError), 'expected the raw engine error, not a MigrationHistoryError');
+      assert.match((e as Error).message, /pragma_foreign_key_check/);
+      return true;
+    });
+    assert.equal(tableInfoCalls, 2, 'expected one pragma table_info(child) call per violationKeys() call (before-snapshot and after-check), not one per row');
+    assert.equal(foreignKeyListCalls, 2, 'expected one pragma foreign_key_list(child) call per violationKeys() call, not one per row');
+  } finally { raw.close(); }
+});
+
+// pks.length !== 1 (src/durable.ts) marks a composite primary key unkeyable
+// (block comment above violationKeys()): a violation on such a table always
+// reads as new, blaming whichever file's own after-check finds it, even one
+// that is genuinely already present before that file runs, rather than
+// reading it back by only the first of its two key columns.
+test("a composite-primary-key table's violation always reads as new, even when it genuinely predates the unrelated file that finds it", () => {
+  const raw = new DatabaseSync(':memory:');
+  try {
+    raw.exec('create table parent (id text primary key not null)');
+    raw.exec('create table child (a text not null, b text not null, parent_id text references parent(id), primary key (a, b))');
+    raw.exec('pragma foreign_keys=off');
+    raw.exec("insert into child values ('a1', 'b1', 'missing')");
+
+    const file = { name: '0001_unrelated.sql', sql: 'create table unrelated (id text primary key not null);' };
+    assert.throws(() => migrate(raw, [file]), (e: unknown) => {
+      assert.ok(!(e instanceof MigrationHistoryError), 'expected the raw engine error, not a MigrationHistoryError');
+      assert.match((e as Error).message, /pragma_foreign_key_check/);
+      assert.doesNotMatch((e as Error).message, /predates/);
+      return true;
+    });
+  } finally { raw.close(); }
+});
+
+// A plain `integer primary key`, with no AUTOINCREMENT, keeps no guarantee
+// against rowid reuse (the block comment above violationKeys() measures
+// this directly), so it stays unkeyable the same way a composite key does:
+// a violation on it always reads as new, even one that genuinely predates
+// the unrelated file that finds it, rather than being read back by the
+// column's own value as though it carried AUTOINCREMENT's guarantee.
+test("a plain INTEGER PRIMARY KEY table's violation always reads as new, even when it genuinely predates the unrelated file that finds it", () => {
+  const raw = new DatabaseSync(':memory:');
+  try {
+    raw.exec('create table parent (id text primary key not null)');
+    raw.exec('create table child (id integer primary key, parent_id text references parent(id))');
+    raw.exec('pragma foreign_keys=off');
+    raw.exec("insert into child (parent_id) values ('missing')");
+
+    const file = { name: '0001_unrelated.sql', sql: 'create table unrelated (id text primary key not null);' };
+    assert.throws(() => migrate(raw, [file]), (e: unknown) => {
+      assert.ok(!(e instanceof MigrationHistoryError), 'expected the raw engine error, not a MigrationHistoryError');
+      assert.match((e as Error).message, /pragma_foreign_key_check/);
+      assert.doesNotMatch((e as Error).message, /predates/);
+      return true;
+    });
+  } finally { raw.close(); }
+});
+
+// violationKeys()'s key reads a single-column, non-INTEGER primary key back
+// by its own value (block comment above violationKeys()), not by a stand-in:
+// two rows sharing the same referencing-column value but different primary
+// keys must resolve to different keys, so a file that introduces one of
+// them (c2) does not borrow the other's (c1's) already-predating status.
+test('two rows sharing the same referencing-column value but different primary keys are not read as the same violation, when only one predates the file', () => {
+  const raw = new DatabaseSync(':memory:');
+  try {
+    raw.exec('create table parent (id text primary key not null)');
+    raw.exec('create table child (id text primary key not null, parent_id text references parent(id))');
+    raw.exec('pragma foreign_keys=off');
+    raw.exec("insert into child values ('c1', 'missing')");
+
+    const file = { name: '0001_add_c2.sql', sql: "insert into child values ('c2', 'missing');" };
+    assert.throws(() => migrate(raw, [file]), (e: unknown) => {
+      assert.ok(!(e instanceof MigrationHistoryError), 'expected the raw engine error, not a MigrationHistoryError');
+      assert.match((e as Error).message, /pragma_foreign_key_check/);
+      assert.doesNotMatch((e as Error).message, /predates/);
+      return true;
+    });
+  } finally { raw.close(); }
+});
+
+// The AUTOINCREMENT mirror of the test above: violationKeys() reads such a
+// table's key by row.rowid itself (block comment above violationKeys()), so
+// two rows sharing the same referencing-column value but different
+// AUTOINCREMENT ids must still resolve to different keys.
+test('two rows on an AUTOINCREMENT primary key sharing the same referencing-column value but different ids are not read as the same violation, when only one predates the file', () => {
+  const raw = new DatabaseSync(':memory:');
+  try {
+    raw.exec('create table parent (id text primary key not null)');
+    raw.exec('create table child (id integer primary key autoincrement, parent_id text references parent(id))');
+    raw.exec('pragma foreign_keys=off');
+    raw.exec("insert into child (parent_id) values ('missing')");
+    assert.equal(raw.prepare('select id from child').get()!.id, 1);
+
+    const file = { name: '0001_add_second.sql', sql: "insert into child (parent_id) values ('missing');" };
+    assert.throws(() => migrate(raw, [file]), (e: unknown) => {
+      assert.ok(!(e instanceof MigrationHistoryError), 'expected the raw engine error, not a MigrationHistoryError');
+      assert.match((e as Error).message, /pragma_foreign_key_check/);
+      assert.doesNotMatch((e as Error).message, /predates/);
+      return true;
+    });
+  } finally { raw.close(); }
+});
+
+// violationKeys() includes an AUTOINCREMENT-keyed row's referencing-column
+// value in its key too (the block comment above violationKeys(), and the
+// TEXT-primary-key repointing tests above, make the same point for a
+// non-INTEGER primary key): a single UPDATE that only changes the
+// referencing column, with the row's own id unchanged, must not be read as
+// the same, already-known violation.
+test("a single UPDATE that only changes an AUTOINCREMENT row's own referencing column, with no delete or insert, is not read as the same, already-known violation", () => {
+  const raw = new DatabaseSync(':memory:');
+  try {
+    raw.exec('create table parent (id text primary key not null)');
+    raw.exec('create table child (id integer primary key autoincrement, parent_id text references parent(id))');
+    raw.exec('pragma foreign_keys=off');
+    raw.exec("insert into child (parent_id) values ('missing-A')");
+    assert.equal(raw.prepare('select id from child').get()!.id, 1);
+
+    const file = { name: '0001_update.sql', sql: "update child set parent_id = 'missing-B' where id = 1;" };
+    assert.throws(() => migrate(raw, [file]), (e: unknown) => {
+      assert.ok(!(e instanceof MigrationHistoryError), 'expected the raw engine error, not a MigrationHistoryError');
+      assert.match((e as Error).message, /pragma_foreign_key_check/);
+      assert.doesNotMatch((e as Error).message, /predates/);
+      return true;
+    });
+  } finally { raw.close(); }
+});
+
+// migrate()'s mirror-direction check (src/durable.ts) only refuses a rebuild
+// that would restore a table-level constraint an earlier migration removed;
+// a constraint that was never removed, and stays declared through an
+// unrelated rebuild, must not itself be treated as revived.
+test('a rebuild for an unrelated reason does not refuse its own table-level CHECK constraint, which no sibling migration ever dropped', () => {
+  const base = "create table t (id text primary key not null, a integer not null, b integer, check (a > 0)) strict";
+  const target = "create table t (id text primary key not null, a integer not null, b integer not null, check (a > 0)) strict"; // tightens b to NOT NULL, unrelated to the CHECK
+  const plan = diff(introspect(open([base])), introspect(open([target])));
+  if (plan.kind !== 'ok') throw new Error(plan.reason);
+  const file = render(2, 'b_not_null', plan.statements, plan.rebuilds ?? []);
+
+  const db = new DatabaseSync(':memory:');
+  try {
+    assert.doesNotThrow(() => migrate(db, [
+      { name: '0001_base.sql', sql: base + ';' },
+      { name: '0002_b_not_null.sql', sql: file.sql },
+    ]));
+    assert.equal((db.prepare("select sql from sqlite_schema where name = 't'").get() as { sql: string }).sql.toLowerCase().includes('check'), true);
+  } finally { db.close(); }
+});
+
+// pragma_foreign_key_check reports a WITHOUT ROWID table's violating row
+// with rowid null (measured directly below), so violationKeys() (src/
+// durable.ts) returns null for it before resolving a primary key at all:
+// a WITHOUT ROWID table has no rowid column to read a key back by. Skipping
+// that early return would reach the later `where rowid = ?` readback, which
+// fails outright on a WITHOUT ROWID table (also measured directly below),
+// rather than falling back to the unkeyable default.
+test('a WITHOUT ROWID table reports rowid null from pragma_foreign_key_check, and a readback by rowid fails on it', () => {
+  const raw = new DatabaseSync(':memory:');
+  try {
+    raw.exec('create table parent (id text primary key not null)');
+    raw.exec('create table child (id text primary key not null, parent_id text references parent(id)) without rowid');
+    raw.exec('pragma foreign_keys=off');
+    raw.exec("insert into child values ('c1', 'missing')");
+    const violation = raw.prepare('pragma foreign_key_check').get() as { rowid: unknown };
+    assert.equal(violation.rowid, null);
+    assert.throws(() => raw.prepare('select id from child where rowid = ?').get(violation.rowid as never), /no such column: rowid/);
+  } finally { raw.close(); }
+});
+
+// migrate()'s own before-snapshot and after-check (src/durable.ts) run this
+// same WITHOUT ROWID shape through migrate(): a genuinely pre-existing
+// violation on it still reads as new (unkeyable, the safe default), not as
+// a crash and not as falsely "predates", when an unrelated file applies.
+test('a WITHOUT ROWID table\'s violation always reads as new through migrate(), even when it genuinely predates the unrelated file that finds it', () => {
+  const raw = new DatabaseSync(':memory:');
+  try {
+    raw.exec('create table parent (id text primary key not null)');
+    raw.exec('create table child (id text primary key not null, parent_id text references parent(id)) without rowid');
+    raw.exec('pragma foreign_keys=off');
+    raw.exec("insert into child values ('c1', 'missing')");
+
+    const file = { name: '0001_unrelated.sql', sql: 'create table unrelated (id text primary key not null);' };
+    assert.throws(() => migrate(raw, [file]), (e: unknown) => {
+      assert.ok(!(e instanceof MigrationHistoryError), 'expected the raw engine error, not a MigrationHistoryError');
+      assert.match((e as Error).message, /pragma_foreign_key_check/);
+      assert.doesNotMatch((e as Error).message, /predates/);
+      return true;
+    });
+  } finally { raw.close(); }
+});
+
+// violationKeys() (src/durable.ts) caches a table's foreign-key column names
+// by (table, fkid) (block comment above violationKeys()): two different
+// foreign keys on the same table, pointing at the same parent table through
+// different referencing columns, must not share that cache entry, or the
+// second's own readback selects the first's referencing column instead of
+// its own -- since both point at the same parent table, `row.parent` alone
+// cannot tell the two apart the way it would for two different parent
+// tables. Both violations are found by the very same row, in the same
+// single violationKeys() call (the file's own after-check), so a collapsed
+// cache key would make the second foreign key's entry read back a_id's own
+// value in place of b_id's, producing the exact same key a_id's own entry
+// already has, and wrongly treating the foreign key this file's own
+// statement just broke as though it already predated the file.
+test('two different foreign keys on the same table, pointing at the same parent table through different columns, are not read as the same violation', () => {
+  const raw = new DatabaseSync(':memory:');
+  try {
+    raw.exec('create table parent (id text primary key not null)');
+    raw.exec('create table child (id text primary key not null, a_id text references parent(id), b_id text references parent(id))');
+    raw.exec('pragma foreign_keys=off');
+    raw.exec("insert into parent values ('ok')");
+    // b_id's foreign key predates the file below; a_id's is fine here and
+    // the file introduces its own violation on it. `pragma foreign_key_list`
+    // assigns b_id fkid 0 (declared last) and a_id fkid 1, and
+    // `pragma_foreign_key_check` reports fkid 0 first (measured directly),
+    // so a collapsed (table, fkid) cache would compute and cache b_id's own
+    // foreign key first and hand it, wrongly, to a_id's own entry below.
+    raw.exec("insert into child values ('c1', 'ok', 'missing-b')");
+
+    const file = { name: '0001_break_a.sql', sql: "update child set a_id = 'missing-a' where id = 'c1';" };
+    assert.throws(() => migrate(raw, [file]), (e: unknown) => {
+      assert.ok(!(e instanceof MigrationHistoryError), 'expected the raw engine error, not a MigrationHistoryError');
+      assert.match((e as Error).message, /pragma_foreign_key_check/);
+      assert.doesNotMatch((e as Error).message, /predates/);
+      return true;
+    });
+  } finally { raw.close(); }
+});
+
+// violationKeys() (src/durable.ts) reads a single-column, non-INTEGER
+// primary key's own value back to build its key (block comment above
+// violationKeys()), not the table's own rowid: on a TEXT primary key, a
+// deleted row's rowid can come back on the very next insert (proved
+// directly below, the same way the rowid-reuse tests above prove it), so a
+// key built from rowid instead of the declared primary key would read a
+// replacement row with the same referencing-column value as the row it
+// replaced.
+test("a file that deletes a pre-existing violating row and inserts a different violating row with the same referencing-column value is not read as the same, already-known violation, even though the new row reuses the deleted row's rowid", () => {
+  const raw = new DatabaseSync(':memory:');
+  try {
+    raw.exec('create table parent (id text primary key not null)');
+    raw.exec('create table child (id text primary key not null, parent_id text references parent(id))');
+    raw.exec('pragma foreign_keys=off');
+    raw.exec("insert into child values ('c1', 'missing')");
+    assert.equal(raw.prepare('select rowid from child').get()!.rowid, 1);
+
+    const file = {
+      name: '0001_swap.sql',
+      sql: "delete from child where id = 'c1'; insert into child values ('c2', 'missing');",
+    };
+    assert.throws(() => migrate(raw, [file]), (e: unknown) => {
+      assert.ok(!(e instanceof MigrationHistoryError), 'expected the raw engine error, not a MigrationHistoryError');
+      assert.match((e as Error).message, /pragma_foreign_key_check/);
+      assert.doesNotMatch((e as Error).message, /predates/);
+      return true;
+    });
+    assert.equal(raw.prepare('select rowid from child').get()!.rowid, 1, "the replacement row must reuse the deleted row's rowid for this test to guard against the bug it names");
+  } finally { raw.close(); }
+});
+
+// SQLite accepts a string-literal-quoted identifier as an object name and
+// stores it in sqlite_schema written exactly that way (measured directly:
+// `create trigger 'qt' ...` reads back unchanged), which created()
+// (src/build/scan.ts) tokenizes as a string, not an identifier, so it
+// returns null for it. migrate()'s own "without knowledge of trigger" error
+// (src/durable.ts) reads a live trigger's own text this way when a stale
+// rebuild record does not know about it (unknownDeclaration(), with no
+// name-defined requirement of its own), so this case reaches durable.ts at
+// runtime, not only applied()'s build-time twin (test/migration-replay-
+// error.test.ts).
+test("a Durable Object's runtime migrate() still names a trigger whose declared name is a string-literal-quoted identifier, when a stale rebuild does not know about it", () => {
+  const file1 = { name: "0001_base.sql", sql: "create table t (id integer primary key not null, a integer) strict; create trigger 'qt' after insert on t begin select 1; end;" };
+  const file2 = {
+    name: "0002_stale.sql",
+    sql: `${REBUILD_HEADER}${JSON.stringify([{ table: "t", columns: [{ name: "id", def: "id integer primary key not null" }, { name: "a", def: "a integer" }], constraints: [], indexes: [], triggers: [] }])}\nselect 1;`,
+  };
+  const db = new DatabaseSync(":memory:");
+  try {
+    migrate(db, [file1]);
+    assert.throws(() => migrate(db, [file1, file2]), (e: unknown) => {
+      assert.ok(e instanceof MigrationHistoryError, String(e));
+      assert.equal(e.code, "REBUILD_LOSES_COLUMN");
+      assert.match(e.message, /rebuilds table "t" without knowledge of trigger "create trigger 'qt' after insert on t begin select 1; end" it already has/);
+      return true;
+    });
+  } finally { db.close(); }
+});
+
+// A RebuildRecord's own `table` field (src/durable.ts) names whatever a
+// migration file's own header claims to rebuild, not a name this function
+// itself derived from the live schema, so it can name something that is no
+// longer a table by the time this later file actually applies. Measured
+// directly: pragma_table_xinfo() reports a view's own columns just as it
+// would a table's (actualColumns.length > 0, so this loop does not `continue`
+// past it), but the schemaRow lookup right after filters on `type = 'table'`
+// and finds nothing for a view, leaving defs null. The revivedConstraint
+// check below must handle that null gracefully, the same way the
+// badConstraint check just above it already does.
+test("a Durable Object's runtime migrate() does not crash when a stale rebuild record names something that is now a view, not a table", () => {
+  const file1 = { name: "0001_base.sql", sql: "create table t (id integer primary key, a integer); create view v as select id, a from t;" };
+  const header = REBUILD_HEADER + JSON.stringify([{ table: "v", columns: [{ name: "id", def: "" }, { name: "a", def: "" }], constraints: [], indexes: [], triggers: [] }]);
+  const file2 = { name: "0002_stale.sql", sql: `${header}\nselect 1;` };
+  const db = new DatabaseSync(":memory:");
+  try {
+    migrate(db, [file1]);
+    assert.deepEqual(migrate(db, [file1, file2]), [file2.name]);
+  } finally { db.close(); }
+});
+
+// pragma_foreign_key_check only ever looks at main (measured directly: a
+// TEMP table's own violation never appears in its result), but an
+// unqualified `pragma table_info(...)`, `pragma foreign_key_list(...)`, or
+// `select ... from ...` resolves against a same-named TEMP table first when
+// one exists (SQLite's ordinary shadowing rule), reading that TEMP table's
+// shape and rows in place of the main table pragma_foreign_key_check named.
+// violationKeys() (src/durable.ts) now schema-qualifies all three of its own
+// reads to main; before that fix, a TEMP table shadowing the violating
+// table made every one of these reads return the TEMP table's own
+// (unrelated, unchanging) data instead. Reproduced directly: a TEXT primary
+// key's classic rowid-reuse case (the same pattern the plain rowid-reuse
+// tests above exercise), where the file's own delete-then-insert replaces
+// main's violating row with a materially different one, at the same reused
+// rowid the file's own statements never expose to a TEMP table at all. Under
+// the shadowing bug, both the before-snapshot's and the after-check's own
+// readback returned the TEMP table's own unchanging row instead, making the
+// two keys equal and misreporting the file's own new violation as
+// predating it.
+test("a TEMP table shadowing the violating table's name does not make migrate() misread the file's own new violation as predating it", () => {
+  const raw = new DatabaseSync(':memory:');
+  try {
+    raw.exec('create table p (id text primary key not null)');
+    raw.exec('create table c (id text primary key not null, pid text references p(id))');
+    raw.exec('pragma foreign_keys=off');
+    raw.exec("insert into c values ('c1', 'missing-A')");
+    // A TEMP table of the same name, with its own single unchanging row: the
+    // file's own statements below name `main.c` explicitly, so they touch
+    // only the main table; this TEMP table exists only to shadow durable.ts's
+    // own unqualified reads, the way an application's own scratch table
+    // (created earlier on the same connection, for an unrelated reason)
+    // would.
+    raw.exec('create temp table c (id text primary key not null, pid text references p(id))');
+    raw.exec("insert into c values ('shadow', 'shadow-value')");
+    assert.equal(raw.prepare('select rowid from temp.c').get()!.rowid, 1);
+    assert.equal(raw.prepare('select rowid from main.c').get()!.rowid, 1);
+
+    const file = {
+      name: '0001_swap.sql',
+      sql: "delete from main.c where id = 'c1'; insert into main.c values ('c2', 'missing-B');",
+    };
+    assert.throws(() => migrate(raw, [file]), (e: unknown) => {
+      assert.ok(!(e instanceof MigrationHistoryError), 'expected the raw engine error, not a MigrationHistoryError');
+      assert.match((e as Error).message, /pragma_foreign_key_check/);
+      assert.doesNotMatch((e as Error).message, /predates/);
+      return true;
+    });
+    // The failed file rolled back: main's replacement row reused rowid 1,
+    // confirming this test exercises the same rowid the TEMP table also
+    // holds a row at, the shape the shadowing bug needs to misread.
+    assert.equal(raw.prepare('select rowid from main.c').get()!.rowid, 1, 'expected the reverted row to still be at rowid 1');
+    // The TEMP table's own row is untouched by the file's statements (which
+    // name main.c explicitly), proving the shadowing this test guards
+    // against, not an accidental write to the TEMP table itself.
+    assert.deepEqual(raw.prepare('select * from temp.c').all().map(r => ({ ...r })), [{ id: 'shadow', pid: 'shadow-value' }]);
+  } finally { raw.close(); }
+});
+
+// The same shadowing risk, for a table this adapter reads to resolve an
+// AUTOINCREMENT primary key's own declaration (src/durable.ts): an
+// unqualified `select sql from sqlite_schema` does not need the same fix,
+// because sqlite_schema itself does not merge a TEMP table's own schema row
+// into an unqualified query against it (measured directly below); only
+// pragma_table_info, pragma_foreign_key_list, and a table's own row data
+// are shadowed by a same-named TEMP table. main's and the TEMP table's own
+// declarations differ here (an extra column on the TEMP one) so the
+// assertion below can tell which one's own text the query actually read;
+// SQLite itself stores a TEMP table's declaration with the word TEMP
+// stripped (measured directly), so a same-shaped pair could pass this
+// assertion having actually read either one.
+test("an unqualified sqlite_schema query reads main's own declaration, not a TEMP table of the same name", () => {
+  const raw = new DatabaseSync(':memory:');
+  try {
+    raw.exec('create table c (id integer primary key autoincrement)');
+    raw.exec('create temp table c (id integer primary key autoincrement, extra text)');
+    const rows = raw.prepare(`select sql from sqlite_schema where type = 'table' and lower(name) = lower(?)`).all('c') as { sql: string }[];
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!.sql, 'CREATE TABLE c (id integer primary key autoincrement)');
+  } finally { raw.close(); }
+});
+
+// fk.to (src/durable.ts) tells apart two foreign keys sharing both fk.from
+// and the parent table: a file that only changes which of the parent's two
+// UNIQUE columns the child row's own unchanged value matches moves the
+// violation from one such foreign key to the other, with no write to the
+// child row itself. Reproduced directly: swapping the parent row's two
+// UNIQUE column values moves the child's own violation from fkid 1 (a
+// references p.x) to fkid 0 (a references p.y); the child's own primary key
+// and its own `a` column are identical throughout, so only fk.to
+// distinguishes the two violations.
+test("a file that only repoints which of a parent table's two UNIQUE columns a child's foreign key matches is not read as the same, already-known violation", () => {
+  const raw = new DatabaseSync(':memory:');
+  try {
+    raw.exec('create table p (id text primary key not null, x text unique, y text unique)');
+    raw.exec('create table c (id text primary key not null, a text, foreign key(a) references p(x), foreign key(a) references p(y))');
+    raw.exec('pragma foreign_keys=off');
+    raw.exec("insert into p values ('p1', 'other', 'v')");
+    raw.exec("insert into c values ('c1', 'v')");
+    assert.equal((raw.prepare('pragma foreign_key_check').get() as { fkid: number }).fkid, 1, "expected c1's own violation to start on fkid 1 (a references p.x), for this test to guard what it names");
+
+    const file = { name: '0001_swap_columns.sql', sql: "update p set x = 'v', y = 'other';" };
+    assert.throws(() => migrate(raw, [file]), (e: unknown) => {
+      assert.ok(!(e instanceof MigrationHistoryError), 'expected the raw engine error, not a MigrationHistoryError');
+      assert.match((e as Error).message, /pragma_foreign_key_check/);
+      assert.doesNotMatch((e as Error).message, /predates/);
+      return true;
+    });
   } finally { raw.close(); }
 });

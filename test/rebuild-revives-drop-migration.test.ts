@@ -412,6 +412,47 @@ test("applied() refuses a revived trigger matched by name, even though the file'
   );
 });
 
+// The Durable Object runtime pair of the test above: migrate()'s own
+// mirror-direction check (src/durable.ts) matches a revived trigger by
+// name too, not by its exact text.
+test("a Durable Object's runtime migrate() also refuses a revived trigger matched by name, even though the file's own redeclaration changed the trigger's body", () => {
+  const baseTable = "create table t (id text primary key not null, a integer not null, b integer not null) strict";
+  const baseTrigger = "create trigger trg1 after insert on t begin update t set b = b + 1 where id = new.id; end";
+  const targetBTable = "create table t (id text primary key not null, a integer not null, b integer not null) strict";
+  const targetATable = "create table t (id text primary key not null, a integer, b integer not null) strict";
+  const targetATrigger = "create trigger trg1 after insert on t begin update t set b = b + 2 where id = new.id; end";
+
+  const currentDb = open([baseTable, baseTrigger]);
+  const planB = diff(introspect(currentDb), introspect(open([targetBTable])));
+  if (planB.kind !== "ok") throw new Error("planB blocked");
+  const fileB = render(2, "drop_trg1", planB.statements, planB.rebuilds ?? []);
+  const planA = diff(introspect(currentDb), introspect(open([targetATable, targetATrigger])));
+  if (planA.kind !== "ok") throw new Error("planA blocked");
+  const fileA = render(3, "a_nullable", planA.statements, planA.rebuilds ?? []);
+
+  const db = new DatabaseSync(":memory:");
+  migrate(db, [
+    { name: "0001_base.sql", sql: baseTable + ";" },
+    { name: "0002_base_trigger.sql", sql: baseTrigger + ";" },
+    { name: "0003_drop_trg1.sql", sql: fileB.sql },
+  ]);
+
+  assert.throws(
+    () => migrate(db, [
+      { name: "0001_base.sql", sql: baseTable + ";" },
+      { name: "0002_base_trigger.sql", sql: baseTrigger + ";" },
+      { name: "0003_drop_trg1.sql", sql: fileB.sql },
+      { name: "0004_a_nullable.sql", sql: fileA.sql },
+    ]),
+    (e: unknown) => {
+      assert.ok(e instanceof MigrationHistoryError, String(e));
+      assert.equal(e.code, "REBUILD_REVIVES_DECLARATION");
+      assert.match(e.message, /rebuilds table "t" and would restore trigger "trg1", which an earlier migration already removed/);
+      return true;
+    },
+  );
+});
+
 // --- Attribution: two confusingly named tables rebuilt in one file must not cross-attribute each other's declarations ---
 
 test("redeclaredByFile attributes each table's own index only to that table, even when \"t\" and \"tt\" rebuild together in one file", () => {
