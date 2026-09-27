@@ -92,6 +92,9 @@ export function d1(binding: D1Like, options: AdapterOptions = {}): Database {
         const changes = command.plan.reduce((sum, item, i) => {
           if (typeof item !== "string") return sum;
           const value = (results[i]?.meta as { changes?: unknown } | undefined)?.changes;
+          // Number.isFinite() never coerces, so it is false for every value
+          // that is not already of type number; the typeof check to its
+          // left never changes which values pass.
           return sum + (typeof value === "number" && Number.isFinite(value) ? value : 0);
         }, 0);
         if (command.returns !== null) {
