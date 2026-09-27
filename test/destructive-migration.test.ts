@@ -35,7 +35,29 @@ test("ordinary table and column removals need their exact intent", () => {
       { kind: "column", table: "order.lines", column: "old.column" },
     ]);
     assert.equal(duplicate.kind, "blocked");
-    if (duplicate.kind === "blocked") assert.match(duplicate.reason, /repeats column "order\.lines"\."old\.column"/);
+    if (duplicate.kind === "blocked") {
+      assert.match(duplicate.reason, /repeats column "order\.lines"\."old\.column"/);
+      // A repeated entry is still rejected against the real required set, not
+      // an empty one: the caller can retry with this exact list.
+      assert.deepEqual(duplicate.drops, [{ kind: "column", table: "order.lines", column: "old.column" }]);
+    }
+  } finally {
+    current.close();
+    target.close();
+  }
+});
+
+// A table-kind intent for a table that still exists in the target must not
+// be accepted as review of an unrelated column removal on that table, even
+// when the column is named "undefined": the table and column drop key
+// spaces must stay disjoint no matter what a caller supplies.
+test("a table-kind intent naming a surviving table is rejected, not folded into an unrelated column named \"undefined\"", () => {
+  const current = open(['create table t (id integer primary key, "undefined" text)']);
+  const target = open(["create table t (id integer primary key)"]);
+  try {
+    const plan = diff(introspect(current), introspect(target), [], [{ kind: "table", table: "t" }]);
+    assert.equal(plan.kind, "blocked");
+    if (plan.kind === "blocked") assert.match(plan.reason, /does not match a removed ordinary object: table "t"/);
   } finally {
     current.close();
     target.close();
@@ -48,7 +70,12 @@ test("a destructive intent that differs from the declared DDL only in case is re
   try {
     const plan = diff(introspect(current), introspect(target), [], [{ kind: "column", table: "t", column: "A" }]);
     assert.equal(plan.kind, "blocked");
-    if (plan.kind === "blocked") assert.match(plan.reason, /does not match a removed ordinary object/);
+    if (plan.kind === "blocked") {
+      assert.match(plan.reason, /does not match a removed ordinary object/);
+      // An unmatched supplied entry is still rejected against the real
+      // required set, not an empty one: the caller can see what to supply.
+      assert.deepEqual(plan.drops, [{ kind: "column", table: "t", column: "a" }]);
+    }
   } finally {
     current.close();
     target.close();

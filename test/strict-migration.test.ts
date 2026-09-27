@@ -7,7 +7,7 @@
 // the whole file the same way a STRICT type mismatch does.
 import { test } from "vitest";
 import assert from "node:assert/strict";
-import { applied, diff, introspect, open, render } from "../src/build/migration.ts";
+import { applied, diff, introspect, open, render, shape } from "../src/build/migration.ts";
 import { splitStatements } from "../src/build/scan.ts";
 
 const before = [`create table t (id text primary key not null, n integer not null)`];
@@ -145,6 +145,85 @@ test('rebuilds block inaccessible row identities and changed primary-key aliases
       if(plan.kind==='blocked')assert.match(plan.reason,/rowid preservation.*explicit migration/);
     }finally{db.close();target.close();}
   }
+});
+
+// The rowid-preservation section only applies when both sides keep a rowid:
+// a WITHOUT ROWID table has no "rowid" column to select, so entering that
+// section for one anyway fails the capture SELECT outright.
+test('a rebuild only preserves rowid identity when neither side is WITHOUT ROWID', () => {
+  const db = open(['create table t (id text primary key, value text) without rowid']);
+  const target = open(['create table t (id text primary key, value text not null)']);
+  try {
+    const plan = diff(introspect(db), introspect(target));
+    assert.equal(plan.kind, 'ok', plan.kind === 'blocked' ? plan.reason : '');
+    if (plan.kind !== 'ok') return;
+    for (const sql of plan.statements) db.exec(sql);
+    assert.deepEqual(shape(introspect(db)), shape(introspect(target)));
+  } finally { db.close(); target.close(); }
+});
+
+// A missing source identifier alone, with a free target identifier, must
+// still refuse: either side missing its own usable identifier is enough,
+// not only both sides missing one together.
+test('a rebuild refuses when only the source side has no free row identifier', () => {
+  const db = open(['create table t (rowid text, _rowid_ text, oid text, value text)']);
+  const target = open(['create table t (rowid text, _rowid_ text, value text not null)']);
+  try {
+    const plan = diff(introspect(db), introspect(target), [], [{ kind: 'column', table: 't', column: 'oid' }]);
+    assert.equal(plan.kind, 'blocked');
+    if (plan.kind === 'blocked') assert.match(plan.reason, /rowid preservation.*explicit migration/);
+  } finally { db.close(); target.close(); }
+});
+
+// A target column loses its INTEGER PRIMARY KEY alias without gaining a
+// different one: rowidAlias becomes null, which does not by itself shadow
+// or change an alias the way a *replaced* alias does, so this rebuild must
+// proceed (capturing the identifier separately), not refuse.
+test('a rebuild proceeds when the target only drops its primary-key alias, not replaces it', () => {
+  const db = open(['create table t (id integer primary key, value text)']);
+  const target = open(['create table t (id integer, value text not null)']);
+  try {
+    db.exec("insert into t (id, value) values (7, 'kept')");
+    const plan = diff(introspect(db), introspect(target));
+    assert.equal(plan.kind, 'ok', plan.kind === 'blocked' ? plan.reason : '');
+    if (plan.kind !== 'ok') return;
+    for (const sql of plan.statements) db.exec(sql);
+    assert.deepEqual({ ...db.prepare('select rowid as identity, * from t').get() }, { identity: 7, id: 7, value: 'kept' });
+  } finally { db.close(); target.close(); }
+});
+
+// A table named "" is a pathological but legal SQLite identifier: it forces
+// the rebuild's own generated temporary names (its copy table, and its
+// AUTOINCREMENT high-water-mark table) to differ from the real table they
+// stand in for, or the CREATE TABLE that builds them collides with it.
+test('a rebuild names its temporary tables apart from a table named the empty string', () => {
+  const db = open([`create table "" (id integer primary key autoincrement, value text) strict`]);
+  const target = open([`create table "" (id integer primary key autoincrement, value text not null) strict`]);
+  try {
+    db.exec(`insert into "" values (100, 'removed'); delete from ""`);
+    const plan = diff(introspect(db), introspect(target));
+    assert.equal(plan.kind, 'ok', plan.kind === 'blocked' ? plan.reason : '');
+    if (plan.kind !== 'ok') return;
+    for (const sql of plan.statements) db.exec(sql);
+    assert.equal(db.prepare(`insert into "" (value) values ('next') returning id`).get()!.id, 101);
+  } finally { db.close(); target.close(); }
+});
+
+// A table name holding a single quote must be escaped the same way inside
+// the rebuild's sqlite_sequence string literal as SQL's own quoting rule:
+// doubling the quote, not just any non-empty substitution.
+test("a rebuild escapes a table name's own quote in its sqlite_sequence literal", () => {
+  const ddl = (value: string) => `create table "o'clock" (id integer primary key autoincrement, ${value}) strict`;
+  const db = open([ddl('value text')]);
+  const target = open([ddl('value text not null')]);
+  try {
+    db.exec(`insert into "o'clock" values (100, 'removed'); delete from "o'clock"`);
+    const plan = diff(introspect(db), introspect(target));
+    assert.equal(plan.kind, 'ok', plan.kind === 'blocked' ? plan.reason : '');
+    if (plan.kind !== 'ok') return;
+    for (const sql of plan.statements) db.exec(sql);
+    assert.equal(db.prepare(`insert into "o'clock" (value) values ('next') returning id`).get()!.id, 101);
+  } finally { db.close(); target.close(); }
 });
 
 test('rebuilds preserve generated row identities and declared values', async () => {

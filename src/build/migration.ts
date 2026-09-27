@@ -406,15 +406,12 @@ function tableStatements(current: Table, target: Table, renames: readonly Rename
   const targetNames = new Set(target.columns.map((c) => c.name));
   const removed = [...currentColumns.keys()].filter((n) => !targetNames.has(n));
   const added = target.columns.filter((c) => !currentColumns.has(c.name)).map((c) => c.name);
-  const unreviewedRemoved = removed.filter(column => !drops.some(drop => drop.kind === "column" && drop.table === current.name && drop.column === column));
-  if (unreviewedRemoved.length > 0 && added.length > 0) {
-    return {
-      kind: "blocked",
-      reason:
-        `table ${current.name}: columns [${unreviewedRemoved.join(", ")}] removed and [${added.join(", ")}] added in one change. ` +
-        `Declare a rename if the data must move, or split the change into two migrations.`,
-    };
-  }
+  // No unreviewed removal reaches this point: renameRepairPlan already blocks
+  // a table with both a removed and an added column unless every removal is
+  // covered by an exact drop, and dropIntentPlan already rejects a drops
+  // list that omits or adds to that exact required set. So `removed`, by the
+  // time diff() calls this function, is always already reviewed.
+
   // A migration runs on databases with rows the generator cannot see. A new
   // NOT NULL column without a default has no value for those rows.
   for (const n of added) {
@@ -440,10 +437,14 @@ function tableStatements(current: Table, target: Table, renames: readonly Rename
   if (candidate !== null) {
     for (const n of removed) candidate.push(`alter table ${quoteIdent(current.name)} drop column ${quoteIdent(n)}`);
     for (const n of added) candidate.push(`alter table ${quoteIdent(current.name)} add column ${target.columns.find((c) => c.name === n)!.def}`);
+    // The scratch db is in-memory and unreferenced after this block; node:sqlite
+    // reclaims it, so the close() in finally only frees it a bit sooner.
     const scratch = open([current.sql, ...keptIndexes]);
     try {
       for (const s of candidate) scratch.exec(s);
       const after = introspect(scratch).tables.get(current.name)!;
+      // diff()'s caller only tests this plan's kind against "blocked"; any
+      // other value reads as "not blocked" and only .statements is used.
       if (same(tableShape(after), tableShape(target))) return { kind: "ok", statements: candidate };
     } catch {
       // The engine refused the cheap path. Rebuild below.
@@ -468,9 +469,15 @@ function tableStatements(current: Table, target: Table, renames: readonly Rename
     if (!from || !to || (target.rowidAlias !== null && target.rowidAlias !== currentAlias)) {
       return { kind: "blocked", reason: `table ${current.name}: the rebuild cannot prove rowid preservation because an identifier is shadowed or its primary-key alias changes. Keep an accessible identifier and its alias, or write an explicit migration with a data check.` };
     }
-    // A preserved INTEGER PRIMARY KEY already carries the identifier.
+    // A preserved INTEGER PRIMARY KEY already carries the identifier through
+    // its own column, already part of `common`: capturing it again here
+    // under a second name would just copy the same value twice, so this
+    // only runs when the target keeps no such alias to carry it.
     // Otherwise capture it separately, under a name that cannot mask data.
     if (target.rowidAlias === null) {
+      // The exact spelling is transient: it names a column only inside this
+      // rebuild's own copy table, gone once the rebuild's DROP TABLE below
+      // runs. The loop below still must find a name absent from `common`.
       let saved = "_solarsql_rowid";
       while (common.some(name => name.toLowerCase() === saved.toLowerCase())) saved += "_";
       capture.push(`${quoteIdent(from)} as ${quoteIdent(saved)}`);
@@ -484,6 +491,8 @@ function tableStatements(current: Table, target: Table, renames: readonly Rename
   const sequence = quoteIdent(`_solarsql_sequence_${current.name}`);
   const tableLiteral = `'${current.name.replaceAll("'", "''")}'`;
   const keepsSequence = [current, target].every(table => tokenize(table.sql).some(token => isKeyword(token, "autoincrement")));
+  // Same caller contract as the cheap-ALTER return above: only compared
+  // against "blocked", and only .statements/.rebuilt are read afterward.
   return {
     kind: "ok",
     rebuilt: true,
@@ -497,6 +506,9 @@ function tableStatements(current: Table, target: Table, renames: readonly Rename
       `insert into ${name} (${destination.join(", ")}) select ${restore.join(", ")} from ${copy}`,
       // Deleted maxima are absent from copied rows. Keep their high-water
       // mark in SQL so even a 64-bit sequence never passes through JavaScript.
+      // The restore insert above always touches sqlite_sequence for name,
+      // even when it copies zero rows, so this insert's own `not exists`
+      // guard only matters if a future change removes that restore step.
       ...(keepsSequence ? [
         `insert into sqlite_sequence (name, seq) select ${tableLiteral}, seq from ${sequence} where seq is not null and not exists (select 1 from sqlite_sequence where name = ${tableLiteral})`,
         `update sqlite_sequence set seq = max(seq, coalesce((select seq from ${sequence}), seq)) where name = ${tableLiteral}`,
@@ -507,6 +519,11 @@ function tableStatements(current: Table, target: Table, renames: readonly Rename
   };
 }
 
+// The "table" and "column" tags keep the two kinds' keys apart. Without the
+// tag, a table-kind key (no column field, so its column position is always
+// the string "undefined") would equal a column-kind key for a column
+// literally named "undefined" on the same table, letting a caller's wrong
+// table-drop intent pass review for an unrelated column removal instead.
 function dropKey(drop: DropIntent): string {
   return drop.kind === "table" ? `table\u0000${drop.table}` : `column\u0000${drop.table}\u0000${drop.column}`;
 }
@@ -630,6 +647,10 @@ function renameRepairPlan(current: Schema, target: Schema, renames: readonly Ren
     const targetNames = new Set(targetTable.columns.map(column => column.name));
     // A reviewed exact column drop is not a rename source. An unmatched or
     // duplicate entry stays visible here and later fails drop validation.
+    // This loop only reaches a `name` present in target (the continue
+    // above), so `required` never holds that table's own table-kind key
+    // here; a table-kind drop's required.has(dropKey(drop)) is already
+    // false no matter what its kind check decides.
     const removed = [...source].filter(column => !targetNames.has(column) && !drops.some(drop => drop.kind === "column" && drop.table === name && drop.column === column && required.has(dropKey(drop))));
     const added = [...targetNames].filter(column => !source.has(column));
     if (removed.length > 0 && added.length > 0) candidates.push({ table: name, from: removed, to: added });
