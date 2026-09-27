@@ -49,6 +49,8 @@ export function nextMigrationFile(names: readonly string[], name: string, statem
   const next = Math.max(1, maximum + 1);
   if (!Number.isSafeInteger(next)) throw new BuildError("Migration sequence exceeds the safe integer range. Review an explicit append-only migration strategy without renaming applied files.");
   const file = render(next, name, statements, rebuilds, width);
+  // A generated sequence is maximum + 1, so its filename never equals a valid name in
+  // names: `>=` and `>` agree here, and either one refuses a name that sorts after it.
   if (names.some(previous => previous >= file.filename)) {
     throw new BuildError(`Migration ${file.filename} would replay before existing history. Review an explicit append-only migration strategy without renaming applied files.`);
   }

@@ -1,10 +1,11 @@
 // `solarsql build` on the example: the committed generated files are
 // current, the migration files are current, and the build refuses the
 // shapes the design rules out. Each case works on a copy of the example.
-import { describe, onTestFinished, test } from "vitest";
+import { describe, onTestFinished, test, vi } from "vitest";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, cpSync, existsSync, fstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { build, migration, StatementFailures } from "../src/build/build.ts";
@@ -13,6 +14,8 @@ import { nextMigrationFile, withMigrationLock, writeNewMigration } from "../src/
 import { tscArgs } from "./fixture-dir.ts";
 
 const root = resolve(import.meta.dirname, "..");
+const require = createRequire(import.meta.url);
+const nodeFs: typeof import("node:fs") = require("node:fs");
 
 function copy(): string {
   const dir = mkdtempSync(join(tmpdir(), "solarsql-build-"));
@@ -1087,12 +1090,105 @@ test('migration file publication is exclusive and generation locks are released'
   onTestFinished(()=>rmSync(dir,{recursive:true,force:true}));
   const file = {filename:'0001_initial.sql',sql:'create table t(n integer) strict;'};
   writeNewMigration(dir,file);
-  assert.throws(()=>writeNewMigration(dir,{...file,sql:'drop table t;'}),/already exists/);
+  assert.deepEqual(readdirSync(dir), [file.filename]);
+  assert.throws(()=>writeNewMigration(dir,{...file,sql:'drop table t;'}),(error: unknown) => {
+    assert.ok(error instanceof BuildError);
+    assert.equal(error.message, `Migration ${file.filename} already exists. Preserve it and rerun generation against the current history.`);
+    return true;
+  });
+  assert.deepEqual(readdirSync(dir), [file.filename]);
   assert.equal(readFileSync(join(dir,file.filename),'utf8'),file.sql);
-  await withMigrationLock(dir,()=>assert.rejects(withMigrationLock(dir,()=>{}),/generation is locked/));
+  await withMigrationLock(dir,()=>{
+    assert.deepEqual(JSON.parse(readFileSync(join(dir,'.solarsql-generation.lock'),'utf8')), {pid:process.pid});
+    return assert.rejects(withMigrationLock(dir,()=>{}),/generation is locked/);
+  });
   await assert.rejects(withMigrationLock(dir,()=>{throw new Error('fixture failure')}),/fixture failure/);
   await withMigrationLock(dir,()=>{});
   assert.equal(existsSync(join(dir,'.solarsql-generation.lock')),false);
+});
+
+test('migration temporary files use exclusive creation', () => {
+  const dir = mkdtempSync(join(tmpdir(),'solarsql-migration-temporary-exclusive-'));
+  onTestFinished(()=>rmSync(dir,{recursive:true,force:true}));
+  const originalWrite = nodeFs.writeFileSync;
+  let seeded = false;
+  nodeFs.writeFileSync = ((path, data, options) => {
+    if (!seeded && String(path).endsWith('.tmp')) {
+      seeded = true;
+      originalWrite(path, 'occupied', {flag:'wx'});
+    }
+    return originalWrite(path, data, options);
+  }) as typeof nodeFs.writeFileSync;
+  syncBuiltinESMExports();
+  try {
+    assert.throws(
+      () => writeNewMigration(dir,{filename:'0001_initial.sql',sql:'select 1;'}),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === 'EEXIST',
+    );
+  } finally {
+    nodeFs.writeFileSync = originalWrite;
+    syncBuiltinESMExports();
+  }
+});
+
+test('migration publication does not collide with a differently spelled temporary artifact', () => {
+  const dir = mkdtempSync(join(tmpdir(),'solarsql-migration-temporary-name-'));
+  onTestFinished(()=>rmSync(dir,{recursive:true,force:true}));
+  const file = {filename:'0001_initial.sql',sql:'select 1;'};
+  const other = join(dir,`.${file.filename}.${process.pid}.0.8.tmp`);
+  writeFileSync(other,'occupied',{flag:'wx'});
+  const random = vi.spyOn(Math,'random').mockReturnValue(0.5);
+  try { writeNewMigration(dir,file); }
+  finally { random.mockRestore(); }
+  assert.equal(readFileSync(join(dir,file.filename),'utf8'),file.sql);
+  assert.equal(readFileSync(other,'utf8'),'occupied');
+});
+
+test('migration publication rethrows a non-collision link error and removes its temporary file', () => {
+  const dir = mkdtempSync(join(tmpdir(),'solarsql-migration-link-error-'));
+  onTestFinished(()=>rmSync(dir,{recursive:true,force:true}));
+  const denied = Object.assign(new Error('link denied'), {code:'EACCES'});
+  const originalLink = nodeFs.linkSync;
+  nodeFs.linkSync = (() => { throw denied; }) as typeof nodeFs.linkSync;
+  syncBuiltinESMExports();
+  try {
+    assert.throws(() => writeNewMigration(dir,{filename:'0001_initial.sql',sql:'select 1;'}), error => error === denied);
+  } finally {
+    nodeFs.linkSync = originalLink;
+    syncBuiltinESMExports();
+  }
+  assert.deepEqual(readdirSync(dir), []);
+});
+
+test('migration locks rethrow open errors and close their file descriptor', async () => {
+  const dir = mkdtempSync(join(tmpdir(),'solarsql-migration-lock-fd-'));
+  onTestFinished(()=>rmSync(dir,{recursive:true,force:true}));
+  await assert.rejects(withMigrationLock(join(dir,'missing'),()=>{}),(error: unknown) => {
+    assert.equal((error as NodeJS.ErrnoException).code, 'ENOENT');
+    assert.equal(error instanceof BuildError, false);
+    return true;
+  });
+
+  const originalOpen = nodeFs.openSync;
+  let lockFd: number | undefined;
+  nodeFs.openSync = ((path, flags, mode) => {
+    const fd = originalOpen(path, flags, mode);
+    if (String(path).endsWith('.solarsql-generation.lock')) lockFd = fd;
+    return fd;
+  }) as typeof nodeFs.openSync;
+  syncBuiltinESMExports();
+  try {
+    await withMigrationLock(dir,()=>{});
+    assert.notEqual(lockFd, undefined);
+    assert.throws(() => fstatSync(lockFd!), (error: unknown) => (error as NodeJS.ErrnoException).code === 'EBADF');
+  } finally {
+    nodeFs.openSync = originalOpen;
+    syncBuiltinESMExports();
+    if (lockFd !== undefined) {
+      try { closeSync(lockFd); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EBADF') throw error; }
+    }
+  }
 });
 
 test('a migration write killed before its link leaves no file at the final name', async () => {
@@ -1122,13 +1218,73 @@ test('a migration write killed before its link leaves no file at the final name'
   assert.throws(()=>writeNewMigration(dir,{filename,sql:'drop table t;'}),/already exists/);
 });
 
-test('migration numbering rejects ambiguous history and unsafe lexical rollover', () => {
-  assert.throws(() => nextMigrationFile(['custom.sql'], 'next', []), /invalid sequence at custom\.sql/);
-  assert.throws(() => nextMigrationFile(['0001_a.sql', '0001_b.sql'], 'next', []), /colliding sequence numbers at 0001_a\.sql, 0001_b\.sql/);
-  assert.throws(() => nextMigrationFile(['0001_a.sql', '0001_b.sql', '0001_c.sql'], 'next', []), /colliding sequence numbers at 0001_a\.sql, 0001_b\.sql, 0001_c\.sql/);
+test('migration numbering rejects malformed names with complete recovery actions', () => {
+  const deployment = "solarsql cannot check a database's applied-migrations state itself; know which file, if any, is already deployed before renaming one.";
+  for (const name of ['custom.sql', 'prefix0001_valid.sql', '0001_valid.sql.suffix']) {
+    assert.throws(() => nextMigrationFile([name], 'next', []), (error: unknown) => {
+      assert.ok(error instanceof BuildError);
+      const action = `Rename ${name} to a unique, increasing NNNN_name.sql number.`;
+      assert.equal(error.message, `Migration history has an invalid sequence at ${name}. ${action} ${deployment}`);
+      assert.equal(error.action, action);
+      return true;
+    });
+  }
+});
+
+test('migration numbering reports every colliding name and ambiguous width remedy', () => {
+  const deployment = "solarsql cannot check a database's applied-migrations state itself; know which file, if any, is already deployed before renaming one.";
+  for (const names of [['0001_a.sql', '0001_b.sql'], ['0001_a.sql', '0001_b.sql', '0001_c.sql']]) {
+    assert.throws(() => nextMigrationFile(names, 'next', []), (error: unknown) => {
+      assert.ok(error instanceof BuildError);
+      const list = names.join(', ');
+      const action = `Rename all but one of ${list} to a unique, increasing NNNN_name.sql number, or write a new migration that reconciles them.`;
+      assert.equal(error.message, `Migration history has colliding sequence numbers at ${list}. ${action} ${deployment}`);
+      assert.equal(error.action, action);
+      return true;
+    });
+  }
+  assert.throws(() => nextMigrationFile(['9999_a.sql', '10000_b.sql'], 'next', []), (error: unknown) => {
+    assert.ok(error instanceof BuildError);
+    const action = 'Rename 9999_a.sql to a digit width consistent with 10000_b.sql.';
+    assert.equal(error.message, `Migration history has an ambiguous replay order at 9999_a.sql: its digit width does not match 10000_b.sql, so sort order disagrees with numeric order. ${action} ${deployment}`);
+    assert.equal(error.action, action);
+    return true;
+  });
+});
+
+test('migration numbering rejects safe-integer rollover and omits rebuild metadata by default', () => {
+  assert.throws(
+    () => nextMigrationFile(['9007199254740991_last.sql'], 'next', []),
+    {message:'Migration sequence exceeds the safe integer range. Review an explicit append-only migration strategy without renaming applied files.'},
+  );
+  const generated = nextMigrationFile([], 'next', []);
+  assert.equal(generated.sql, '-- Migration 0001_next.sql. Generated by solarsql from the declared schema.\n\n');
+});
+
+test('migration numbering rejects unsafe lexical rollover and preserves wider numbering', () => {
   assert.throws(() => nextMigrationFile(['9999_a.sql', '10000_b.sql'], 'next', []), /ambiguous replay order at 9999_a\.sql.*10000_b\.sql/);
   assert.throws(()=>nextMigrationFile(['9999_last.sql'],'next',[]),/replay before/);
   assert.equal(nextMigrationFile(['00001_a.sql','00009_b.sql'],'next',[]).filename,'00010_next.sql');
+});
+
+test('migration filename grammar rejects text outside a complete name', async () => {
+  const {test:property} = await import('@hegeldev/hegel');
+  const gs = await import('@hegeldev/hegel/generators');
+  property(tc => {
+    const junk = tc.draw(gs.text({alphabet:'xyz-.',minSize:1,maxSize:20}));
+    const name = tc.draw(gs.booleans()) ? `${junk}0001_valid.sql` : `0001_valid.sql${junk}`;
+    assert.throws(() => nextMigrationFile([name],'next',[]), /invalid sequence/);
+  });
+});
+
+test('migration numbering advances safe sequences near the integer boundary', async () => {
+  const {test:property} = await import('@hegeldev/hegel');
+  const gs = await import('@hegeldev/hegel/generators');
+  property(tc => {
+    const sequence = tc.draw(gs.integers({minValue:Number.MAX_SAFE_INTEGER-10_000,maxValue:Number.MAX_SAFE_INTEGER-1}));
+    const generated = nextMigrationFile([`${String(sequence).padStart(4,'0')}_history.sql`],'next',[]);
+    assert.equal(Number(generated.filename.split('_')[0]), sequence+1);
+  });
 });
 
 test('a competing CLI generator reports the held lock and preserves history', async () => {
@@ -1150,12 +1306,14 @@ test('new migration names sort after every generated history with gaps', async (
   const {test:property} = await import('@hegeldev/hegel');
   const gs = await import('@hegeldev/hegel/generators');
   property(tc => {
-    const values = [...new Set(tc.draw(gs.arrays(gs.integers({minValue:0,maxValue:9998}),{maxSize:30})))];
-    const history = values.map(n=>`${String(n).padStart(4,'0')}_history.sql`);
+    const width = tc.draw(gs.integers({minValue:4,maxValue:8}));
+    const values = [...new Set(tc.draw(gs.arrays(gs.integers({minValue:0,maxValue:10**width-2}),{minSize:1,maxSize:30})))];
+    const history = values.map(n=>`${String(n).padStart(width,'0')}_history.sql`);
     const generated = nextMigrationFile(history,'next',[]);
     assert.ok(history.every(name=>name<generated.filename));
     assert.ok(!history.includes(generated.filename));
     assert.equal(Number(generated.filename.split('_')[0]), Math.max(0,...values)+1);
+    assert.equal(generated.filename.split('_')[0]!.length, width);
   });
 });
 
