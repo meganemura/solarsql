@@ -14,7 +14,7 @@ import { test } from "vitest";
 import assert from "node:assert/strict";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
-import { applied, diff, introspect, open } from "../src/build/migration.ts";
+import { applied, diff, introspect, open, shape } from "../src/build/migration.ts";
 
 test("introspect()'s rowid alias always names the actual primary-key column, even when it is not the table's first column", () => {
   const db = open(["create table t (a text, id integer primary key not null) strict"]);
@@ -177,6 +177,58 @@ test("a reorder that also changes a foreign key's ON DELETE action still falls t
   // column names and foreign-key source columns match, so the scratch
   // check must still see the foreign keys' own fields differ.
   const target = open([p, `create table t (id integer primary key not null, b integer references p(id), a integer references p(id) on delete set null) strict`]);
+  try {
+    const plan = diff(introspect(current), introspect(target));
+    assert.equal(plan.kind, "ok");
+    if (plan.kind !== "ok") return;
+    assert.ok(plan.statements.some((s) => s.includes("_solarsql_new_")), `expected a rebuild, got ${JSON.stringify(plan.statements)}`);
+  } finally {
+    current.close();
+    target.close();
+  }
+});
+
+// byForeignKey()'s own comparator: a reorder-is-a-no-op test only checks
+// that a broken sort agrees with itself (the same comparator sorts both
+// sides the same way, whatever the two sides started as), not that its
+// result is the alphabetical order tableShape() promises. pragma_foreign_key_list
+// itself returns a table's foreign keys in reverse declaration order, so
+// declaring them here in alphabetical order ("a" then "b") already hands
+// shape() a pair it must actually swap to report alphabetically.
+test("shape() sorts a table's foreign keys alphabetically by their own composite key", () => {
+  const p = "create table p (id integer primary key not null) strict";
+  const db = open([p, "create table t (id integer primary key not null, a integer references p(id), b integer references p(id)) strict"]);
+  try {
+    const s = shape(introspect(db)) as { tables: { name: string; foreignKeys: { from: string }[] }[] };
+    assert.deepEqual(s.tables.find((t) => t.name === "t")!.foreignKeys.map((f) => f.from), ["a", "b"]);
+  } finally {
+    db.close();
+  }
+});
+
+// tableShape() sorts constraints (table-level CHECK, UNIQUE, and similar
+// declarations) for the same reason it sorts columns and foreign keys: two
+// legitimate histories can list them in a different order.
+test("reordering two table-level CHECK constraints is a no-op", () => {
+  const current = open(["create table t (id integer primary key not null, a integer, b integer, constraint ck_b check (b > 0), constraint ck_a check (a > 0)) strict"]);
+  const target = open(["create table t (id integer primary key not null, a integer, b integer, constraint ck_a check (a > 0), constraint ck_b check (b > 0)) strict"]);
+  try {
+    const plan = diff(introspect(current), introspect(target));
+    assert.deepEqual(plan, { kind: "ok", statements: [] });
+  } finally {
+    current.close();
+    target.close();
+  }
+});
+
+// diff()'s own early-exit ("if (same(tableShape(current_), tableShape(target_)))
+// continue") must still detect a genuine foreign-key change that carries no
+// column reorder at all, or it treats the table as unchanged and proposes no
+// rebuild.
+test("a changed foreign key with no column reorder still needs a rebuild", () => {
+  const p = "create table p (id integer primary key not null) strict";
+  const current = open([p, "create table t (id integer primary key not null, a integer references p(id) on delete cascade) strict"]);
+  const target = open([p, "create table t (id integer primary key not null, a integer references p(id) on delete set null) strict"]);
   try {
     const plan = diff(introspect(current), introspect(target));
     assert.equal(plan.kind, "ok");

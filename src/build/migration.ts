@@ -346,6 +346,12 @@ export function shape(schema: Schema): unknown {
   };
 }
 
+// Every caller sorts a collection whose entries carry pairwise distinct
+// names: a Schema's own Maps, each keyed by name, or one table's own
+// columns, which SQLite refuses to declare twice. So a and b's names are
+// never equal here, and Array.prototype.sort only reads the sign of this
+// function's return value for each pair it compares, never its exact
+// magnitude.
 function byName(a: { name: string }, b: { name: string }): number {
   return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
 }
@@ -377,6 +383,13 @@ function tableShape(t: Table): unknown {
 function byForeignKey(a: ForeignKey, b: ForeignKey): number {
   const key = (f: ForeignKey) => `${f.from}\0${f.table}\0${f.to}\0${f.onUpdate}\0${f.onDelete}`;
   const ka = key(a), kb = key(b);
+  // Unlike byName()'s inputs, ka and kb can be equal: SQLite accepts two
+  // identically-declared foreign keys on one table (an inline one and a
+  // redundant table-level "foreign key (a) references p(id)", measured),
+  // and a tied pair's two ForeignKey objects then carry the same
+  // from/table/to/onUpdate/onDelete in both. A tied pair's own fields read
+  // the same regardless of which one a sort places first, so nothing
+  // outside this function can observe their relative order.
   return ka < kb ? -1 : ka > kb ? 1 : 0;
 }
 
@@ -384,7 +397,18 @@ function same(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-// The declared CREATE TABLE under another name.
+// The declared CREATE TABLE under another name. Its only caller passes
+// target.sql, always a Table's own sqlite_schema text (never a virtual
+// table's "CREATE VIRTUAL TABLE" or a value a caller wrote by hand): SQLite
+// stores that text with its own header canonicalized -- exactly one space
+// between CREATE, TABLE, and the name, upper case, and IF NOT EXISTS
+// dropped even when the source declared it (measured) -- while it keeps
+// everything from the name onward exactly as declared. So the header
+// portion of this pattern (^, the whitespace counts inside "create table"
+// and the optional "if not exists" group, and IF NOT EXISTS itself) never
+// sees a different input to match against; only the name alternation
+// (quoted, backtick, bracketed, or bare) reads text a caller actually
+// controls.
 function renamedCreate(sql: string, newName: string): string {
   return sql.replace(/^(\s*create\s+table\s+(?:if\s+not\s+exists\s+)?)("(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]|[^\s(]+)/i, `$1${quoteIdent(newName)}`);
 }
@@ -395,11 +419,24 @@ function tableStatements(current: Table, target: Table, renames: readonly Rename
   let currentAlias = current.rowidAlias;
   for (const r of renames.filter((r) => r.table === current.name)) {
     const from = currentColumns.get(r.from);
+    // diff() calls renameIntentPlan(current, target, renames) before it
+    // ever reaches this table's own tableStatements() call, over this same
+    // (current, target) pair, and returns without calling tableStatements()
+    // at all when that finds a missing source column, a target that
+    // already exists in current, or a target missing from target -- the
+    // exact three conditions below. So through diff(), this guard's own
+    // block never runs; it stays as a second layer against a future caller
+    // that reaches tableStatements() a different way.
     if (!from || currentColumns.has(r.to) || !target.columns.some((c) => c.name === r.to)) {
       return { kind: "blocked", reason: `table ${current.name}: rename ${r.from} -> ${r.to} does not match the schemas` };
     }
     statements.push(`alter table ${quoteIdent(current.name)} rename column ${quoteIdent(r.from)} to ${quoteIdent(r.to)}`);
     currentColumns.delete(r.from);
+    // The replaced entry's own fields are never read back: later code only
+    // calls currentColumns.has() and .keys() (a chained rename's earlier
+    // target reappearing as a later source is already excluded by
+    // renameIntentPlan's chain check), never .get() or .values() for a
+    // renamed-to key, so what this stores under r.to does not matter.
     currentColumns.set(r.to, { ...from, name: r.to });
     if (currentAlias === r.from) currentAlias = r.to;
   }

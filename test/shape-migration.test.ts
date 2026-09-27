@@ -73,6 +73,8 @@ test("shape() sorts each kind by name even when the underlying Schema arrives in
     "create trigger trg_a after insert on t begin update t set a = a + 1 where id = new.id; end",
     "create view view_b as select b from t",
     "create view view_a as select a from t",
+    "create virtual table search_b using fts5(a)",
+    "create virtual table search_a using fts5(a)",
   ]);
   try {
     const forward = introspect(db);
@@ -84,6 +86,25 @@ test("shape() sorts each kind by name even when the underlying Schema arrives in
       virtuals: new Map([...forward.virtuals].reverse()),
     };
     assert.deepEqual(shape(reversed), shape(forward));
+  } finally {
+    db.close();
+  }
+});
+
+// The existing fixtures above never declare a search table (CREATE VIRTUAL
+// TABLE), so their empty virtuals array cannot tell a correct sort and field
+// mapping from one that silently drops every entry.
+test("shape() reports a virtual (search) table's own fields, sorted by name", () => {
+  const db = open([
+    "create virtual table zeta_search using fts5(note)",
+    "create virtual table alpha_search using fts5(note)",
+  ]);
+  try {
+    const s = shape(introspect(db)) as { virtuals: { name: string; sql: string }[] };
+    assert.deepEqual(s.virtuals, [
+      { name: "alpha_search", sql: normalize("create virtual table alpha_search using fts5(note)") },
+      { name: "zeta_search", sql: normalize("create virtual table zeta_search using fts5(note)") },
+    ]);
   } finally {
     db.close();
   }
