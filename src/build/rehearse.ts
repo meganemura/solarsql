@@ -551,8 +551,15 @@ export async function rehearse(database: string, sql: string, checks: RehearsalC
       copy.close();
       end();
     }
+    // A skipped close here only leaves the read-only source handle open a
+    // little longer; it publishes no diagnostics-channel event and no later
+    // step inspects it, so this guard's own effect never reaches the
+    // returned report.
     if (source?.isOpen) source.close();
     const end = phase('cleanup');
+    // dir always exists once this line runs (mkdtempSync created it above,
+    // and nothing removes it earlier), so force -- which only changes
+    // rmSync's behavior for a path that is already gone -- never applies.
     rmSync(dir, {recursive:true, force:true});
     end();
   }
@@ -584,6 +591,9 @@ export function rehearseSnapshot(db: DatabaseSync, sql: string, checks: Rehearsa
     // or directing SQLite temporary files to a caller-selected directory.
     db.setAuthorizer((action, arg) => {
       if (action === constants.SQLITE_ATTACH || action === constants.SQLITE_DETACH) return constants.SQLITE_DENY;
+      // node:sqlite always passes a PRAGMA action's own name as arg, never
+      // null or undefined, so the fallback empty string here never
+      // substitutes for a real value.
       if (action === constants.SQLITE_PRAGMA && ['writable_schema', 'temp_store_directory', 'data_store_directory'].includes((arg ?? '').toLowerCase())) return constants.SQLITE_DENY;
       return constants.SQLITE_OK;
     });
@@ -654,7 +664,12 @@ export function rehearseSnapshot(db: DatabaseSync, sql: string, checks: Rehearsa
     // schema) never governs a statement this call did not itself generate.
     stage = 'ROW_DIFF_FAILED';
     db.setAuthorizer((action, arg) => {
+      // The only ATTACH this call runs from here on is the very next
+      // statement, whose own argument is always exactly beforeCopyPath.
       if (action === constants.SQLITE_ATTACH) return arg === beforeCopyPath ? constants.SQLITE_OK : constants.SQLITE_DENY;
+      // The finally block clears this authorizer with setAuthorizer(null)
+      // before it runs its own DETACH, so no DETACH action ever reaches
+      // this authorizer at all.
       if (action === constants.SQLITE_DETACH) return arg === BEFORE_SCHEMA ? constants.SQLITE_OK : constants.SQLITE_DENY;
       if (action === constants.SQLITE_PRAGMA && ['writable_schema', 'temp_store_directory', 'data_store_directory'].includes((arg ?? '').toLowerCase())) return constants.SQLITE_DENY;
       return constants.SQLITE_OK;

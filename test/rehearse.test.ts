@@ -1213,6 +1213,31 @@ test('the row diff leaves no file behind, on success or on a migration failure',
   }
 });
 
+// mkdtempSync appends its own random suffix directly to the string it is
+// given, with no separator of its own; join(tmpdir(), '') returns tmpdir()
+// with no trailing separator, so a bare tmpdir() here would make the six
+// random characters a *sibling* of tmpdir() (inside tmpdir()'s own parent),
+// not a child of it. TMPDIR=/tmp exercises this on the real filesystem: '/'
+// is not writable by an ordinary user, so a diffDir built from a bare '/tmp'
+// (no trailing slash) would fail to create, where one built from
+// '/tmp/solarsql-rehearse-diff-' succeeds.
+test.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+  "a rehearsal succeeds when only tmpdir() itself, not its parent, is writable",
+  () => {
+    const saved = process.env.TMPDIR;
+    process.env.TMPDIR = '/tmp';
+    try {
+      const db = new DatabaseSync(':memory:');
+      try {
+        const result = rehearseSnapshot(db, 'select 1');
+        assert.equal(result.ok, true, JSON.stringify(result));
+      } finally { db.close(); }
+    } finally {
+      if (saved === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = saved;
+    }
+  },
+);
+
 test('a Hegel property: a no-op rebuild always reports 0/0/0 for every random row set', async () => {
   const { test: property } = await import('@hegeldev/hegel');
   const gs = await import('@hegeldev/hegel/generators');
@@ -1228,4 +1253,259 @@ test('a Hegel property: a no-op rebuild always reports 0/0/0 for every random ro
       assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 0, updated: 0 });
     } finally { db.close(); }
   });
+});
+
+test('a checks-validation failure before any table is inspected still reports empty column snapshots', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const result = rehearseSnapshot(db, 'select 1', { bogus: {} } as unknown as Parameters<typeof rehearseSnapshot>[2]);
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics[0]!.code, 'CHECKS_INVALID');
+    assert.deepEqual(result.columns, { before: {}, after: {} });
+  } finally { db.close(); }
+});
+
+test('a caller-open transaction on db fails the before-copy step, before any authorizer is installed', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table t(id integer primary key) strict; begin');
+    const result = rehearseSnapshot(db, 'select 1');
+    assert.deepEqual(result.diagnostics, [{ code: 'BEFORE_COPY_FAILED', message: 'cannot VACUUM from within a transaction' }]);
+    assert.equal(result.ok, false);
+  } finally { db.close(); }
+});
+
+test('a migration is refused for pragma writable_schema, temp_store_directory, or data_store_directory', () => {
+  for (const name of ['writable_schema', 'temp_store_directory', 'data_store_directory']) {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec('create table t(id integer primary key) strict');
+      const result = rehearseSnapshot(db, `pragma ${name} = 1`);
+      assert.equal(result.ok, false, name);
+      assert.equal(result.diagnostics[0]!.code, 'MIGRATION_FAILED', name);
+      assert.match(result.diagnostics[0]!.message, /not authorized/, name);
+    } finally { db.close(); }
+  }
+});
+
+// The three denied pragma names, read as plain identifiers, also name a
+// table CREATE TABLE could declare; only the PRAGMA action on that exact
+// name is refused, not every action whose own argument happens to match it.
+test('a table may be named after a denied pragma name; only the pragma action itself is refused', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const result = rehearseSnapshot(db, 'create table writable_schema(id integer primary key)');
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.after, { writable_schema: 0 });
+  } finally { db.close(); }
+});
+
+test('an insert used as a checks.queries entry is refused at the baseline, not silently accepted', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table t(id integer primary key) strict');
+    const result = rehearseSnapshot(db, 'select 1', { queries: { bad: 'insert into t values (1)' } });
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics[0]!.code, 'BASELINE_FAILED');
+    assert.match(result.diagnostics[0]!.message, /SELECT or VALUES/);
+  } finally { db.close(); }
+});
+
+test('checks.queries is read again at the compatibility stage, and an insert there is refused there too', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table t(id integer primary key) strict');
+    let reads = 0;
+    // The first two reads (validateChecks, then the baseline loop) return a
+    // plain SELECT so the baseline stage passes; only the third read, at
+    // the compatibility loop, returns an insert.
+    const checks = {
+      get queries() {
+        reads++;
+        return { q: reads <= 2 ? 'select id from t' : 'insert into t values (1)' };
+      },
+    } as unknown as Parameters<typeof rehearseSnapshot>[2];
+    const result = rehearseSnapshot(db, 'select 1', checks);
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics[0]!.code, 'QUERY_COMPATIBILITY_FAILED');
+    assert.match(result.diagnostics[0]!.message, /SELECT or VALUES/);
+    assert.equal(reads, 3);
+  } finally { db.close(); }
+});
+
+test('a query is refused at the compatibility stage when its own result column type changes, even for a declared retype', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table t(x integer); insert into t values (1)');
+    const result = rehearseSnapshot(
+      db,
+      'create table t_new(x text); insert into t_new select x from t; drop table t; alter table t_new rename to t;',
+      { queries: { old: 'select x from t' }, expected: { retyped: [{ table: 't', column: 'x' }] } },
+    );
+    assert.deepEqual(result.diagnostics, [{ code: 'QUERY_COMPATIBILITY_FAILED', message: 'Result columns changed for query old' }]);
+    assert.equal(result.ok, false);
+  } finally { db.close(); }
+});
+
+test('a case that only fails when it actually executes is caught at the baseline, not just at prepare time', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table t(id integer primary key) strict');
+    const result = rehearseSnapshot(db, 'select 1', {
+      cases: { probe: { sql: 'select value from json_each(:j)', params: { ':j': 'not json' } } },
+    });
+    assert.deepEqual(result.diagnostics, [{ code: 'CASE_BASELINE_FAILED', message: 'malformed JSON' }]);
+    assert.equal(result.ok, false);
+  } finally { db.close(); }
+});
+
+test('checks.cases is read again at the baseline stage, and an insert there is refused there too', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table t(id integer primary key) strict');
+    let reads = 0;
+    // The first read (validateChecks, through validateCases) returns a
+    // plain SELECT so validation passes; the second read, at the baseline
+    // loop, returns an insert.
+    const checks = {
+      get cases() {
+        reads++;
+        return { probe: { sql: reads === 1 ? 'select 1 as v' : 'insert into t values (1)', params: {} } };
+      },
+    } as unknown as Parameters<typeof rehearseSnapshot>[2];
+    const result = rehearseSnapshot(db, 'select 1', checks);
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics[0]!.code, 'CASE_BASELINE_FAILED');
+    assert.match(result.diagnostics[0]!.message, /SELECT or VALUES/);
+    assert.equal(reads, 2);
+  } finally { db.close(); }
+});
+
+test('checks.cases is read a third time at the compatibility stage, and an insert there is refused there too', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    let reads = 0;
+    const checks = {
+      get cases() {
+        reads++;
+        return { probe: { sql: reads <= 2 ? 'select 1 as v' : 'insert into t values (1)', params: {} } };
+      },
+    } as unknown as Parameters<typeof rehearseSnapshot>[2];
+    db.exec('create table t(id integer primary key) strict');
+    const result = rehearseSnapshot(db, 'select 1', checks);
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics[0]!.code, 'CASE_COMPATIBILITY_FAILED');
+    assert.match(result.diagnostics[0]!.message, /SELECT or VALUES/);
+    assert.equal(reads, 3);
+  } finally { db.close(); }
+});
+
+// A bare :id and a bare $id share the bare name "id"; node:sqlite's own
+// bare-name binding mode rejects that as an ambiguous bind target even when
+// every bound key already carries its own full, distinct prefix (measured).
+// setAllowBareNamedParameters(false) is what keeps a case like this out of
+// that mode, at both the baseline and the compatibility stage.
+test('a case sql with two differently-prefixed slots for the same bare name still binds, at the baseline stage', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    let reads = 0;
+    const checks = {
+      get cases() {
+        reads++;
+        return { probe: reads === 1 ? { sql: 'select 1 as v', params: {} } : { sql: 'select 1 as v where :id = $id', params: { ':id': 1, '$id': 1 } } };
+      },
+    } as unknown as Parameters<typeof rehearseSnapshot>[2];
+    const result = rehearseSnapshot(db, 'select 1', checks);
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.cases, ['probe']);
+    assert.equal(reads, 3);
+  } finally { db.close(); }
+});
+
+test('a case sql with two differently-prefixed slots for the same bare name still binds, at the compatibility stage', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    let reads = 0;
+    const checks = {
+      get cases() {
+        reads++;
+        return { probe: reads <= 2 ? { sql: 'select 1 as v', params: {} } : { sql: 'select 1 as v where :id = $id', params: { ':id': 1, '$id': 1 } } };
+      },
+    } as unknown as Parameters<typeof rehearseSnapshot>[2];
+    const result = rehearseSnapshot(db, 'select 1', checks);
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.cases, ['probe']);
+    assert.equal(reads, 3);
+  } finally { db.close(); }
+});
+
+test('every transaction-control statement is refused before rehearsal opens its own transaction', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table t(id integer primary key) strict');
+    for (const verb of ['begin', 'commit', 'end', 'rollback', 'savepoint', 'release']) {
+      const result = rehearseSnapshot(db, verb);
+      assert.deepEqual(result.diagnostics, [{ code: 'MIGRATION_FAILED', message: 'Rehearsal owns the transaction; remove transaction control statements' }], verb);
+      assert.equal(result.ok, false, verb);
+    }
+  } finally { db.close(); }
+});
+
+// stripComments joins a segment's remaining tokens with no separator, so a
+// block comment sitting directly between two hyphens ("-/**/-") leaves
+// "--" behind; re-tokenized on its own, that text opens a line comment, so
+// the segment carries no significant token at all.
+test('a statement that becomes a line comment only once its own block comment is stripped is a no-op, not a crash', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const result = rehearseSnapshot(db, 'create table t(a);-/**/- hi');
+    assert.deepEqual(result.diagnostics, []);
+    assert.equal(result.ok, true, JSON.stringify(result));
+  } finally { db.close(); }
+});
+
+test('a deferred foreign-key violation left by the migration fails before commit', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('pragma foreign_keys = on; create table parents(id integer primary key); create table children(p integer references parents(id) deferrable initially deferred)');
+    const result = rehearseSnapshot(db, 'pragma defer_foreign_keys = on; insert into children values (99)');
+    assert.deepEqual(result.diagnostics, [{ code: 'MIGRATION_FAILED', message: 'SQLite foreign_key_check failed' }]);
+    assert.equal(result.ok, false);
+  } finally { db.close(); }
+});
+
+test('an assertion is refused when it returns zero rows, or one row with more than one column', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table t(id integer primary key) strict');
+    for (const [sql, reason] of [['select 1 where 0', 'zero rows'], ['select 1, 2', 'two columns']] as const) {
+      const result = rehearseSnapshot(db, 'select 1', { assertions: { probe: sql } });
+      assert.deepEqual(result.diagnostics, [{ code: 'ASSERTION_FAILED', message: 'Assertion probe must return one row and one value equal to 1' }], reason);
+      assert.equal(result.ok, false, reason);
+    }
+  } finally { db.close(); }
+});
+
+test('an insert used as an assertion is refused, the same as an insert used as a query or a case', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table t(id integer primary key) strict');
+    const result = rehearseSnapshot(db, 'select 1', { assertions: { bad: 'insert into t values (1)' } });
+    assert.equal(result.ok, false);
+    assert.match(result.diagnostics[0]!.message, /SELECT or VALUES/);
+  } finally { db.close(); }
+});
+
+test('a caller-attached schema already using the row diff\'s own reserved name fails the row diff step', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table t(id integer primary key) strict');
+    // solarsql_rehearse_before mirrors rehearse.ts's own BEFORE_SCHEMA
+    // constant; nothing here reads that constant directly.
+    db.exec("attach database ':memory:' as solarsql_rehearse_before");
+    const result = rehearseSnapshot(db, 'select 1');
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics[0]!.code, 'ROW_DIFF_FAILED');
+    assert.match(result.diagnostics[0]!.message, /solarsql_rehearse_before/);
+  } finally { db.close(); }
 });

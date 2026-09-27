@@ -162,3 +162,13 @@ test('rehearsal preserves implicit row identities across the snapshot step, plai
     assert.deepEqual(report.assertions,['rowidsPreserved','sequencePreserved']);
   }
 });
+
+test('opening a missing source database resolves with a diagnostic, not a rejection', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'solarsql-rehearsal-missing-'));
+  onTestFinished(() => rmSync(dir, {recursive:true,force:true}));
+  const path = join(dir, 'does-not-exist.sqlite');
+  const report = await rehearse(path, 'select 1');
+  assert.equal(report.ok, false);
+  assert.equal(report.diagnostics[0]!.code, 'SNAPSHOT_FAILED');
+  assert.match(report.diagnostics[0]!.message, /unable to open database file/);
+});
