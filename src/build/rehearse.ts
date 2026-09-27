@@ -272,6 +272,15 @@ type ColumnPair = { after: string; before: string };
 function pkPairs(beforeColumns: RehearsalColumn[], afterColumns: RehearsalColumn[]): ColumnPair[] | undefined {
   const beforePk = beforeColumns.filter(c => c.pk > 0);
   const afterPk = afterColumns.filter(c => c.pk > 0);
+  // The first two disjuncts are each implied by the other two combined
+  // with ||: if one side has zero primary-key columns and the other does
+  // not, the lengths already differ (the third disjunct); if both sides
+  // have zero, the other of the first two disjuncts already holds. So the
+  // condition's result depends only on whether the two counts differ or
+  // either is zero (checked for every count pair from 0 to 3). The third
+  // disjunct has no such
+  // redundancy: a primary key narrowed to fewer columns on one side, with
+  // every remaining column still matching by name, depends on it alone.
   if (beforePk.length === 0 || afterPk.length === 0 || beforePk.length !== afterPk.length) return undefined;
   const beforeByLower = new Map(beforePk.map(c => [c.name.toLowerCase(), c]));
   const pairs: ColumnPair[] = [];
@@ -409,10 +418,23 @@ function diffAllTables(
   const remainingUpdated: Record<string, number> = {};
   for (const table of Object.keys(after)) {
     const beforeTable = beforeByLower.get(table.toLowerCase());
+    // before and beforeTypes both read the same pre-migration schema:
+    // counts() names every table sqlite_schema reports as type 'table'
+    // (an ordinary table, an FTS5 virtual table's own entry, and each of
+    // its shadow tables all report 'table' there), and tableTypes() names
+    // every one of those same names again, this time with pragma_table_list's
+    // finer type. pragma_table_list also names views, which counts() leaves
+    // out. So whenever beforeTable is undefined, beforeTypes has either no
+    // entry for the name or a type other than 'table' (a view the migration
+    // replaced with a table, for example), and the type check right below
+    // already turns that into a skip.
     if (beforeTable === undefined) continue;
     const lower = table.toLowerCase();
     if (beforeTypes.get(lower) !== 'table' || afterTypes.get(lower) !== 'table') continue;
-    const pk = pkPairs(beforeColumns[beforeTable] ?? [], afterColumns[table] ?? []);
+    // beforeTable and table are both drawn from the same key sets columns()
+    // just built beforeColumns and afterColumns from, so a lookup here can
+    // never miss: no fallback array could ever surface.
+    const pk = pkPairs(beforeColumns[beforeTable]!, afterColumns[table]!);
     if (!pk) { rows[table] = { compared: false, reason: 'no primary key, or a changed primary key' }; continue; }
     const mainTable = `main.${quoteIdent(table)}`;
     const beforeTableRef = `${quoteIdent(BEFORE_SCHEMA)}.${quoteIdent(beforeTable)}`;
@@ -422,7 +444,8 @@ function diffAllTables(
       rows[table] = { compared: false, reason: 'more than one row shares the same primary key containing NULL, so rows cannot be matched one to one' };
       continue;
     }
-    const nonPk = commonColumns(beforeColumns[beforeTable] ?? [], afterColumns[table] ?? [], pk);
+    // Same guarantee as the pkPairs lookup above: both lookups always hit.
+    const nonPk = commonColumns(beforeColumns[beforeTable]!, afterColumns[table]!, pk);
     const diffed = diffTable(db, table, beforeTable, pk, nonPk, retypedColumns.get(table));
     rows[table] = { compared: true, inserted: diffed.inserted, deleted: diffed.deleted, updated: diffed.updated };
     remainingUpdated[table] = diffed.remainingUpdated;
@@ -533,6 +556,10 @@ export async function rehearse(database: string, sql: string, checks: RehearsalC
     source.prepare('vacuum into ?').run(path);
     end();
     end = phase('close-source');
+    // source closes here on any path that reaches this point; the finally
+    // block's own `if (source?.isOpen) source.close()` closes it on any
+    // path that doesn't, so every execution that opened source closes it
+    // exactly once by the time rehearse() returns.
     source.close();
     end();
     end = phase('open-copy');
@@ -547,6 +574,10 @@ export async function rehearse(database: string, sql: string, checks: RehearsalC
   } finally {
     if (copy?.isOpen) {
       const end = phase('close-copy');
+      // rehearseSnapshot never returns with its own transaction still open
+      // (its own finally runs `if (db.isTransaction) db.exec('rollback')`
+      // first), so copy.isTransaction is always false here and this
+      // rollback never runs.
       if (copy.isTransaction) copy.exec('rollback');
       copy.close();
       end();

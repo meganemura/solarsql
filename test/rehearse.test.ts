@@ -4,7 +4,7 @@
 // on-disk source database and its backup phase, live in
 // test/slow/rehearse-file.test.ts; every test here calls rehearseSnapshot()
 // against an in-memory database instead.
-import { test } from 'vitest';
+import { test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
@@ -1508,4 +1508,99 @@ test('a caller-attached schema already using the row diff\'s own reserved name f
     assert.equal(result.diagnostics[0]!.code, 'ROW_DIFF_FAILED');
     assert.match(result.diagnostics[0]!.message, /solarsql_rehearse_before/);
   } finally { db.close(); }
+});
+
+test('rows omits a table replaced by a same-named FTS5 virtual table, rather than diffing it as a changed primary key', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table docs(id integer primary key) strict; insert into docs values (1)");
+    const rebuild = 'drop table docs; create virtual table docs using fts5(body);';
+    const result = rehearseSnapshot(db, rebuild, { expected: { dropped: [{ table: 'docs', column: 'id' }] } });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows, {});
+  } finally { db.close(); }
+});
+
+test('rows omits a table that was an FTS5 virtual table before the migration, even once rebuilt as an ordinary table', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create virtual table docs using fts5(body); insert into docs(body) values ('hello')");
+    const rebuild = 'drop table docs; create table docs(id integer primary key) strict;';
+    // FTS5's own shadow tables (docs_data, docs_idx, docs_docsize,
+    // docs_content, docs_config) disappear along with the virtual table
+    // itself, so each is its own whole-table drop, not just docs' column.
+    const result = rehearseSnapshot(db, rebuild, {
+      expected: {
+        dropped: [
+          { table: 'docs', column: 'body' },
+          { table: 'docs_data' },
+          { table: 'docs_idx' },
+          { table: 'docs_docsize' },
+          { table: 'docs_content' },
+          { table: 'docs_config' },
+        ],
+      },
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows, {});
+  } finally { db.close(); }
+});
+
+test('rows omits a table the migration created, rather than diffing it against nothing', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table t(id integer primary key) strict');
+    const result = rehearseSnapshot(db, "create table added(id integer primary key) strict; insert into added values (1)");
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 0 } });
+  } finally { db.close(); }
+});
+
+test('rows reports a composite primary key narrowed to one column as not compared, even though that column still matches by name', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table t(a integer, b integer, name text, primary key(a,b)) strict; insert into t values (1,1,'x'),(2,2,'y')");
+    const rebuild = 'create table t_new(a integer primary key, b integer, name text) strict; insert into t_new select a, b, name from t; drop table t; alter table t_new rename to t;';
+    const result = rehearseSnapshot(db, rebuild);
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows, { t: { compared: false, reason: 'no primary key, or a changed primary key' } });
+  } finally { db.close(); }
+});
+
+test('rows reports a renamed primary key as not compared, not a missing-match crash', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table t(id integer primary key, name text) strict; insert into t values (1,'a')");
+    const rebuild = 'create table t_new(pk integer primary key, name text) strict; insert into t_new select id, name from t; drop table t; alter table t_new rename to t;';
+    const result = rehearseSnapshot(db, rebuild, { expected: { dropped: [{ table: 't', column: 'id' }] } });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows, { t: { compared: false, reason: 'no primary key, or a changed primary key' } });
+  } finally { db.close(); }
+});
+
+test('rows excludes the primary key column from its own value comparison, so a NOCASE case change there does not count as updated', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table t(id text primary key collate nocase, v integer) strict; insert into t values ('abc', 1)");
+    const result = rehearseSnapshot(db, "update t set id = upper(id)");
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 0 } });
+  } finally { db.close(); }
+});
+
+test('a TMPDIR containing a single quote is escaped correctly in the row diff\'s own ATTACH', () => {
+  const saved = process.env.TMPDIR;
+  const own = mkdtempSync(join(tmpdir(), "solarsql-rehearse-quote'-"));
+  process.env.TMPDIR = own;
+  try {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec('create table t(id integer primary key) strict');
+      const result = rehearseSnapshot(db, 'select 1');
+      assert.equal(result.ok, true, JSON.stringify(result));
+    } finally { db.close(); }
+  } finally {
+    if (saved === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = saved;
+    rmSync(own, { recursive: true, force: true });
+  }
 });

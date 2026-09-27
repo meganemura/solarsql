@@ -10,7 +10,7 @@
 // WAL source had been touched earlier in the same process (ADR 0121);
 // rehearse() now uses `vacuum into`, and the last test below asserts that
 // phase stays under 2,000 ms so a regression back to backup() fails loudly.
-import { test, onTestFinished } from 'vitest';
+import { test, onTestFinished, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import { subscribe, unsubscribe } from 'node:diagnostics_channel';
 import { DatabaseSync } from 'node:sqlite';
@@ -171,4 +171,89 @@ test('opening a missing source database resolves with a diagnostic, not a reject
   assert.equal(report.ok, false);
   assert.equal(report.diagnostics[0]!.code, 'SNAPSHOT_FAILED');
   assert.match(report.diagnostics[0]!.message, /unable to open database file/);
+});
+
+// mkdtempSync appends its own random suffix directly to the string it is
+// given, with no separator of its own; join(tmpdir(), '') returns tmpdir()
+// with no trailing separator, so a bare tmpdir() here would make the six
+// random characters a *sibling* of tmpdir() (inside tmpdir()'s own parent),
+// not a child of it. TMPDIR=/tmp exercises this on the real filesystem: '/'
+// is not writable by an ordinary user, so a snapshot directory built from a
+// bare '/tmp' (no trailing slash) would fail to create, where one built
+// from '/tmp/solarsql-rehearse-' succeeds.
+test.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+  "a rehearsal's own snapshot directory is created as tmpdir()'s child, not its sibling",
+  async () => {
+    const saved = process.env.TMPDIR;
+    process.env.TMPDIR = '/tmp';
+    const dir = mkdtempSync(join('/tmp', 'solarsql-rehearsal-tmpdirchild-'));
+    try {
+      const path = join(dir, 'source.sqlite');
+      const db = new DatabaseSync(path);
+      db.exec('create table t(id integer primary key) strict');
+      db.close();
+      const report = await rehearse(path, 'select 1');
+      assert.equal(report.ok, true, JSON.stringify(report));
+    } finally {
+      if (saved === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test('a rehearsal closes the copy it diffed against, not just the read-only source', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'solarsql-rehearsal-closecount-'));
+  onTestFinished(() => rmSync(dir, {recursive:true,force:true}));
+  const path = join(dir, 'source.sqlite');
+  const db = new DatabaseSync(path);
+  db.exec('create table t(id integer primary key) strict');
+  db.close();
+  const originalClose = DatabaseSync.prototype.close;
+  let closes = 0;
+  const closeSpy = vi.spyOn(DatabaseSync.prototype, 'close').mockImplementation(function (this: DatabaseSync) {
+    closes++;
+    return originalClose.call(this);
+  });
+  try {
+    const report = await rehearse(path, 'select 1');
+    assert.equal(report.ok, true, JSON.stringify(report));
+    assert.equal(closes, 2, `expected the read-only source and the copy to each close once, saw ${closes} close call(s)`);
+  } finally {
+    closeSpy.mockRestore();
+  }
+});
+
+test('a failed backup still closes the read-only source handle it opened', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'solarsql-rehearsal-backupfail-'));
+  onTestFinished(() => rmSync(dir, {recursive:true,force:true}));
+  const path = join(dir, 'source.sqlite');
+  const db = new DatabaseSync(path);
+  db.exec('create table t(id integer primary key) strict');
+  db.close();
+  const originalPrepare = DatabaseSync.prototype.prepare;
+  const prepareSpy = vi.spyOn(DatabaseSync.prototype, 'prepare').mockImplementation(function (this: DatabaseSync, sql: string) {
+    if (sql === 'vacuum into ?') throw new Error('forced backup failure');
+    return originalPrepare.call(this, sql);
+  });
+  const originalClose = DatabaseSync.prototype.close;
+  let closes = 0;
+  const closeSpy = vi.spyOn(DatabaseSync.prototype, 'close').mockImplementation(function (this: DatabaseSync) {
+    closes++;
+    return originalClose.call(this);
+  });
+  try {
+    const report = await rehearse(path, 'select 1');
+    // A failure this early never reaches rehearseSnapshot, so the report is
+    // exactly rehearse()'s own initial RehearsalResult plus one diagnostic:
+    // every other field keeps its declared default.
+    assert.deepEqual(report, {
+      version: 1, ok: false, sql: 'select 1', before: {}, after: {},
+      columns: { before: {}, after: {} }, rows: {}, queries: [], assertions: [], cases: [],
+      diagnostics: [{ code: 'SNAPSHOT_FAILED', message: 'forced backup failure' }],
+    });
+    assert.equal(closes, 1, `expected the read-only source to close even though the backup step failed, saw ${closes} close call(s)`);
+  } finally {
+    prepareSpy.mockRestore();
+    closeSpy.mockRestore();
+  }
 });
