@@ -1,12 +1,17 @@
 // Responsibility: prove parseMigrationIntent's shape check itself, one
-// defect and one exact message at a time. Boundary: the diff between a
-// parsed intent and a real schema change is covered in
-// destructive-migration.test.ts and rename-intent.test.ts.
+// defect and one exact message at a time, and prove readMigrationIntent's
+// two failure paths (a read failure, and a parse failure) keep or replace
+// the error as documented. Boundary: the diff between a parsed intent and a
+// real schema change is covered in destructive-migration.test.ts and
+// rename-intent.test.ts.
 import { test } from "vitest";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
-import { parseMigrationIntent } from "../src/build/migration-intent.ts";
+import { parseMigrationIntent, readMigrationIntent } from "../src/build/migration-intent.ts";
 import { BuildError } from "../src/build/typegen.ts";
 
 function invalid(text: string, message: string, path?: string): void {
@@ -94,6 +99,52 @@ test("a rename with the exact table, from, and to shape parses to a rename", () 
     drops: [],
     renames: [{ table: "t", from: "a", to: "b" }],
   });
+});
+
+test("readMigrationIntent parses a well-formed intent file at its own path", () => {
+  const dir = mkdtempSync(join(tmpdir(), "solarsql-migration-intent-"));
+  try {
+    const path = join(dir, "intent.json");
+    writeFileSync(path, '{"version":1,"drops":[{"kind":"table","table":"retired"}],"renames":[]}');
+    assert.deepEqual(readMigrationIntent(path), { drops: [{ kind: "table", table: "retired" }], renames: [] });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readMigrationIntent rethrows a malformed file's own BuildError unchanged", () => {
+  const dir = mkdtempSync(join(tmpdir(), "solarsql-migration-intent-"));
+  try {
+    const path = join(dir, "intent.json");
+    writeFileSync(path, "not json");
+    try {
+      readMigrationIntent(path);
+      assert.fail("expected readMigrationIntent to throw");
+    } catch (error) {
+      assert.ok(error instanceof BuildError, `expected a BuildError, got ${String(error)}`);
+      assert.equal((error as BuildError).message, `Invalid migration intent ${path}: the file must contain JSON.`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("readMigrationIntent wraps a missing file's read failure with the file's own path", () => {
+  const dir = mkdtempSync(join(tmpdir(), "solarsql-migration-intent-"));
+  try {
+    const path = join(dir, "missing.json");
+    try {
+      readMigrationIntent(path);
+      assert.fail("expected readMigrationIntent to throw");
+    } catch (error) {
+      assert.ok(error instanceof BuildError, `expected a BuildError, got ${String(error)}`);
+      const message = (error as BuildError).message;
+      assert.ok(message.startsWith(`Invalid migration intent ${path}: cannot read the file (`), message);
+      assert.ok(message.endsWith(")."), message);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("a well-formed intent with reordered keys parses the same regardless of the key order in the JSON text", () => {

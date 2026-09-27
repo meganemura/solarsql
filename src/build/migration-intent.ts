@@ -66,6 +66,9 @@ export function parseMigrationIntent(text: string, path = "intent"): MigrationIn
 
 export function readMigrationIntent(path: string): MigrationIntent {
   try {
+    // Dropping this encoding cannot be observed: readFileSync then returns
+    // a Buffer, and JSON.parse converts a non-string argument through
+    // Buffer's own toString(), whose default encoding is also utf8.
     return parseMigrationIntent(readFileSync(path, "utf8"), path);
   } catch (error) {
     if (error instanceof BuildError) throw error;
