@@ -1944,6 +1944,46 @@ describe("json_group_array refuses a join that can multiply its elements (ADR 01
       "select c.id, json_group_array(json_object('id', l.id)) filter (where l.id is not null) as lines from customers c join orders o on o.customer_id = c.id left join order_lines l on l.order_id = o.id where c.id = :id group by c.id";
     assert.doesNotThrow(() => t.analyze(sql, "m"));
   });
+
+  // The no-ON exemption applies only to the first FROM source (the query's
+  // own iteration), not to a later comma-joined or USING-joined source: that
+  // source is still crossed against the rest of the FROM list, and can
+  // still multiply an aggregate's elements the same way an unproven ON-
+  // joined alias can. These three probes measured the escape (node:sqlite,
+  // orders o1 with 2 lines and 3 events): each built and returned 6
+  // elements before this fix.
+  test("a comma-joined second source inside a correlated subquery is refused, not exempted", () => {
+    const sql =
+      "select o.id, json((select json_group_array(json_object('id', l.id)) from order_lines l, order_events e where l.order_id = o.id and e.order_id = o.id)) as lines from orders o where o.id = :id";
+    assert.throws(
+      () => t.analyze(sql, "m"),
+      (e: unknown) => e instanceof BuildError && /"e"/.test(e.message) && /json\(\(select json_group_array/.test(e.message),
+    );
+  });
+
+  test("the same escape written as an outer comma join is refused, not exempted", () => {
+    const sql =
+      "select o.id, json_group_array(json_object('id', l.id, 'sku', l.sku)) filter (where l.id is not null) as lines from orders o, order_lines l, order_events e where o.id = :id and l.order_id = o.id and e.order_id = o.id";
+    assert.throws(
+      () => t.analyze(sql, "m"),
+      (e: unknown) => e instanceof BuildError && /"e"/.test(e.message),
+    );
+  });
+
+  test("the same escape written as a USING join is refused, not exempted", () => {
+    const sql =
+      "select l.order_id, json_group_array(json_object('id', l.id, 'sku', l.sku)) filter (where l.id is not null) as lines from order_lines l join order_events e using (order_id) where l.order_id = :id";
+    assert.throws(
+      () => t.analyze(sql, "m"),
+      (e: unknown) => e instanceof BuildError && /"e"/.test(e.message),
+    );
+  });
+
+  test("a comma-joined second source proven by WHERE equating its own primary key (not just its foreign key) still builds", () => {
+    const sql =
+      "select o.id, json_group_array(json_object('id', l.id, 'sku', l.sku)) filter (where l.id is not null) as lines from orders o, order_lines l, order_events e where o.id = :id and l.order_id = o.id and e.id = :eventId";
+    assert.doesNotThrow(() => t.analyze(sql, "m"));
+  });
 });
 
 // A deterministic loop over how a joined alias B, outside the aggregate's
@@ -2005,6 +2045,53 @@ describe("join fan-out: join kind x B's own proof shape (ADR 0136)", () => {
     const sql =
       "select b.code, json_group_array(json_object('v', a.val)) filter (where a.id is not null) as vs from b_plain b, agg a where b.code = :code group by b.code";
     assert.throws(() => t.analyze(sql, "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+});
+
+// A USING column's own equality is `other.col = this.col`, the same
+// equality an ON clause or a WHERE conjunct would give: b's own primary key
+// column here has no other proof route (no ON clause, and WHERE never
+// mentions b), so it is this shape's only witness (ADR 0136). SQLite reads
+// a USING column under the LEFT (earlier, other) table's own declared
+// collation, never this source's own and never falling back to it, so the
+// proof needs that collation to already match the key it stands for.
+describe("join fan-out: a USING column proves b's own unique key (ADR 0136)", () => {
+  const engine = new Engine([
+    `create table root_u(id text primary key not null, code text not null, extra text not null)`,
+    `create table agg_u(id text primary key not null, root_id text not null references root_u(id), val text not null)`,
+    `create table b_using(code text primary key not null, extra text not null)`,
+    `create table root_nocase(id text primary key not null, code text collate nocase not null)`,
+  ]);
+  const t = new Typer(engine, new Map());
+
+  test("b joined by USING on its own primary key: accepted", () => {
+    const sql =
+      "select r.id, json_group_array(json_object('v', a.val)) filter (where a.id is not null) as vs from root_u r left join agg_u a on a.root_id = r.id join b_using b using (code) where r.id = :id group by r.id";
+    assert.doesNotThrow(() => t.analyze(sql, "m"));
+  });
+
+  test("b joined by USING on a column that is not its own unique key: refused", () => {
+    const sql =
+      "select r.id, json_group_array(json_object('v', a.val)) filter (where a.id is not null) as vs from root_u r left join agg_u a on a.root_id = r.id join b_using b using (extra) where r.id = :id group by r.id";
+    assert.throws(() => t.analyze(sql, "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("b joined by USING under the left table's mismatched collation: refused, not exempted by b's own BINARY key", () => {
+    const sql =
+      "select r.id, json_group_array(json_object('v', a.val)) filter (where a.id is not null) as vs from root_nocase r left join agg_u a on a.root_id = r.id join b_using b using (code) where r.id = :id group by r.id";
+    assert.throws(() => t.analyze(sql, "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("a WHERE conjunct with no COLLATE does not erase a USING column's own resolved collation", () => {
+    const sql =
+      "select r.id, json_group_array(json_object('v', a.val)) filter (where a.id is not null) as vs from root_nocase r left join agg_u a on a.root_id = r.id join b_using b using (code) where r.id = :id and b.code = r.code group by r.id";
+    assert.throws(() => t.analyze(sql, "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("a WHERE conjunct with no top-level AND (a top-level OR elsewhere in WHERE) still lets USING alone prove b: accepted", () => {
+    const sql =
+      "select r.id, json_group_array(json_object('v', a.val)) filter (where a.id is not null) as vs from root_u r left join agg_u a on a.root_id = r.id join b_using b using (code) where r.id = :id or r.id = :id2 group by r.id";
+    assert.doesNotThrow(() => t.analyze(sql, "m"));
   });
 });
 

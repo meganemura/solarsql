@@ -712,12 +712,16 @@ export class Typer {
   // references alias set A can silently repeat a row once another joined
   // alias B -- not in A, and not on A's own join path P back to the FROM
   // root -- returns more than one row per group. B is safe only when it is
-  // provably at most one row per group: its own ON clause, or (for an alias
-  // no ON clause constrains, including the first FROM alias) GROUP BY,
-  // equates or lists every column of its primary key or of one of its own
-  // non-partial, non-expression unique indexes, under the same collation
-  // that key enforces. Refuses whenever this cannot be shown, the same
-  // conservative stance ADR 0047 already takes for scope resolution.
+  // provably at most one row per group: its own ON clause, or (for the FROM
+  // root alone, which crosses against nothing since it is the query's own
+  // iteration) no proof at all, or (for any other alias with no ON clause --
+  // a comma join or a USING join, still a cross against the rest of the
+  // FROM list) GROUP BY, or a WHERE/USING equality standing in for the ON
+  // clause it lacks, equates or lists every column of its primary key or of
+  // one of its own non-partial, non-expression unique indexes, under the
+  // same collation that key enforces. Refuses whenever this cannot be
+  // shown, the same conservative stance ADR 0047 already takes for scope
+  // resolution.
   private refuseJoinFanOut(sql: string, elementAliases: Set<string>, filterText: string, aliases: Map<string, string | null>): void {
     let sources: Source[];
     try { sources = querySources(sql); } catch { return; }
@@ -759,11 +763,17 @@ export class Typer {
     const hasGroupBy = groupByTokens.some((t, i) => t.depth === 0 && isKeyword(t, "group") && isKeyword(groupByTokens[i + 1], "by"));
     const groupBy = groupByColumns(sql);
     const where = whereClause(sql);
-    for (const source of sources) {
+    // Only the FROM root is the query's own iteration; every later source,
+    // ON clause or not, is crossed against it (a comma join and a USING
+    // join are joins too) and needs the same proof an ON clause would need.
+    const rootAlias = sqliteName(sources[0]!.alias);
+    for (let i = 0; i < sources.length; i++) {
+      const source = sources[i]!;
       const key = sqliteName(source.alias);
       if (A.has(key)) continue;
       if (reached.has(key) && !terminal.has(key)) continue;
-      if (this.provenSingleRowPerGroup(source, groupBy.get(key) ?? new Set(), where, hasGroupBy)) continue;
+      const usingEqualities = this.usingEqualities(sources, i);
+      if (this.provenSingleRowPerGroup(source, key === rootAlias, groupBy.get(key) ?? new Set(), where, hasGroupBy, usingEqualities)) continue;
       throw new BuildError(
         `json_group_array can repeat an element: the join through alias "${source.alias}" is not provably one row per group here, so it can multiply the aggregated rows. Move the one-to-many array into its own correlated subquery instead: json((select json_group_array(...) from <child table> where <child table>.<foreign key> = <this row's key>)).`,
         sql,
@@ -771,46 +781,91 @@ export class Typer {
     }
   }
 
+  // A USING column's own equality is `other.col = this.col`, not an ON
+  // clause's own comparison: SQLite reads it under the LEFT (earlier, other)
+  // table's declared collation, never `this` source's own, and never falls
+  // back to the right side the way an ordinary `=` would when the left side
+  // declares none. The earlier source in `sources` (indices before `index`)
+  // that carries the column names it; a valid query has exactly one, since
+  // SQLite itself refuses an ambiguous USING column before this build step
+  // runs. A column this cannot resolve (a derived table or a table-valued
+  // function on the earlier side) is left out of the result, which refuses
+  // it the same conservative way an unresolved ON equality already does.
+  private usingEqualities(sources: Source[], index: number): Map<string, string | null> {
+    const out = new Map<string, string | null>();
+    const source = sources[index]!;
+    for (const column of source.using) {
+      const name = sqliteName(column);
+      for (let i = 0; i < index; i++) {
+        const other = sources[i]!;
+        if (other.query !== null || other.functionSql !== null || other.name === null) continue;
+        const table = this.tables.get(other.name);
+        const found = table?.columns.find((c) => sqliteName(c.name) === name);
+        if (found) { out.set(name, found.collation); break; }
+      }
+    }
+    return out;
+  }
+
   // Whether `source`'s own rows are provably at most one per group. It has
   // an ON clause: that clause equates every column of its primary key, or
   // of one non-partial, non-expression unique index, with an expression
-  // that does not reference it, under that key's own collation. It has
-  // none (an alias no ON clause constrains, including the FROM root): with
-  // no GROUP BY at all, this alias is the iteration itself, not a second
-  // dimension crossed against another, so it is not a fan-out risk on its
-  // own (measured: `json_group_array(...) filter(where b.id...) from a left
-  // join b ... left join c ...`, no GROUP BY, stays accepted; a correlated
-  // `where root.id = :id` or `where root.id = outer.id`, the shape RETURNING
-  // reaches through its own detached probe, proves it the same way). With a
-  // GROUP BY that does not also regroup by this alias's own key -- the
-  // measured order_events/orders/order_lines refusal -- either GROUP BY or
-  // WHERE must equate every column of its key the same way an ON clause
-  // would. A derived table, a table-valued function, and a full-text search
-  // table (no primary key or unique index pragma reports) are never proven
-  // this way.
-  private provenSingleRowPerGroup(source: Source, groupedColumns: Set<string>, where: string | null, hasGroupBy: boolean): boolean {
+  // that does not reference it, under that key's own collation. It is the
+  // FROM root, with no GROUP BY at all: with no GROUP BY, the root is the
+  // query's own iteration, not a second dimension crossed against another,
+  // so it is not a fan-out risk on its own (measured: `json_group_array(...)
+  // filter(where b.id...) from a left join b ... left join c ...`, no GROUP
+  // BY, stays accepted; a correlated `where root.id = :id` or `where
+  // root.id = outer.id`, the shape RETURNING reaches through its own
+  // detached probe, proves it the same way). Every other alias with no ON
+  // clause -- a comma join or a USING join, still a cross against the rest
+  // of the FROM list -- needs the same proof an ON clause would give it:
+  // GROUP BY listing its key, or WHERE equating it (a USING column stands
+  // in for one such equality, under the collation `usingEqualities`
+  // resolves, not this source's own declared collation). A NATURAL join
+  // gives no `using` list this parser can read the joined columns from, so
+  // a NATURAL-joined non-root source is never proven this way; the same
+  // conservative stance ADR 0047 already takes for scope resolution. A
+  // derived table, a table-valued function, and a full-text search table
+  // (no primary key or unique index pragma reports) are never proven this
+  // way either.
+  private provenSingleRowPerGroup(source: Source, isRoot: boolean, groupedColumns: Set<string>, where: string | null, hasGroupBy: boolean, usingEqualities: Map<string, string | null>): boolean {
     if (source.query !== null || source.functionSql !== null || source.name === null) return false;
     const table = this.tables.get(source.name);
     if (!table || table.virtual) return false;
     const pk = table.columns.filter((c) => c.pk > 0).map((c) => ({ name: sqliteName(c.name), collation: c.collation }));
     const candidates = [pk, ...table.uniqueIndexes.map((u) => u.columns.map((c) => ({ name: sqliteName(c.name), collation: c.collation })))].filter((c) => c.length > 0);
-    if (source.on === null && !hasGroupBy) return true;
+    if (source.on === null && isRoot && !hasGroupBy) return true;
     if (candidates.length === 0) return false;
     const declared = new Map(table.columns.map((c) => [sqliteName(c.name), c.collation]));
     const matches = (equalities: Map<string, string | null>): boolean =>
       candidates.some((candidate) => candidate.every((c) => {
         if (!equalities.has(c.name)) return false;
         // The comparison's effective collation: an explicit COLLATE in the
-        // clause, else the column's own declared collation (SQLite's own
-        // default when neither operand writes one).
+        // clause, or a USING column's own resolved left-side collation,
+        // else the column's own declared collation (SQLite's own default
+        // when neither operand writes one).
         const effective = equalities.get(c.name) ?? declared.get(c.name) ?? "BINARY";
         return effective === c.collation;
       }));
     if (source.on === null) {
       if (candidates.some((candidate) => candidate.every((c) => groupedColumns.has(c.name)))) return true;
-      if (where === null) return false;
-      const equalities = onEqualities(where, source.alias);
-      return equalities !== null && matches(equalities);
+      // usingEqualities already carries each USING column's own resolved
+      // collation (never null: `usingEqualities` only lists a column once
+      // it has resolved one). WHERE can add more, or cover a column USING
+      // did not name; a WHERE with a top-level OR proves nothing on its own
+      // (onEqualities returns null then), but the USING columns still do.
+      const equalities = new Map(usingEqualities);
+      if (where !== null) {
+        const whereEqualities = onEqualities(where, source.alias);
+        // A plain WHERE conjunct writes no COLLATE; it must not overwrite a
+        // USING column's own resolved left-side collation with that silence.
+        // An explicit COLLATE in the WHERE clause still overrides either way.
+        if (whereEqualities !== null) for (const [column, collate] of whereEqualities) {
+          if (!equalities.has(column) || collate !== null) equalities.set(column, collate);
+        }
+      }
+      return matches(equalities);
     }
     const equalities = onEqualities(source.on, source.alias);
     return equalities !== null && matches(equalities);

@@ -4,6 +4,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: the `json_group_array` join fan-out refusal (ADR 0136) now also refuses a comma-joined, USING-joined, or NATURAL-joined second source with no ON clause, not only the FROM root; before this fix, that source escaped the check and could still multiply the aggregated elements. A USING column's own proof reads the earlier (other) side's own declared collation, matching SQLite's own USING/NATURAL rule, so a collation mismatch there stays refused too.
 - Changed: the test suite runs on Vitest instead of node:test; `npm test` runs `vitest run --project unit`, and `npm run test:all` adds the `slow` and `miniflare` projects. Vitest is pinned to 4.1.11 until Stryker's vitest runner supports Vitest 5.
 - Added: `npm run test:mutation` runs mutation testing over `src/` with StrykerJS and its vitest runner (ADR 0141).
 - Added: keyset paging (first page, next page, composite row-value form) documented in queries.md, with ADR 0131 partially superseding ADR 0028's OFFSET paging idiom.
