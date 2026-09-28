@@ -533,6 +533,12 @@ function walkAliases(sql: string, outerOnly: boolean, record: (alias: string, ta
     } else if (first.type === "ident") {
       table = unquote(first.text);
       j++;
+      // A schema qualifier does not name the source. Start alias parsing after
+      // the qualified table name so every alias consumer gets the table name.
+      if (t[j]?.text === "." && t[j + 1]?.type === "ident") {
+        table = unquote(t[j + 1]!.text);
+        j += 2;
+      }
       if (allowCall && t[j]?.text === "(") {
         const d = t[j]!.depth;
         let k = j + 1;
@@ -552,7 +558,8 @@ function walkAliases(sql: string, outerOnly: boolean, record: (alias: string, ta
   for (let i = 0; i < t.length; i++) {
     const tok = t[i]!;
     if (outerOnly && tok.depth !== 0) continue;
-    if (isKeyword(tok, "from")) {
+    // FROM after DISTINCT belongs to a comparison operator, not a source list.
+    if (isKeyword(tok, "from") && !isKeyword(t[i - 1], "distinct")) {
       openFrom.add(tok.depth);
       entry(i + 1);
     } else if (isKeyword(tok, "update") || (isKeyword(tok, "into") && (isKeyword(t[i - 1], "insert") || isKeyword(t[i - 1], "replace") || isKeyword(t[i - 3], "insert")))) {

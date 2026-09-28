@@ -952,6 +952,132 @@ export const referrals = table(\`
     }
   });
 
+  test("a local alias in a FROM-clause subquery preserves an outer missing-column error", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/orders/module.ts");
+      const source = readFileSync(schema, "utf8").replace("note text,", "name text,\n  note text,");
+      const misspelled = "select o.id, x.id as xid, o.nmae from orders o, (select o.id from orders o where o.note is null) x";
+      writeFileSync(schema, source.replace("export const orderQueries = queries(generated, {", `export const orderQueries = queries(generated, {\n  localAlias: \`${misspelled}\`,`));
+      await assert.rejects(build(join(dir, "example/solarsql.config.ts")), (error: unknown) => {
+        assert.ok(error instanceof StatementFailures, String(error));
+        assert.equal(error.failures.length, 1);
+        assert.match(error.failures[0]!.message, /no such column: o\.nmae/);
+        assert.equal(/FROM-clause subquery/.test(error.failures[0]!.message), false);
+        return true;
+      });
+
+      writeFileSync(schema, source.replace("export const orderQueries = queries(generated, {", `export const orderQueries = queries(generated, {\n  localAlias: \`${misspelled.replace("nmae", "name")}\`,`));
+      await build(join(dir, "example/solarsql.config.ts"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a correlated FROM-clause subquery preserves a different missing-column error", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/orders/module.ts");
+      const correlated = "select o.id, x.id as lid from orders o, (select l.missing as id from order_lines l where l.order_id = o.id limit 2) x";
+      writeFileSync(schema, readFileSync(schema, "utf8")
+        .replace("export const orderQueries = queries(generated, {", `export const orderQueries = queries(generated, {\n  brokenSubquery: \`${correlated}\`,`));
+      await assert.rejects(build(join(dir, "example/solarsql.config.ts")), (error: unknown) => {
+        assert.ok(error instanceof StatementFailures, String(error));
+        assert.equal(error.failures.length, 1);
+        assert.match(error.failures[0]!.message, /no such column: l\.missing/);
+        assert.equal(/FROM-clause subquery/.test(error.failures[0]!.message), false);
+        return true;
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a nested local alias preserves an outer missing-column error with the same name", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/orders/module.ts");
+      const nested = "select o.id, x.id as xid from (select note from orders) o, (select y.id from (select o.id from orders o) y) x";
+      writeFileSync(schema, readFileSync(schema, "utf8")
+        .replace("export const orderQueries = queries(generated, {", `export const orderQueries = queries(generated, {\n  nestedAlias: \`${nested}\`,`));
+      await assert.rejects(build(join(dir, "example/solarsql.config.ts")), (error: unknown) => {
+        assert.ok(error instanceof StatementFailures, String(error));
+        assert.equal(error.failures.length, 1);
+        assert.match(error.failures[0]!.message, /no such column: o\.id/);
+        assert.equal(/FROM-clause subquery/.test(error.failures[0]!.message), false);
+        return true;
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("aliases declared by nested SELECT scopes preserve an outer missing-column error", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/orders/module.ts");
+      const queries = [
+        ["existsAlias", "select o.id, x.id as xid from (select note from orders) o, (select l.id from order_lines l where exists (select 1 from orders o where o.id = l.order_id)) x"],
+        ["inAlias", "select o.id, x.id as xid from (select note from orders) o, (select l.id from order_lines l where l.order_id in (select o.id from orders o)) x"],
+        ["scalarAlias", "select o.id, x.id as xid from (select note from orders) o, (select (select o.id from orders o limit 1) as id from order_lines l) x"],
+        ["cteAlias", "select o.id, x.id as xid from (select note from orders) o, (with o as (select id from orders) select o.id from o) x"],
+        ["cteBodyAlias", "select o.id, x.id as xid from (select note from orders) o, (with c as (select o.id from orders o) select c.id from c) x"],
+      ] as const;
+      const entries = queries.map(([name, sql]) => `  ${name}: \`${sql}\`,`).join("\n");
+      writeFileSync(schema, readFileSync(schema, "utf8")
+        .replace("export const orderQueries = queries(generated, {", `export const orderQueries = queries(generated, {\n${entries}`));
+      await assert.rejects(build(join(dir, "example/solarsql.config.ts")), (error: unknown) => {
+        assert.ok(error instanceof StatementFailures, String(error));
+        assert.equal(error.failures.length, queries.length);
+        for (const failure of error.failures) {
+          assert.match(failure.message, /no such column: o\.id/);
+          assert.equal(/FROM-clause subquery/.test(failure.message), false);
+        }
+        return true;
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a schema-qualified local alias preserves an outer missing-column error", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/orders/module.ts");
+      const sql = "select o.id, x.id as xid from (select note from orders) o, (select o.id from main.orders o) x";
+      writeFileSync(schema, readFileSync(schema, "utf8")
+        .replace("export const orderQueries = queries(generated, {", `export const orderQueries = queries(generated, {\n  schemaAlias: \`${sql}\`,`));
+      await assert.rejects(build(join(dir, "example/solarsql.config.ts")), (error: unknown) => {
+        assert.ok(error instanceof StatementFailures, String(error));
+        assert.equal(error.failures.length, 1);
+        assert.match(error.failures[0]!.message, /no such column: o\.id/);
+        assert.equal(/FROM-clause subquery/.test(error.failures[0]!.message), false);
+        return true;
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("IS DISTINCT FROM keeps a correlated FROM-clause reference visible to the refusal", async () => {
+    const dir = copy();
+    try {
+      const schema = join(dir, "example/modules/orders/module.ts");
+      const sql = "select o.id, x.id as xid from orders o, (select l.id from order_lines l where l.order_id is distinct from o.id) x";
+      writeFileSync(schema, readFileSync(schema, "utf8")
+        .replace("export const orderQueries = queries(generated, {", `export const orderQueries = queries(generated, {\n  correlatedDistinct: \`${sql}\`,`));
+      await assert.rejects(build(join(dir, "example/solarsql.config.ts")), (error: unknown) => {
+        assert.ok(error instanceof StatementFailures, String(error));
+        assert.equal(error.failures.length, 1);
+        assert.match(error.failures[0]!.message, /FROM-clause subquery/);
+        assert.equal(/no such column/.test(error.failures[0]!.message), false);
+        return true;
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   // ADR 0138: a FROM-clause subquery correlated to an earlier FROM item
   // fails prepare, and the typer names the rule instead of the engine's
   // raw "no such column" text. Before this, a queries() entry reached that
@@ -987,6 +1113,32 @@ export const referrals = table(\`
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test("a correlated FROM-clause subquery is refused regardless of identifier case", async () => {
+    const {testAsync: property} = await import("@hegeldev/hegel");
+    const gs = await import("@hegeldev/hegel/generators");
+    await property(async tc => {
+      const declaredAlias = tc.draw(gs.sampledFrom(["o", "O"]));
+      const referencedAlias = tc.draw(gs.sampledFrom(["o", "O"]));
+      const referencedColumn = tc.draw(gs.sampledFrom(["id", "Id", "iD", "ID"]));
+      const dir = copy();
+      try {
+        const schema = join(dir, "example/modules/orders/module.ts");
+        const correlated = `select ${declaredAlias}.id, x.id as lid from orders ${declaredAlias}, (select id from order_lines l where l.order_id = ${referencedAlias}.${referencedColumn} limit 2) x`;
+        writeFileSync(schema, readFileSync(schema, "utf8")
+          .replace("export const orderQueries = queries(generated, {", `export const orderQueries = queries(generated, {\n  brokenSubquery: \`${correlated}\`,`));
+        await assert.rejects(build(join(dir, "example/solarsql.config.ts")), (error: unknown) => {
+          assert.ok(error instanceof StatementFailures, String(error));
+          assert.equal(error.failures.length, 1);
+          assert.match(error.failures[0]!.message, /FROM-clause subquery/);
+          assert.equal(/no such column/.test(error.failures[0]!.message), false);
+          return true;
+        });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   test("a DDL-only rename collects every trigger and search-table failure of the module in one run", async () => {

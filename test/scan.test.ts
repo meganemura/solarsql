@@ -167,6 +167,28 @@ describe("shapes", () => {
     assert.deepEqual([...aliasMap("select * from orders")], [["orders", "orders"]]);
   });
 
+  test("aliasMap maps a schema-qualified source to its table alias", () => {
+    hegel.test((tc) => {
+      const schema = `s_${tc.draw(ident)}`;
+      const table = `t_${tc.draw(ident)}`;
+      const alias = `a_${tc.draw(ident)}`;
+      const as = tc.draw(gs.booleans()) ? " as" : "";
+      assert.deepEqual([...aliasMap(`select * from ${schema}.${table}${as} ${alias}`)], [[alias, table]]);
+    });
+    assert.deepEqual([...aliasMap("select * from main.orders o")], [["o", "orders"]]);
+    assert.deepEqual([...aliasMap("select * from main.orders as o")], [["o", "orders"]]);
+    assert.deepEqual([...aliasMap("select * from temp.orders o")], [["o", "orders"]]);
+    assert.deepEqual([...aliasMap("select * from warehouse.orders o")], [["o", "orders"]]);
+    assert.deepEqual([...aliasMap('select * from "main"."orders" as "o"')], [["o", "orders"]]);
+    assert.deepEqual([...aliasMap("select * from [main].[orders] [o]")], [["o", "orders"]]);
+    assert.deepEqual([...aliasMap("select * from main.json_each(:rows) j")], [["j", null]]);
+  });
+
+  test("aliasMap does not treat IS DISTINCT FROM as a FROM source", () => {
+    assert.deepEqual([...aliasMap("select 1 where l.order_id is distinct from o.id")], []);
+    assert.deepEqual([...aliasMap("select 1 where l.order_id is not distinct from o.id")], []);
+  });
+
   test("aliasMap does not treat INDEXED BY or NOT INDEXED as an alias", () => {
     assert.deepEqual([...aliasMap("update orders indexed by orders_status set status = :status where orders.id = :id")], [["orders", "orders"]]);
     assert.deepEqual([...aliasMap("update orders not indexed set status = :status where orders.id = :id")], [["orders", "orders"]]);

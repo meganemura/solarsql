@@ -173,7 +173,8 @@ export class Typer {
     try {
       this.engine.prepare(sql);
     } catch (e) {
-      throw new BuildError(this.correlatedFromSubqueryRefusal(sql) ?? (e as Error).message, sql);
+      const message = (e as Error).message;
+      throw new BuildError(this.correlatedFromSubqueryRefusal(sql, message) ?? message, sql);
     }
     const chained = this.chainedJsonEachKeyRefusal(sql, names);
     if (chained) throw new BuildError(chained, sql);
@@ -383,22 +384,31 @@ export class Typer {
     return sql;
   }
 
-  // A FROM-clause subquery that qualifies a column with an earlier FROM
-  // item's own alias (`from orders o, (select ... from
-  // order_lines l where l.order_id = o.id) x`) fails prepare with SQLite's
-  // own "no such column" message: unlike a scalar or EXISTS subquery, which
-  // SQLite correlates to the enclosing query, a FROM-clause subquery is its
-  // own closed scope (measured 2026-09-25 on node:sqlite, local D1, and a
-  // local Durable Object: all three refuse it identically). This turns that
-  // one shape's engine message into a message that names the rule, and
-  // leaves every other "no such column" failure (a genuine typo, an
-  // unknown table) as the engine's own message. It must not contain the
-  // words "no such column" itself: columnsHint (build.ts) appends a
-  // "columns of <table>" hint to any message that does, which is
-  // misleading here because the reader's fix is not to pick a different
-  // column.
-  private correlatedFromSubqueryRefusal(sql: string): string | null {
+  // SQLite gives a FROM-clause subquery a closed scope. Thus, a reference
+  // to an earlier FROM alias fails prepare, unlike the same reference in a
+  // scalar or EXISTS subquery. node:sqlite, local D1, and a local Durable
+  // Object returned the same result on 2026-09-25.
+  //
+  // A derived table can declare the same alias as an earlier outer source.
+  // Treating that local alias as correlated replaced unrelated errors and
+  // told an agent to rewrite a valid subquery. Therefore, the check excludes
+  // local FROM aliases before it checks candidate references.
+  //
+  // The check also excludes aliases from schema-qualified sources, nested
+  // derived tables, expression subqueries, and CTE bodies. A false negative
+  // keeps SQLite's error, while a false positive gives an incorrect remedy.
+  // A token match alone can still replace a different prepare error when a
+  // real correlated reference exists.
+  // Therefore, the prepare error must name the same alias and column, without
+  // case distinctions.
+  //
+  // The refusal replaces SQLite's message with the rule and its remedy. Its
+  // text omits "no such column". Otherwise, columnsHint (build.ts) adds a
+  // column-list hint, although a different column cannot fix this scope error.
+  private correlatedFromSubqueryRefusal(sql: string, prepareError: string): string | null {
     if (!isSelect(sql)) return null;
+    const missing = /^no such column: (.+)$/i.exec(prepareError)?.[1];
+    if (missing === undefined) return null;
     let sources: ReturnType<typeof querySources>;
     try { sources = querySources(sql); } catch { return null; }
     for (let i = 0; i < sources.length; i++) {
@@ -406,12 +416,17 @@ export class Typer {
       if (!source.query) continue;
       const earlier = new Map(sources.slice(0, i).map((s) => [sqliteName(s.alias), s.alias]));
       if (earlier.size === 0) continue;
+      const localAliases = new Set([...aliasMap(source.query).keys()].map(sqliteName));
       const tokens = significant(tokenize(source.query));
       for (let j = 0; j + 2 < tokens.length; j++) {
         if (tokens[j]!.type !== "ident" || tokens[j + 1]!.text !== "." || tokens[j + 2]!.type !== "ident") continue;
-        const original = earlier.get(sqliteName(unquote(tokens[j]!.text)));
+        const alias = sqliteName(unquote(tokens[j]!.text));
+        if (localAliases.has(alias)) continue;
+        const original = earlier.get(alias);
         if (original === undefined) continue;
-        return `the FROM-clause subquery aliased ${quoteIdent(source.alias)} reads ${original}.${unquote(tokens[j + 2]!.text)}, a column of the earlier FROM item ${quoteIdent(original)}. SQLite runs a FROM-clause subquery as its own closed scope: it does not see another item of the same FROM list. Move the condition into a JOIN's own ON clause, or write it as a scalar or EXISTS subquery in the SELECT list or WHERE clause, either of which SQLite does correlate to the enclosing query.`;
+        const column = unquote(tokens[j + 2]!.text);
+        if (sqliteName(missing) !== `${alias}.${sqliteName(column)}`) continue;
+        return `the FROM-clause subquery aliased ${quoteIdent(source.alias)} reads ${original}.${column}, a column of the earlier FROM item ${quoteIdent(original)}. SQLite runs a FROM-clause subquery as its own closed scope: it does not see another item of the same FROM list. Move the condition into a JOIN's own ON clause, or write it as a scalar or EXISTS subquery in the SELECT list or WHERE clause, either of which SQLite does correlate to the enclosing query.`;
       }
     }
     return null;
@@ -1467,13 +1482,12 @@ function whereClause(select: string): string | null {
   return select.slice(tokens[at + 1]?.start ?? tokens[at]!.end, tokens[end]?.start ?? select.length).trim();
 }
 
-// step 3 of the ticket's remedy: an IN-subquery over the child's own primary
-// key reaches the same ordering and correlation as the outer query, so the
-// LIMIT caps the child rows instead of the aggregate's single result row.
-// The build already refuses the derived-table form `from (select ... limit
-// n) x` with correlatedFromSubqueryRefusal's own message (a FROM-clause
-// subquery cannot read another FROM item's column), so this message does
-// not offer it.
+// An IN-subquery over the child's primary key uses the outer query's order
+// and correlation, so LIMIT caps child rows. The derived-table alternative
+// fails prepare because its FROM-clause subquery cannot read the correlated
+// outer alias. Therefore, this message does not offer that alternative.
+// correlatedFromSubqueryRefusal replaces SQLite's prepare error when it
+// names the same qualified reference.
 const NESTED_LIMIT_MESSAGE =
   `LIMIT/OFFSET applies to the one aggregate row, not to the child rows. Put the limit inside a subquery over the child rows: ` +
   `json((select json_group_array(json_object('id', l.id) order by l.id) from order_lines l where l.id in ` +
