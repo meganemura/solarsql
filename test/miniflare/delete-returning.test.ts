@@ -1,4 +1,4 @@
-// ADR 0136's consume-token command (test/delete-returning.worker.ts), run
+// ADR 0135's consume-token command (test/delete-returning.worker.ts), run
 // on D1 and on a Durable Object through Miniflare, gives the same result
 // node:sqlite already gives in test/commands.test.ts.
 // Boundary: local Miniflare evidence, the same pattern

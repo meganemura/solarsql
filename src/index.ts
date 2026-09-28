@@ -31,7 +31,7 @@ export function newId<I extends Id<string>>(): I {
 
 // One entry of the generated map: the parameters a statement takes and the
 // row it returns. A statement that returns no rows has an empty row type.
-// `returning` marks a DELETE ... RETURNING plan item (ADR 0136): the build
+// `returning` marks a DELETE ... RETURNING plan item (ADR 0135): the build
 // sets it to the literal `true` only there, so PlanRows below can find a
 // command's row source by type alone, in place of `returns`. Every other
 // entry omits it, which `unknown extends ...` below reads the same as
@@ -49,7 +49,7 @@ export type GeneratedMap = Record<string, Entry>;
 // JSON text (arrays for json_each), the columns that hold JSON text, and
 // the tables of the schema the statement reads, sorted (ADR 0041), for a
 // caller that routes or invalidates by table. `returning`, present only on
-// a DELETE ... RETURNING entry (ADR 0136), lets commands() find a command's
+// a DELETE ... RETURNING entry (ADR 0135), lets commands() find a command's
 // row source at construction without reading SQL text, the way `json`
 // already lets an adapter find a JSON column without reading it.
 // The optional `__types` member carries the type map for inference only and
@@ -212,7 +212,7 @@ export type PlanParams<G extends GeneratedMap, P extends PlanShape<G>> = Simplif
   UnionToIntersection<ItemParams<G, P["plan"][number]> | EntryParams<G, P["returns"]>>
 >;
 // The key of the plan's own DELETE ... RETURNING item, when it has one
-// (ADR 0136). Only a plain string plan item can match: `PlanItemSql` maps
+// (ADR 0135). Only a plain string plan item can match: `PlanItemSql` maps
 // an included Command to `never`, the same "included item contributes
 // nothing of its own" rule ItemParams above already follows for `__params`,
 // so an included command's own row source never competes with the
@@ -248,7 +248,7 @@ export type Command<G extends GeneratedMap, P extends PlanShape<G>> = {
   meta: { statements: readonly StatementMeta[]; returns: StatementMeta | null; asserts: readonly string[] };
   included: readonly PlanInclusion[];
   // The index into `plan`/`meta.statements` of this command's own DELETE
-  // ... RETURNING item, when it has one and `returns` does not (ADR 0136).
+  // ... RETURNING item, when it has one and `returns` does not (ADR 0135).
   // null when the command has no row source, or when `returns` is the row
   // source instead. An adapter reads rows from this item's own reply in
   // place of running `returns`. Only a plain, non-included item of this
@@ -293,7 +293,7 @@ export function commands<G extends GeneratedMap, const C extends Record<string, 
     const asserts: string[] = [];
     const included: PlanInclusion[] = [];
     // Set only from a plain item of this command's own plan (never from an
-    // included command's own items, spliced in above): ADR 0136 gives an
+    // included command's own items, spliced in above): ADR 0135 gives an
     // included row-source item the same treatment ADR 0127 already gives
     // an included `returns`, dropped rather than surfaced here. The build
     // refuses a command with more than one candidate, so the first one

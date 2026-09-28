@@ -665,7 +665,7 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
       const entries: { key: string; analysis: Analysis; returning: boolean }[] = [];
       const used = new Set<string>();
       // A DELETE (or WITH ... DELETE) plan item with RETURNING is the one
-      // write whose rows the adapter keeps (ADR 0136): its reply already
+      // write whose rows the adapter keeps (ADR 0135): its reply already
       // holds the deleted rows, so commands() can use it as the command's
       // row source in place of `returns`. Recorded per key so emitGenerated
       // can mark the entry and checkCommands can refuse a command that
@@ -690,7 +690,7 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
             throw new BuildError("A query or returns must not write to the database.", sql);
           }
           // A plan item's own rows are never collected at run time; only a
-          // command's `returns` clause, or (ADR 0136) a DELETE item's own
+          // command's `returns` clause, or (ADR 0135) a DELETE item's own
           // RETURNING reply, is. Any other write plan item with its own
           // RETURNING clause would silently drop that data, so refuse it
           // here. A select/values plan item is unaffected: it is a
@@ -1045,7 +1045,7 @@ function returningReadsTargetTable(sql: string, table: string): boolean {
 function checkCommands(m: Module, entries: readonly { key: string; analysis: Analysis; returning: boolean }[], entriesByModule: ReadonlyMap<string, ReadonlyMap<string, Analysis>>, notes: BuildResult["notes"]): void {
   const byKey = new Map(entries.map((e) => [e.key, e.analysis]));
   const returningKeys = new Set(entries.filter((e) => e.returning).map((e) => e.key));
-  // ADR 0136: a command's row source is `returns`, or its own DELETE ...
+  // ADR 0135: a command's row source is `returns`, or its own DELETE ...
   // RETURNING plan item, never both, and never two such items. An included
   // command's own row source is not a candidate here: ADR 0127 already
   // drops an included item's `returns`, and an included row-source item

@@ -46,7 +46,7 @@ for (const sql of ["insert into items (id, value) values ('a','b') returning id"
   test(`plan refuses ${sql}`, () => project(`export const c = commands(generated, { bad: { plan: [${JSON.stringify(sql)}] } });`, /RETURNING clause is discarded/));
 }
 
-test("plan allows a DELETE ... RETURNING item (ADR 0136)", () => project(`export const c = commands(generated, { good: { plan: ["delete from items where id = :id returning id, value"] } });`, false));
+test("plan allows a DELETE ... RETURNING item (ADR 0135)", () => project(`export const c = commands(generated, { good: { plan: ["delete from items where id = :id returning id, value"] } });`, false));
 test("plan allows a WITH ... DELETE ... RETURNING item", () => project(`export const c = commands(generated, { good: { plan: ["with x as (select 1) delete from items where id = :id returning id, value"] } });`, false));
 test("a command with `returns` and a DELETE ... RETURNING item refuses, naming both", () => project(`export const c = commands(generated, { bad: {
   plan: ["delete from items where id = :id returning id, value"],

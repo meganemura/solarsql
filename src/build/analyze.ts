@@ -58,7 +58,7 @@ function analyzeCatalog(engine: Engine, catalog: unknown, library: string) {
     try {
       const statement = catalogStatement(sql, "read");
       // A catalog entry is always role "read" (catalogStatement above), so
-      // it can never be the DELETE ... RETURNING shape ADR 0136 marks.
+      // it can never be the DELETE ... RETURNING shape ADR 0135 marks.
       return { name, key: sql, analysis: typer.analyze(statement, "schema"), origins: engine.columns(statement), accesses: engine.accesses(statement), returning: false as const };
     } catch (e) {
       if (e instanceof BuildError) e.locations.push(`queries.${name}`);

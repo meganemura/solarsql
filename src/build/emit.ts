@@ -13,7 +13,7 @@ export type GeneratedInput = {
   header?: string;
   ownBrands: readonly Brand[];
   importedBrands: readonly { specifier: string; names: readonly string[] }[];
-  // `returning` marks a DELETE ... RETURNING plan item (ADR 0136): the one
+  // `returning` marks a DELETE ... RETURNING plan item (ADR 0135): the one
   // write whose reply the adapter keeps. commands() reads this flag off the
   // generated map, by key, to find a command's row source without parsing
   // SQL text, the same way it already finds a JSON column by `json`.

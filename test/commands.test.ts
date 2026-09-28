@@ -1,4 +1,4 @@
-// Responsibility: ADR 0136, a DELETE plan item's RETURNING rows as a
+// Responsibility: ADR 0135, a DELETE plan item's RETURNING rows as a
 // command's rows when the command has no `returns`. Hand-built `Meta` and
 // `Command` values (the pattern test/node.test.ts:903 and
 // test/or-rollback.worker.ts already use), run through the real node()

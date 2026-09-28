@@ -104,7 +104,7 @@ export function d1(binding: D1Like, options: AdapterOptions = {}): Database {
           const rows = parseJson((returnsReply?.results ?? []) as Record<string, unknown>[], command.meta.returns!.json, "d1");
           return { ok: true, rows, changes } as CommandResult<C>;
         }
-        // ADR 0136: with no `returns`, a marked DELETE ... RETURNING plan
+        // ADR 0135: with no `returns`, a marked DELETE ... RETURNING plan
         // item is the command's row source. D1's batch() replies one
         // D1Result per statement, in order, so that item's own reply
         // already holds the rows the DELETE returned.

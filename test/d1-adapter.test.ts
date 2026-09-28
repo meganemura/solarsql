@@ -141,7 +141,7 @@ test("run() with a returns clause decodes a raw D1 byte array in the returned ro
   assert.deepEqual(Array.from(result.rows[0]!.blob as Uint8Array), [9, 9, 9]);
 });
 
-// A DELETE ... RETURNING plan item with no `returns` clause (ADR 0136):
+// A DELETE ... RETURNING plan item with no `returns` clause (ADR 0135):
 // the adapter reads rows from that item's own reply instead.
 const deleteReturning = "delete from t where id = :id returning id, n, blob";
 const gDeleteReturning: Meta<{ [deleteReturning]: { params: { id: string }; row: { id: string; n: number; blob: Uint8Array }; returning: true } }> = {

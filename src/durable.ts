@@ -150,7 +150,7 @@ export function durable(storage: StorageLike, options: AdapterOptions = {}): Dat
               report({ at });
               const cursor = storage.sql.exec(sql, ...values);
               const data = cursor.toArray();
-              // ADR 0136: with no `returns`, a marked DELETE ... RETURNING
+              // ADR 0135: with no `returns`, a marked DELETE ... RETURNING
               // plan item is the command's row source. Its own cursor
               // already holds the rows the DELETE returned; parsed here,
               // where the JSON column names of that one statement are at
