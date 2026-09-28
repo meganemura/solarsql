@@ -480,6 +480,28 @@ test("redeclaredByFile attributes each table's own index only to that table, eve
   assert.deepEqual(redeclaredTT.indexes, ["create index idx_tt on tt(y)"]);
 });
 
+test("redeclaredByFile distinguishes non-ASCII table case and folds ASCII table case", () => {
+  const fileSql = `
+    create table "_solarsql_new_Ä" (id integer primary key, check (id > 0));
+    create table "_solarsql_new_ä" (id integer primary key, check (id < 10));
+    create index upper_index on "Ä"(id);
+    create index lower_index on "ä"(id);
+    create trigger upper_trigger after insert on "Ä" begin select 1; end;
+    create trigger lower_trigger after insert on "ä" begin select 1; end;
+  `;
+  assert.deepEqual(redeclaredByFile(fileSql, 'Ä'), {
+    constraints: ['check(id > 0)'],
+    indexes: ['create index upper_index on "Ä"(id)'],
+    triggers: ['create trigger upper_trigger after insert on "Ä" begin select 1; end'],
+  });
+  assert.deepEqual(redeclaredByFile(fileSql, 'ä'), {
+    constraints: ['check(id < 10)'],
+    indexes: ['create index lower_index on "ä"(id)'],
+    triggers: ['create trigger lower_trigger after insert on "ä" begin select 1; end'],
+  });
+  assert.deepEqual(redeclaredByFile('create index same_case on a(id)', 'A').indexes, ['create index same_case on a(id)']);
+});
+
 // --- Negative 2: the same branch drops an object, then a later file on that same branch intentionally re-adds it ---
 
 test("applied() accepts a later file that intentionally re-adds an index its own generator never saw, alongside an unrelated rebuild", () => {

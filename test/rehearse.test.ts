@@ -784,6 +784,45 @@ test('rows reports deleted for a lost row', () => {
   } finally { db.close(); }
 });
 
+test('rows attributes a deletion to table Ä without attributing it to table ä', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table "Ä"(id integer primary key); create table "ä"(id integer primary key); insert into "Ä" values (1),(2); insert into "ä" values (1)');
+    const result = rehearseSnapshot(db, 'delete from "Ä" where id = 2');
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.rows, {
+      'Ä': { compared: true, inserted: 0, deleted: 1, updated: 0 },
+      'ä': { compared: true, inserted: 0, deleted: 0, updated: 0 },
+    });
+    assert.equal(result.diagnostics[0]?.message, 'Rows lost or changed unexpectedly: deleted Ä (1)');
+  } finally { db.close(); }
+});
+
+test('rows attributes a deletion to table ä without attributing it to table Ä', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table "Ä"(id integer primary key); create table "ä"(id integer primary key); insert into "Ä" values (1),(2); insert into "ä" values (1)');
+    const result = rehearseSnapshot(db, 'delete from "ä" where id = 1');
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.rows, {
+      'Ä': { compared: true, inserted: 0, deleted: 0, updated: 0 },
+      'ä': { compared: true, inserted: 0, deleted: 1, updated: 0 },
+    });
+    assert.equal(result.diagnostics[0]?.message, 'Rows lost or changed unexpectedly: deleted ä (1)');
+  } finally { db.close(); }
+});
+
+test('schema shape reports column Ä as dropped while column ä remains', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table t(id integer primary key, "Ä" text, "ä" text)');
+    const result = rehearseSnapshot(db, 'alter table t drop column "Ä"');
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics[0]?.message, 'Schema shape changed unexpectedly: dropped t.Ä');
+    assert.deepEqual(result.columns.after.t!.map(column => column.name), ['id', 'ä']);
+  } finally { db.close(); }
+});
+
 test('rows compares over the columns a rebuild kept, without throwing on a dropped column', () => {
   const db = new DatabaseSync(':memory:');
   try {

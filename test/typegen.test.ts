@@ -2152,6 +2152,37 @@ test('CHECK literals describe stored classes only when the complete predicate pr
   }
 });
 
+test('CHECK literals distinguish non-ASCII identifiers within each column definition', () => {
+  const crossColumn = new Engine([`create table t (id integer primary key, "Ä" text check ("ä" in ('x','y')), "ä" text)`]);
+  try {
+    const columns = new Typer(crossColumn, new Map()).analyze('select "Ä", "ä" from t', 't').columns;
+    assert.deepEqual(columns.map(column => column.type), ['string | null', 'string | null']);
+  } finally { crossColumn.close(); }
+
+  const ownColumn = new Engine([`create table t (id integer primary key, "Ä" text, "ä" text check ("ä" in ('x','y')))`]);
+  try {
+    const columns = new Typer(ownColumn, new Map()).analyze('select "Ä", "ä" from t', 't').columns;
+    assert.deepEqual(columns.map(column => column.type), ['string | null', '"x" | "y" | null']);
+  } finally { ownColumn.close(); }
+});
+
+test("CHECK literals use the constrained column's own definition", () => {
+  const engine = new Engine([`create table t (id integer primary key, a text check (b in ('x','y','z')), b text check (b in ('x')))`]);
+  try {
+    const columns = new Typer(engine, new Map()).analyze('select a, b from t', 't').columns;
+    assert.deepEqual(columns.map(column => column.type), ['string | null', '"x" | null']);
+  } finally { engine.close(); }
+});
+
+test('CHECK IS NULL disjuncts distinguish non-ASCII identifier case', () => {
+  const engine = new Engine([`create table t ("Ä" text check ("Ä" in ('x') or "ä" is null), "ä" text)`]);
+  try {
+    engine.db.exec(`insert into t values ('z', null)`);
+    const column = new Typer(engine, new Map()).analyze('select "Ä" from t', 't').columns[0]!;
+    assert.equal(column.type, 'string | null');
+  } finally { engine.close(); }
+});
+
 test('CHECK types admit the values SQLite stores after affinity conversion', async () => {
   const {test:property} = await import('@hegeldev/hegel');
   const gs = await import('@hegeldev/hegel/generators');

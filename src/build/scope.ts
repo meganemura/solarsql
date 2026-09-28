@@ -1,7 +1,7 @@
 // Responsibility: describe query scopes after SQLite validates the SQL.
 // Boundary: this parser records bindings and join structure, not expression types
 // or SQL validity. Unknown source shapes are reported instead of guessed.
-import { isKeyword, significant, tokenize, unquote, type Token } from "./scan.ts";
+import { isKeyword, significant, sqliteName, tokenize, unquote, type Token } from "./scan.ts";
 
 export type Cte = { name: string; columns: string[]; sql: string };
 export type Source = {
@@ -20,8 +20,6 @@ export type Source = {
   on: string | null;
 };
 export type QueryScope = { ctes: Cte[]; branches: string[]; operators: string[] };
-export const sqliteName = (name: string): string => name.replace(/[A-Z]/g, (c) => c.toLowerCase());
-
 // One side of an ON clause's equality conjunct: a bare or alias-qualified
 // column, with its own explicit COLLATE override when the conjunct wrote
 // one, or null to defer to the column's declared collation.

@@ -159,6 +159,11 @@ export function isKeyword(token: Token | undefined, word: string): boolean {
   return token !== undefined && token.type === "ident" && token.text.toLowerCase() === word;
 }
 
+// SQLite folds identifier case in the ASCII range only, so "Ä" and "ä" name
+// different tables or columns. JavaScript's toLowerCase() would merge them,
+// so every comparison of SQLite identifiers uses this fold instead.
+export const sqliteName = (name: string): string => name.replace(/[A-Z]/g, (character) => character.toLowerCase());
+
 // Named parameters in order of first appearance, which is the order SQLite
 // numbers them. Anonymous "?" and numbered "?NNN" parameters are rejected,
 // because a name is what the generated types are keyed on.
@@ -1143,7 +1148,7 @@ function selectListKeysForAlias(t: readonly Token[], shape: NonNullable<ReturnTy
     if (alias === null && width === 3 && isKeyword(t[item.start], "value") && t[item.start + 1]!.text === "->>" && t[item.start + 2]!.type === "string") {
       out.push({ key: t[item.start + 2]!.text.slice(1, -1).replace(/''/g, "'"), column });
     } else if (
-      alias !== null && width === 5 && t[item.start]!.type === "ident" && unquote(t[item.start]!.text).toLowerCase() === alias.toLowerCase() &&
+      alias !== null && width === 5 && t[item.start]!.type === "ident" && sqliteName(unquote(t[item.start]!.text)) === sqliteName(alias) &&
       t[item.start + 1]!.text === "." && isKeyword(t[item.start + 2], "value") && t[item.start + 3]!.text === "->>" && t[item.start + 4]!.type === "string"
     ) {
       out.push({ key: t[item.start + 4]!.text.slice(1, -1).replace(/''/g, "'"), column });
@@ -1157,13 +1162,13 @@ function selectListKeysForAlias(t: readonly Token[], shape: NonNullable<ReturnTy
 // `seen` guards a self-referential alias, which well-formed SQL never
 // produces, from looping forever.
 function nestedKeysForAlias(t: readonly Token[], alias: string, shape: ReturnType<typeof insertSelectShape>, seen = new Set<string>()): { key: string; ref: JsonKeyRef | null }[] {
-  const lower = alias.toLowerCase();
-  if (seen.has(lower)) return [];
-  seen.add(lower);
+  const aliasKey = sqliteName(alias);
+  if (seen.has(aliasKey)) return [];
+  seen.add(aliasKey);
   const keys = new Map<string, JsonKeyRef | null>();
   if (shape) for (const k of selectListKeysForAlias(t, shape, alias)) keys.set(k.key, { table: shape.table, column: k.column });
   for (const c of chainedJsonSources(t)) {
-    if (c.parentAlias.toLowerCase() !== lower) continue;
+    if (sqliteName(c.parentAlias) !== aliasKey) continue;
     keys.set(c.parentKey, { nested: nestedKeysForAlias(t, c.alias, shape, seen) });
   }
   return [...keys].map(([key, ref]) => ({ key, ref }));
@@ -1273,7 +1278,7 @@ function jsonKeys(t: readonly Token[], p: number): { key: string; ref: JsonKeyRe
     // unqualified occurrence has no other candidate (SQLite refuses a bare
     // `value` when more than one is in scope), so it always belongs here.
     const qualified = t[k - 1]?.text === "." && t[k - 2]?.type === "ident";
-    if (qualified && unquote(t[k - 2]!.text).toLowerCase() !== ownAlias.toLowerCase()) continue;
+    if (qualified && sqliteName(unquote(t[k - 2]!.text)) !== sqliteName(ownAlias)) continue;
     const valueStart = qualified ? k - 2 : k;
     const key = t[k + 2]!.text.slice(1, -1).replace(/''/g, "'");
     let ref: { alias: string | null; column: string } | null = null;
@@ -1301,7 +1306,7 @@ function jsonKeys(t: readonly Token[], p: number): { key: string; ref: JsonKeyRe
     if (!keys.has(k.key) || keys.get(k.key) === null) keys.set(k.key, ref);
   }
   for (const c of chainedJsonSources(t)) {
-    if (c.parentAlias.toLowerCase() !== ownAlias.toLowerCase()) continue;
+    if (sqliteName(c.parentAlias) !== sqliteName(ownAlias)) continue;
     keys.set(c.parentKey, { nested: nestedKeysForAlias(t, c.alias, shape) });
   }
 
@@ -1528,29 +1533,28 @@ export function unknownDeclaration(recorded: readonly string[], actual: readonly
 // a file that rebuilds both "t" and "tt" in one pass, "on tt(" contains "on
 // t" as a prefix, so a check anchored only on the left of the name would
 // attribute "tt"'s own index to "t" too (confirmed against the real
-// tokenizer before this function existed). The table name comparison is
-// case-insensitive for the same reason durable.ts's own table lookups are
-// (see the comment at its `schemaRow` lookup): a RebuildRecord's `table`
-// field and this function's own table argument can differ only in case, not
-// in spelling, from the live table and the file's own generated name.
+// tokenizer before this function existed). The table name uses SQLite's
+// identifier case rule. durable.ts applies the same rule in its `schemaRow`
+// lookup. A RebuildRecord and this function can use different case for the
+// same live table and generated name.
 export function redeclaredByFile(fileSql: string, table: string): { constraints: string[]; indexes: string[]; triggers: string[] } {
   const constraints: string[] = [];
   const indexes: string[] = [];
   const triggers: string[] = [];
-  const freshName = `_solarsql_new_${table}`.toLowerCase();
+  const freshName = sqliteName(`_solarsql_new_${table}`);
   for (const statement of splitStatements(fileSql)) {
     const c = created(statement);
-    if (c?.kind === "table" && c.name.toLowerCase() === freshName) {
+    if (c?.kind === "table" && sqliteName(c.name) === freshName) {
       constraints.push(...(definitions(statement)?.constraints ?? []));
       continue;
     }
     const index = indexTarget(statement);
-    if (index && index.table.toLowerCase() === table.toLowerCase()) {
+    if (index && sqliteName(index.table) === sqliteName(table)) {
       indexes.push(normalize(statement));
       continue;
     }
     const trigger = triggerTarget(statement);
-    if (trigger && trigger.table.toLowerCase() === table.toLowerCase()) {
+    if (trigger && sqliteName(trigger.table) === sqliteName(table)) {
       triggers.push(normalize(statement));
       continue;
     }

@@ -6,7 +6,7 @@
 // Boundary: nothing here reads SQL text beyond what scan.ts provides. Nothing
 // here produces TypeScript; typegen.ts does that from these facts.
 import { DatabaseSync, constants, type DatabaseLimits } from "node:sqlite";
-import { aliasCandidates, cteNames, definitions, isKeyword, quoteIdent, significant, tokenize, type Token, unquote } from "./scan.ts";
+import { aliasCandidates, cteNames, definitions, isKeyword, quoteIdent, significant, sqliteName, tokenize, type Token, unquote } from "./scan.ts";
 
 export type ColumnFact = {
   name: string;
@@ -555,7 +555,7 @@ export class Engine {
 // below. Any other OR is left alone (ADR 0097).
 function stripRedundantIsNull(expression: readonly Token[], column: string): readonly Token[] {
   const isNullClause = (a: Token | undefined, b: Token | undefined, c: Token | undefined): boolean =>
-    a?.type === "ident" && a.depth === 1 && unquote(a.text).toLowerCase() === column.toLowerCase()
+    a?.type === "ident" && a.depth === 1 && sqliteName(unquote(a.text)) === sqliteName(column)
     && isKeyword(b, "is") && b!.depth === 1 && isKeyword(c, "null") && c!.depth === 1;
   if (expression.length > 4 && isKeyword(expression.at(-4), "or") && expression.at(-4)!.depth === 1
     && isNullClause(expression.at(-3), expression.at(-2), expression.at(-1))) {
@@ -587,7 +587,7 @@ function oneOfLiterals(definition: string, column: string): (string | number)[] 
     const end = tokens.findIndex((t, j) => j > i + 1 && t.text === ")" && t.depth === 0);
     if (end < 0) continue;
     const expression = stripRedundantIsNull(tokens.slice(i + 2, end), column);
-    if (expression[0]?.type !== "ident" || unquote(expression[0].text).toLowerCase() !== column.toLowerCase()
+    if (expression[0]?.type !== "ident" || sqliteName(unquote(expression[0].text)) !== sqliteName(column)
       || !expression[1] || !isKeyword(expression[1], "in") || expression[2]?.text !== "("
       || expression.at(-1)?.text !== ")" || expression.at(-1)?.depth !== 1) continue;
     const list = expression.slice(3, -1);

@@ -9,7 +9,7 @@ import { channel } from 'node:diagnostics_channel';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { namedParams, namedSlots, quoteIdent, significant, splitStatements, tokenize } from './scan.ts';
+import { namedParams, namedSlots, quoteIdent, significant, splitStatements, sqliteName, tokenize } from './scan.ts';
 import { busyTimeoutMs, isLockError, lockMessage } from './lock-timeout.ts';
 import { catalogStatement } from './statements.ts';
 
@@ -195,9 +195,9 @@ function schemaShapeFindings(before: Record<string, RehearsalColumn[]>, after: R
   for (const [table, beforeColumns] of Object.entries(before)) {
     const afterColumns = after[table];
     if (!afterColumns) { findings.push({ table, kind: 'dropped' }); continue; }
-    const afterByName = new Map(afterColumns.map(c => [c.name.toLowerCase(), c]));
+    const afterByName = new Map(afterColumns.map(c => [sqliteName(c.name), c]));
     for (const column of beforeColumns) {
-      const match = afterByName.get(column.name.toLowerCase());
+      const match = afterByName.get(sqliteName(column.name));
       if (!match) { findings.push({ table, column: column.name, kind: 'dropped' }); continue; }
       if (match.type.toLowerCase() !== column.type.toLowerCase()) findings.push({ table, column: column.name, kind: 'retyped' });
     }
@@ -260,15 +260,14 @@ function sqlString(value: string): string {
 // INTO copy meaningfully, and a shadow table is that virtual table's own
 // implementation detail, not a table an agent wrote.
 function tableTypes(db: DatabaseSync): Map<string, string> {
-  return new Map(db.prepare("select name, type from pragma_table_list where schema = 'main'").all().map(r => [String(r.name).toLowerCase(), String(r.type)]));
+  return new Map(db.prepare("select name, type from pragma_table_list where schema = 'main'").all().map(r => [sqliteName(String(r.name)), String(r.type)]));
 }
 
 type ColumnPair = { after: string; before: string };
 
-// undefined when either side has no primary key, the two sides don't have
-// the same number of primary-key columns, or a primary-key column's own
-// name (case-insensitive) has no match on the other side -- any of which
-// is a "changed PK" the row diff cannot join on.
+// undefined when either side has no primary key or the primary-key counts differ.
+// It is also undefined when SQLite's identifier case rule finds no matching column.
+// Each condition makes the primary key unsuitable for the row diff join.
 function pkPairs(beforeColumns: RehearsalColumn[], afterColumns: RehearsalColumn[]): ColumnPair[] | undefined {
   const beforePk = beforeColumns.filter(c => c.pk > 0);
   const afterPk = afterColumns.filter(c => c.pk > 0);
@@ -282,27 +281,26 @@ function pkPairs(beforeColumns: RehearsalColumn[], afterColumns: RehearsalColumn
   // redundancy: a primary key narrowed to fewer columns on one side, with
   // every remaining column still matching by name, depends on it alone.
   if (beforePk.length === 0 || afterPk.length === 0 || beforePk.length !== afterPk.length) return undefined;
-  const beforeByLower = new Map(beforePk.map(c => [c.name.toLowerCase(), c]));
+  const beforeByName = new Map(beforePk.map(c => [sqliteName(c.name), c]));
   const pairs: ColumnPair[] = [];
   for (const afterColumn of afterPk) {
-    const match = beforeByLower.get(afterColumn.name.toLowerCase());
+    const match = beforeByName.get(sqliteName(afterColumn.name));
     if (!match) return undefined;
     pairs.push({ after: afterColumn.name, before: match.name });
   }
   return pairs;
 }
 
-// Every non-primary-key column present on both sides, matched by name,
-// case-insensitively; a column present on only one side already shows up
-// as a schemaShapeFindings drop (or is simply new) and plays no part here.
+// Every non-primary-key column present on both sides is matched with SQLite's identifier case rule.
+// A one-sided column is a schemaShapeFindings drop or a new column, so it plays no part here.
 function commonColumns(beforeColumns: RehearsalColumn[], afterColumns: RehearsalColumn[], pk: ColumnPair[]): ColumnPair[] {
-  const pkAfterNames = new Set(pk.map(p => p.after.toLowerCase()));
-  const beforeByLower = new Map(beforeColumns.map(c => [c.name.toLowerCase(), c]));
+  const pkAfterNames = new Set(pk.map(p => sqliteName(p.after)));
+  const beforeByName = new Map(beforeColumns.map(c => [sqliteName(c.name), c]));
   const pairs: ColumnPair[] = [];
   for (const afterColumn of afterColumns) {
-    const lower = afterColumn.name.toLowerCase();
-    if (pkAfterNames.has(lower)) continue;
-    const match = beforeByLower.get(lower);
+    const nameKey = sqliteName(afterColumn.name);
+    if (pkAfterNames.has(nameKey)) continue;
+    const match = beforeByName.get(nameKey);
     if (match) pairs.push({ after: afterColumn.name, before: match.name });
   }
   return pairs;
@@ -399,7 +397,7 @@ function retypedColumnsByTable(expected: RehearsalExpected | undefined): Map<str
   return byTable;
 }
 
-// Every table present (by name, case-insensitively) both before and after,
+// Every table present under SQLite's identifier case rule both before and after,
 // excluding a virtual or shadow table on either side. `remainingUpdated`,
 // alongside the reported `rows`, is `diffTable`'s own declaration-aware
 // updated count for every compared table (ADR 0139 amendment): computed
@@ -413,11 +411,11 @@ function diffAllTables(
   beforeTypes: Map<string, string>, afterTypes: Map<string, string>,
   retypedColumns: Map<string, Set<string>>,
 ): { rows: Record<string, RowDiff>; remainingUpdated: Record<string, number> } {
-  const beforeByLower = new Map(Object.keys(before).map(name => [name.toLowerCase(), name]));
+  const beforeByName = new Map(Object.keys(before).map(name => [sqliteName(name), name]));
   const rows: Record<string, RowDiff> = {};
   const remainingUpdated: Record<string, number> = {};
   for (const table of Object.keys(after)) {
-    const beforeTable = beforeByLower.get(table.toLowerCase());
+    const beforeTable = beforeByName.get(sqliteName(table));
     // before and beforeTypes both read the same pre-migration schema:
     // counts() names every table sqlite_schema reports as type 'table'
     // (an ordinary table, an FTS5 virtual table's own entry, and each of
@@ -429,8 +427,8 @@ function diffAllTables(
     // replaced with a table, for example), and the type check right below
     // already turns that into a skip.
     if (beforeTable === undefined) continue;
-    const lower = table.toLowerCase();
-    if (beforeTypes.get(lower) !== 'table' || afterTypes.get(lower) !== 'table') continue;
+    const nameKey = sqliteName(table);
+    if (beforeTypes.get(nameKey) !== 'table' || afterTypes.get(nameKey) !== 'table') continue;
     // beforeTable and table are both drawn from the same key sets columns()
     // just built beforeColumns and afterColumns from, so a lookup here can
     // never miss: no fallback array could ever surface.
@@ -497,7 +495,7 @@ function unmatchedRowChanges(
 ): { unexpected: string[]; stale: string[] } {
   const deletedDeclared = new Set((expected?.deleted ?? []).map(r => r.table));
   const updatedDeclared = new Set((expected?.updated ?? []).map(r => r.table));
-  const beforeByLower = new Map(Object.keys(before).map(name => [name.toLowerCase(), name]));
+  const beforeByName = new Map(Object.keys(before).map(name => [sqliteName(name), name]));
   const unexpected: string[] = [];
   const matchedDeleted = new Set<string>();
   const matchedUpdated = new Set<string>();
@@ -513,7 +511,7 @@ function unmatchedRowChanges(
         else unexpected.push(`updated ${table} (${updated})`);
       }
     } else {
-      const beforeTable = beforeByLower.get(table.toLowerCase())!;
+      const beforeTable = beforeByName.get(sqliteName(table))!;
       const beforeCount = before[beforeTable]!;
       const afterCount = after[table]!;
       if (afterCount < beforeCount) {

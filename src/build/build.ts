@@ -15,8 +15,7 @@ import { Engine, WORKERD_SQLITE_VERSION, type Access, type OutputColumn, type Pl
 import { applied, diff, introspect, open, type DropIntent, type Rename, type RenameRepair } from "./migration.ts";
 import type { MigrationIntent } from "./migration-intent.ts";
 import { migrationSequence, nextMigrationFile, withMigrationLock, writeNewMigration } from "./migration-files.ts";
-import { aliasCandidates, created, definitions, indexTarget, isKeyword, namedParams, quoteIdent, returningClause, significant, tokenize, triggerTarget, unquote, type RebuildRecord } from "./scan.ts";
-import { sqliteName } from "./scope.ts";
+import { aliasCandidates, created, definitions, indexTarget, isKeyword, namedParams, quoteIdent, returningClause, significant, sqliteName, tokenize, triggerTarget, unquote, type RebuildRecord } from "./scan.ts";
 import { shellArgument } from "./shell.ts";
 import { writeGeneratedFile } from "./output.ts";
 import { BuildError, Typer, brandName, isSelect, type Analysis, type Brand } from "./typegen.ts";

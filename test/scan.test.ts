@@ -5,7 +5,7 @@ import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
-import { aliasMap, columnRef, created, definitions, leadingComment, namedParams, normalize, paramSites, quoteIdent, renamedColumn, selectItems, splitStatements, tokenize, unconditionalMatchAliases } from "../src/build/scan.ts";
+import { aliasMap, columnRef, created, definitions, leadingComment, namedParams, normalize, paramSites, quoteIdent, renamedColumn, selectItems, splitStatements, sqliteName, tokenize, unconditionalMatchAliases } from "../src/build/scan.ts";
 
 const ident = gs.fromRegex("[a-z_][a-z0-9_]{0,6}");
 const fragment = gs.composite((tc): string => {
@@ -21,6 +21,17 @@ const fragment = gs.composite((tc): string => {
   }
 });
 const sqlish = gs.composite((tc): string => tc.draw(gs.arrays(fragment, { minSize: 0, maxSize: 12 })).join(""));
+
+test("sqliteName folds ASCII case and preserves non-ASCII case", () => {
+  hegel.test((tc) => {
+    const name = tc.draw(ident);
+    const mixed = [...name].map(char => tc.draw(gs.booleans()) ? char.toUpperCase() : char).join("");
+    assert.equal(sqliteName(mixed), sqliteName(name));
+  });
+  for (const [upper, lower] of [["Ä", "ä"], ["Ö", "ö"], ["Ü", "ü"], ["É", "é"]] as const) {
+    assert.notEqual(sqliteName(upper), sqliteName(lower));
+  }
+});
 
 test("normalization preserves literal and quoted identifier bytes", () => {
   hegel.test((tc) => {
@@ -249,6 +260,63 @@ describe("shapes", () => {
           { key: "sku", ref: { table: "order_lines", column: "sku" } },
           { key: "qty", ref: { table: "order_lines", column: "qty" } },
           { key: "price", ref: { table: "order_lines", column: "price" } },
+        ] } },
+      ],
+      scalar: null,
+    }]);
+  });
+
+  test("paramSites keeps non-ASCII alias case distinct in a chained json_each", () => {
+    const sql = `insert into dst (outer_value, inner_value, other_value)
+      select "Ä".value ->> 'outer', "ä".value ->> 'inner', "ä".value ->> 'other'
+      from json_each(:root) "Ä", json_each("Ä".value -> 'child') "ä"`;
+    assert.deepEqual(paramSites(sql).get('root'), [{
+      kind: 'json_each',
+      keys: [
+        { key: 'outer', ref: { table: 'dst', column: 'outer_value' } },
+        { key: 'child', ref: { nested: [
+          { key: 'inner', ref: { table: 'dst', column: 'inner_value' } },
+          { key: 'other', ref: { table: 'dst', column: 'other_value' } },
+        ] } },
+      ],
+      scalar: null,
+    }]);
+  });
+
+  test("paramSites keeps non-ASCII alias case distinct across nested json_each levels", () => {
+    const sql = `insert into dst (outer_value, middle_value, inner_value)
+      select r.value ->> 'outer', "Ä".value ->> 'middle', "ä".value ->> 'inner'
+      from json_each(:root) r,
+        json_each(r.value -> 'child') "Ä",
+        json_each("Ä".value -> 'grandchild') "ä"`;
+    assert.deepEqual(paramSites(sql).get('root'), [{
+      kind: 'json_each',
+      keys: [
+        { key: 'outer', ref: { table: 'dst', column: 'outer_value' } },
+        { key: 'child', ref: { nested: [
+          { key: 'middle', ref: { table: 'dst', column: 'middle_value' } },
+          { key: 'grandchild', ref: { nested: [
+            { key: 'inner', ref: { table: 'dst', column: 'inner_value' } },
+          ] } },
+        ] } },
+      ],
+      scalar: null,
+    }]);
+  });
+
+  test("paramSites treats ASCII alias case as the same name in a chained json_each", () => {
+    const sql = `insert into dst (outer_value, inner_value)
+      select A.value ->> 'outer', a.value ->> 'inner'
+      from json_each(:root) A, json_each(A.value -> 'child') a`;
+    assert.deepEqual(paramSites(sql).get('root'), [{
+      kind: 'json_each',
+      keys: [
+        { key: 'outer', ref: { table: 'dst', column: 'outer_value' } },
+        { key: 'inner', ref: { table: 'dst', column: 'inner_value' } },
+        { key: 'child', ref: { nested: [
+          { key: 'outer', ref: { table: 'dst', column: 'outer_value' } },
+          { key: 'inner', ref: { table: 'dst', column: 'inner_value' } },
+          { key: 'child', ref: { nested: [] } },
         ] } },
       ],
       scalar: null,

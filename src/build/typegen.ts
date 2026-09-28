@@ -5,10 +5,10 @@
 // Boundary: no file system, no module layout, no boundary check. build.ts
 // owns those. A shape this file cannot type becomes a BuildError with the
 // SQL and the reason.
-import { onEqualities, queryScope, querySources, sqliteName, unionType, unionMembers, type Cte, type Source } from "./scope.ts";
+import { onEqualities, queryScope, querySources, unionType, unionMembers, type Cte, type Source } from "./scope.ts";
 import { GUARD_TABLE } from "../runtime/plan.ts";
 import type { ColumnFact, Engine, OutputColumn, TableFact } from "./facts.ts";
-import { aliasMap, columnRef, findCall, isKeyword, leadingComment, namedParams, nonNullFilterAlias, paramSites, quoteIdent, returningClause, selectItems, significant, splitAtCommas, tokenize, type JsonKeyRef, type Token, unconditionalMatchAliases, unquote } from "./scan.ts";
+import { aliasMap, columnRef, findCall, isKeyword, leadingComment, namedParams, nonNullFilterAlias, paramSites, quoteIdent, returningClause, selectItems, significant, splitAtCommas, sqliteName, tokenize, type JsonKeyRef, type Token, unconditionalMatchAliases, unquote } from "./scan.ts";
 
 export class BuildError extends Error {
   readonly sql: string | undefined;
