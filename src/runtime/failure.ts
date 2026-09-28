@@ -18,7 +18,10 @@ type RuleClass = { kind: "transient"; outcome: "not_applied" | "unknown" } | { k
 
 type Rule = { reason: string; test: (message: string) => boolean; class: RuleClass };
 
+// The rule loop below compares this kind only with "permanent" to pick a
+// branch; the transient branch it falls to writes its own literal kind.
 const NOT_APPLIED: RuleClass = { kind: "transient", outcome: "not_applied" };
+// Same as NOT_APPLIED: the rule loop reads this kind for that one comparison.
 const UNKNOWN: RuleClass = { kind: "transient", outcome: "unknown" };
 const PERMANENT: RuleClass = { kind: "permanent" };
 
@@ -31,8 +34,9 @@ const CONSTRAINT_LOOKING = /constraint failed|^cannot store \w+ value in \w+ col
 // bareMessage() (src/runtime/plan.ts) already strips this same wrapper
 // text before this module ever sees it, so its presence has to be
 // checked here against the raw message instead; this regex duplicates
-// that one, because plan.ts exports only bareMessage() and errorDetails()
-// (its own scope in this task), not the wrapper pattern itself.
+// that one, because plan.ts does not export the pattern itself.
+// This pattern is used only through .test(). The trailing \s* matches
+// the empty string, so a match depends only on the text through the colon.
 const RESET_WRAPPER = /^Durable Object was reset and rolled back to its last known good state because the application left the database in a state where constraints were violated:\s*/;
 
 // Each test runs against bareMessage(error): the D1_ERROR prefix, the

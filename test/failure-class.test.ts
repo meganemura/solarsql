@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
 import { failureClass } from "../src/runtime/failure.ts";
+import { constraintFailure } from "../src/runtime/plan.ts";
 
 describe("failureClass", () => {
   test("Durable Object is overloaded (four variants share this prefix)", () => {
@@ -112,6 +113,28 @@ describe("failureClass", () => {
     assert.deepEqual(failureClass(new Error("UNIQUE constraint failed")), { kind: "permanent", reason: "unresolved_constraint" });
   });
 
+  test("a datatype-mismatch message with a table reference constraintFailure() cannot resolve is a permanent error", () => {
+    // node:sqlite reports "cannot store TEXT value in INTEGER column
+    // a.b.id" for a STRICT table created as "a.b" (checked directly
+    // against node:sqlite). ADR 0087 requires exactly one dot in a table-column
+    // target, so constraintFailure() declines this two-dot reference and
+    // returns null; this module's own broader pattern is what catches it.
+    const message = "cannot store TEXT value in INTEGER column a.b.id";
+    assert.equal(constraintFailure(new Error(message)), null);
+    assert.deepEqual(failureClass(new Error(message)), { kind: "permanent", reason: "unresolved_constraint" });
+  });
+
+  test("the datatype-mismatch pattern only matches at the very start of the message: a boundary input, not engine text", () => {
+    // bareMessage() removes the D1_ERROR prefix and the trailing extended
+    // result code before a rule ever sees the text (see the comment above
+    // the RULES array), so a message reaching this point never carries an
+    // arbitrary word before "cannot store"; this made-up prefix isolates
+    // the ^ anchor.
+    const message = "unrelated prefix cannot store TEXT value in INTEGER column a.b.id";
+    assert.equal(constraintFailure(new Error(message)), null);
+    assert.deepEqual(failureClass(new Error(message)), { kind: "unclassified" });
+  });
+
   test("the D1_ERROR prefix strip ahead of the reset-wrapper check tolerates zero whitespace after the colon", () => {
     // The strip at the reset-wrapper check is `/^D1_ERROR:\s*/` -- zero or
     // more whitespace. The boundary is 0 characters: no space at all
@@ -120,6 +143,41 @@ describe("failureClass", () => {
     // characters, or replaced the prefix instead of removing it.
     const message = 'D1_ERROR:Durable Object was reset and rolled back to its last known good state because the application left the database in a state where constraints were violated: something the parser does not recognize';
     assert.deepEqual(failureClass(new Error(message)), { kind: "permanent", reason: "unresolved_constraint" });
+  });
+
+  test("the reset wrapper only matches at the very start of the message: a boundary input, not engine text", () => {
+    // The reset wrapper feeds off `raw` with only the D1_ERROR prefix
+    // stripped (see the RESET_WRAPPER check in failureClass()), so real
+    // input never carries an arbitrary word before "Durable Object was
+    // reset"; this made-up prefix isolates the ^ anchor.
+    const message = "prefix noise Durable Object was reset and rolled back to its last known good state because the application left the database in a state where constraints were violated: something the parser does not recognize";
+    assert.deepEqual(failureClass(new Error(message)), { kind: "unclassified" });
+  });
+
+  test("the reset wrapper matches with zero characters between its colon and the text that follows", () => {
+    // Boundary input: the wrapper's own trailing \s* accepts zero
+    // whitespace characters between the colon and the text that follows.
+    const message = "Durable Object was reset and rolled back to its last known good state because the application left the database in a state where constraints were violated:something the parser does not recognize";
+    assert.deepEqual(failureClass(new Error(message)), { kind: "permanent", reason: "unresolved_constraint" });
+  });
+
+  test("the local D1_ERROR strip ahead of the reset-wrapper check only removes a prefix at the very start", () => {
+    // Boundary input, not real engine text: "D1_ERROR: " sits after an
+    // unrelated word, placed so that removing only that span would splice
+    // the remaining text into the reset wrapper's own opening words. The
+    // strip must leave the leading word in place, so the reset wrapper's
+    // own ^ anchor still finds no match here.
+    const message = "Durable D1_ERROR: Object was reset and rolled back to its last known good state because the application left the database in a state where constraints were violated: something the parser does not recognize";
+    assert.deepEqual(failureClass(new Error(message)), { kind: "unclassified" });
+  });
+
+  test("a message that is empty on its first read is unclassified, even when a later read of the same error returns rule text", () => {
+    // failureClass() reaches .message three times (errorDetails() reads it
+    // once per call); a getter with side effects could answer differently
+    // each time it is read.
+    let reads = 0;
+    const error = { get message() { reads += 1; return reads === 1 ? "" : "Network connection lost."; } };
+    assert.deepEqual(failureClass(error), { kind: "unclassified" });
   });
 
   test("database is locked: transient, not_applied", () => {
@@ -149,6 +207,30 @@ describe("failureClass", () => {
     assert.deepEqual(failureClass(null), { kind: "unclassified" });
     assert.deepEqual(failureClass(undefined), { kind: "unclassified" });
     assert.deepEqual(failureClass(42), { kind: "unclassified" });
+  });
+
+  test("an exception thrown inside the rule loop is caught and reported as unclassified", () => {
+    // errorDetails() already declines on an unreadable property (ADR
+    // 0082) inside its own try/catch, so this instead breaks a plain
+    // string method the rule loop calls on text errorDetails() already
+    // read successfully, to reach the catch this function wraps around
+    // its own body.
+    const original = String.prototype.startsWith;
+    const sentinel = "an unrelated message this test controls";
+    let threw = false;
+    String.prototype.startsWith = function (...args: Parameters<typeof original>) {
+      if (this === sentinel) {
+        threw = true;
+        throw new Error("forced failure for this test");
+      }
+      return original.apply(this, args);
+    };
+    try {
+      assert.deepEqual(failureClass(new Error(sentinel)), { kind: "unclassified" });
+    } finally {
+      String.prototype.startsWith = original;
+    }
+    assert.equal(threw, true);
   });
 
   test("never throws, and always returns a valid kind, for any thrown value", () => {
