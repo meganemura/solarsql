@@ -188,6 +188,6 @@ plan: [
 
 ### Chunk rows past the per-statement ceiling
 
-The ceiling on one `json_each(:rows)` array is in `limits.md` ("What a json_each array parameter meets first"). Past it, split the array into chunks and call `db.run` once per chunk: a command is one D1 batch or one Durable Object transaction (above), so each chunk commits on its own -- a failure in one chunk leaves the earlier chunks written. Make every row's id before chunking (`newId()`, ADR 0016) and use `on conflict (id) do nothing` (or the `where true` upsert above) so any chunk can be retried from the start with no duplicate-row effect.
+The ceiling on one `json_each(:rows)` array is in `limits.md` ("What a json_each array parameter meets first"). Past it, split the array into chunks and call `db.run` once per chunk: a command is one D1 batch or one Durable Object transaction (above), so each chunk commits on its own -- a failure in one chunk leaves the earlier chunks written. Make every row's id before chunking (`newId()`, ADR 0016) and end each chunk's `insert ... select ... from json_each(:rows)` with `where true on conflict (id) do nothing` (or the `where true` upsert above), so any chunk can be retried from the start with no duplicate-row effect. The `where true` is required here for the same reason as in the upsert above.
 
 An `insert ... on conflict (id) do update set qty = excluded.qty` types its parameters from the insert columns.
