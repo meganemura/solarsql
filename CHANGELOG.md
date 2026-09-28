@@ -5,6 +5,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 ## Unreleased
 
 - Changed: The fan-out proof now exempts an ungrouped FROM root before source checks, so an FTS5 table, a view, a CTE, a derived table, or a table-valued function can be that root.
+- Fixed: Rehearsal now detects opposing primary-key fan-ins independently, so an affinity split cannot cancel a collation merge and hide a lost row.
 - Fixed: The `json_group_array` join fan-out proof now uses SQLite's comparison collation, so a broader left operand cannot falsely prove a narrower unique key.
 - Fixed: Rehearsal now returns `DETACH_FAILED` and `TEMP_CLEANUP_FAILED` diagnostics when Windows keeps a row-diff snapshot open, instead of throwing during cleanup.
 - Fixed: `splitStatements` now omits segments with no significant SQL tokens after comment removal, so migrations do not pass empty SQL to storage engines.

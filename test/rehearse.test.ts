@@ -822,11 +822,11 @@ test('rows reports a deletion when a NOCASE primary-key rebuild merges two rows'
     assert.equal(result.ok, false);
     assert.deepEqual(result.rows.items, { compared: true, inserted: 0, deleted: 1, updated: 0 });
     assert.equal(result.diagnostics[0]?.code, 'ROWS_LOST_OR_CHANGED');
-    assert.equal(result.diagnostics[0]?.message, 'Rows lost or changed unexpectedly: deleted items (1; includes 1 not found by the primary-key diff and inferred from the row-count mismatch, possibly because rows merged after a primary-key collation change)');
+    assert.equal(result.diagnostics[0]?.message, 'Rows lost or changed unexpectedly: deleted items (1)');
   } finally { db.close(); }
 });
 
-test('a many-to-one primary-key diff fails without hiding a deleted row', () => {
+test('an ambiguous before-row match fails without hiding an unmatched deletion', () => {
   const db = new DatabaseSync(':memory:');
   try {
     db.exec("create table t(id integer primary key, v text); insert into t values (1,'a'),(2,'b')");
@@ -840,11 +840,11 @@ test('a many-to-one primary-key diff fails without hiding a deleted row', () => 
     assert.equal(result.ok, false);
     assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 1, updated: 0 });
     assert.equal(result.diagnostics[0]?.code, 'ROW_DIFF_FAILED');
-    assert.equal(result.diagnostics[0]?.message, 'Primary-key row diff for t is inconsistent: before 2, after 2, inserted 0, deleted 1; primary-key affinity differences may make the join many-to-one');
+    assert.equal(result.diagnostics[0]?.message, 'Primary-key row diff for t is unreliable: 1 before row matched two or more after rows; primary-key affinity or collation differences made the join non-one-to-one');
   } finally { db.close(); }
 });
 
-test('a many-to-one primary-key diff never reports a negative deletion count', () => {
+test('one before row matching two after rows fails the row diff', () => {
   const db = new DatabaseSync(':memory:');
   try {
     db.exec("create table t(id integer primary key, v text); insert into t values (1,'a')");
@@ -858,8 +858,96 @@ test('a many-to-one primary-key diff never reports a negative deletion count', (
     assert.equal(result.ok, false);
     assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 0, updated: 0 });
     assert.equal(result.diagnostics[0]?.code, 'ROW_DIFF_FAILED');
-    assert.equal(result.diagnostics[0]?.message, 'Primary-key row diff for t is inconsistent: before 1, after 2, inserted 0, deleted 0; primary-key affinity differences may make the join many-to-one');
+    assert.equal(result.diagnostics[0]?.message, 'Primary-key row diff for t is unreliable: 1 before row matched two or more after rows; primary-key affinity or collation differences made the join non-one-to-one');
   } finally { db.close(); }
+});
+
+test('opposite primary-key fan-ins do not cancel each other', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table t(id numeric primary key, v text); insert into t values (1,'x'),('A','x'),('a','x')");
+    const result = rehearseSnapshot(db, `
+      create table n(id text primary key collate nocase, v text);
+      insert into n values ('1','x'),('1.0','x'),('a','x');
+      drop table t;
+      alter table n rename to t
+    `, { expected: { retyped: [{ table: 't', column: 'id' }] } });
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 1, updated: 0 });
+    assert.equal(result.diagnostics[0]?.code, 'ROW_DIFF_FAILED');
+    assert.equal(result.diagnostics[0]?.message, 'Primary-key row diff for t is unreliable: 1 before row matched two or more after rows; primary-key affinity or collation differences made the join non-one-to-one');
+  } finally { db.close(); }
+});
+
+test('the unreliable row diff counts each before row that matches two or more after rows', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table t(id integer primary key, v text); insert into t values (1,'x'),(2,'y')");
+    const result = rehearseSnapshot(db, `
+      create table n(id text primary key, v text);
+      insert into n values ('1','x'),('1.0','x'),('2','y'),('2.0','y');
+      drop table t;
+      alter table n rename to t
+    `, { expected: { retyped: [{ table: 't', column: 'id' }] } });
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics[0]?.code, 'ROW_DIFF_FAILED');
+    assert.equal(result.diagnostics[0]?.message, 'Primary-key row diff for t is unreliable: 2 before rows matched two or more after rows; primary-key affinity or collation differences made the join non-one-to-one');
+  } finally { db.close(); }
+});
+
+test('the unreliable row diff names every table whose before rows match two or more after rows', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table s(id integer primary key, v text); insert into s values (1,'x'); create table t(id integer primary key, v text); insert into t values (1,'x')");
+    const result = rehearseSnapshot(db, `
+      create table ns(id text primary key, v text);
+      insert into ns values ('1','x'),('1.0','x');
+      drop table s;
+      alter table ns rename to s;
+      create table nt(id text primary key, v text);
+      insert into nt values ('1','x'),('1.0','x');
+      drop table t;
+      alter table nt rename to t
+    `, { expected: { retyped: [{ table: 's', column: 'id' }, { table: 't', column: 'id' }] } });
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics[0]?.code, 'ROW_DIFF_FAILED');
+    assert.equal(result.diagnostics[0]?.message, 'Primary-key row diff for s is unreliable: 1 before row matched two or more after rows; primary-key affinity or collation differences made the join non-one-to-one; Primary-key row diff for t is unreliable: 1 before row matched two or more after rows; primary-key affinity or collation differences made the join non-one-to-one');
+  } finally { db.close(); }
+});
+
+test('rows reports two deletions when three primary keys merge into one', () => {
+  const db = binaryKeyItems([['AA', 'same'], ['Aa', 'same'], ['aa', 'same']]);
+  try {
+    const result = rehearseSnapshot(db, primaryKeyCollationRebuild('nocase'));
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.rows.items, { compared: true, inserted: 0, deleted: 2, updated: 0 });
+    assert.equal(result.diagnostics[0]?.code, 'ROWS_LOST_OR_CHANGED');
+    assert.equal(result.diagnostics[0]?.message, 'Rows lost or changed unexpectedly: deleted items (2)');
+  } finally { db.close(); }
+});
+
+test('a merged row stays unchanged when one before row has its values', () => {
+  const db = binaryKeyItems([['A', 'lost'], ['a', 'kept']]);
+  try {
+    const result = rehearseSnapshot(db, primaryKeyCollationRebuild('nocase'), { expected: { deleted: [{ table: 'items' }] } });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows.items, { compared: true, inserted: 0, deleted: 1, updated: 0 });
+  } finally { db.close(); }
+});
+
+test('NOCASE primary-key merges report one deletion for each extra before row', async () => {
+  const { test: property } = await import('@hegeldev/hegel');
+  const gs = await import('@hegeldev/hegel/generators');
+  property(tc => {
+    const count = tc.draw(gs.integers({ minValue: 2, maxValue: 8 }));
+    const variants = ['aaa', 'Aaa', 'aAa', 'AAa', 'aaA', 'AaA', 'aAA', 'AAA'].slice(0, count);
+    const db = binaryKeyItems(variants.map(key => [key, 'same'] as const));
+    try {
+      const result = rehearseSnapshot(db, primaryKeyCollationRebuild('nocase'), { expected: { deleted: [{ table: 'items' }] } });
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.deepEqual(result.rows.items, { compared: true, inserted: 0, deleted: count - 1, updated: 0 });
+    } finally { db.close(); }
+  });
 });
 
 test('expected.deleted accepts rows merged by a NOCASE primary-key rebuild', () => {
@@ -871,7 +959,7 @@ test('expected.deleted accepts rows merged by a NOCASE primary-key rebuild', () 
   } finally { db.close(); }
 });
 
-test('an inserted row counts only as inserted: the row-count check adds no deletion for it', () => {
+test('an inserted row counts only as inserted', () => {
   const db = new DatabaseSync(':memory:');
   try {
     db.exec("create table customers(id integer primary key, name text) strict; insert into customers values (1,'a')");
