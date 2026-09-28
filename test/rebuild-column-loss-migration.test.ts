@@ -696,6 +696,50 @@ test("a Durable Object's runtime migrate() does not falsely refuse a rebuild who
   assert.equal(row.notnull, 0);
 });
 
+test("a Durable Object's runtime migrate() still refuses a rebuild that does not know about a column, when a same-named TEMP table shadows main's own", () => {
+  const base = "create table customers (id text primary key not null, email text not null, name text not null) strict";
+  const targetA = "create table customers (id text primary key not null, email text, name text not null) strict"; // branch A: drops NOT NULL on email, never heard of fax
+  const targetB = "create table customers (id text primary key not null, email text not null, name text not null, fax text) strict"; // branch B: adds fax
+
+  const currentDb = open([base]);
+  const planA = diff(introspect(currentDb), introspect(open([targetA])));
+  if (planA.kind !== "ok") throw new Error("planA blocked");
+  const fileA = render(3, "email_nullable", planA.statements, planA.rebuilds ?? []);
+  const planB = diff(introspect(currentDb), introspect(open([targetB])));
+  if (planB.kind !== "ok") throw new Error("planB blocked");
+  const fileB = render(2, "add_fax", planB.statements, planB.rebuilds ?? []);
+
+  const db = new DatabaseSync(":memory:");
+  migrate(db, [{ name: "0001_base.sql", sql: base + ";" }, { name: "0002_add_fax.sql", sql: fileB.sql }]);
+  db.exec(`insert into customers (id, email, name) values ('c1', 'a@b.com', 'Alice')`);
+  db.exec(`update customers set fax = '555-1234' where id = 'c1'`);
+
+  // A TEMP table named "customers", with only the columns fileA's stale
+  // RebuildRecord already knows about (no "fax"), shadows main's own table of
+  // the same name for any unqualified lookup.
+  db.exec("create temp table customers (id text primary key not null, email text, name text not null)");
+
+  assert.throws(
+    () => migrate(db, [
+      { name: "0001_base.sql", sql: base + ";" },
+      { name: "0002_add_fax.sql", sql: fileB.sql },
+      { name: "0003_email_nullable.sql", sql: fileA.sql },
+    ]),
+    (e: unknown) => {
+      assert.ok(e instanceof MigrationHistoryError, String(e));
+      assert.equal(e.code, "REBUILD_LOSES_COLUMN");
+      assert.match(e.message, /rebuilds table "customers" without knowledge of column "fax"/);
+      return true;
+    },
+  );
+
+  // The refusal ran before "0003_email_nullable.sql"'s own statements
+  // executed; main's own row, and the value the TEMP table's shadow could
+  // have hidden from the check, are unaffected. Read through main
+  // explicitly: the TEMP table above still shadows an unqualified "customers".
+  assert.deepEqual({ ...db.prepare("select fax from main.customers where id='c1'").get() }, { fax: "555-1234" });
+});
+
 test("a Durable Object's runtime migrate() still refuses a case-mismatched rebuild that does not know about an index an unrelated migration added", () => {
   const base = "create table t (id text primary key not null, a integer not null, b integer not null) strict";
   const targetA = "create table t (id text primary key not null, a integer, b integer not null) strict"; // branch A: drops NOT NULL on a, unrelated to the index

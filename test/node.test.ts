@@ -1295,6 +1295,28 @@ test("a Durable Object's runtime migrate() still names a trigger whose declared 
   } finally { db.close(); }
 });
 
+// The same string-literal-quoted-identifier shape as the trigger test above,
+// for an index instead: created() returns null for it, so the "without
+// knowledge of index" message's own fallback to the raw declaration text is
+// what names it.
+test("a Durable Object's runtime migrate() still names an index whose declared name is a string-literal-quoted identifier, when a stale rebuild does not know about it", () => {
+  const file1 = { name: "0001_base.sql", sql: "create table t (id integer primary key not null, a integer) strict; create index 'qi' on t(a);" };
+  const file2 = {
+    name: "0002_stale.sql",
+    sql: `${REBUILD_HEADER}${JSON.stringify([{ table: "t", columns: [{ name: "id", def: "id integer primary key not null" }, { name: "a", def: "a integer" }], constraints: [], indexes: [], triggers: [] }])}\nselect 1;`,
+  };
+  const db = new DatabaseSync(":memory:");
+  try {
+    migrate(db, [file1]);
+    assert.throws(() => migrate(db, [file1, file2]), (e: unknown) => {
+      assert.ok(e instanceof MigrationHistoryError, String(e));
+      assert.equal(e.code, "REBUILD_LOSES_COLUMN");
+      assert.match(e.message, /rebuilds table "t" without knowledge of index "create index 'qi' on t\(a\)" it already has/);
+      return true;
+    });
+  } finally { db.close(); }
+});
+
 // A RebuildRecord's own `table` field (src/durable.ts) names whatever a
 // migration file's own header claims to rebuild, not a name this function
 // itself derived from the live schema, so it can name something that is no

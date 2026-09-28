@@ -234,10 +234,29 @@ const HISTORY = "solarsql_migrations";
 // Store the complete SQL to compare content without a hash implementation in
 // the synchronous Worker path. A name-only legacy record requires explicit trust.
 export function migrate(storage: StorageLike, files: readonly MigrationFile[], options: MigrationOptions = {}): string[] {
+  // Array.prototype.sort only ever branches on this comparator's sign, not
+  // its exact magnitude, for the "greater" branch: a non-negative result
+  // there places a pair the same way the original 0 (a tie) or 1 (a real
+  // order) would (measured directly against V8: all permutations of 4
+  // distinct names, and 200000 random shuffles of 15 distinct names, gave
+  // the same sorted order regardless of that branch's own return value).
+  // Which of two same-named files this sort places first is still
+  // observable: the loop below scans the first-placed file's own statements
+  // for transaction control before the second-placed file's own duplicate
+  // check ever runs, so a transaction-control statement in one of the two
+  // reports MIGRATION_TRANSACTION instead of DUPLICATE_MIGRATION whenever
+  // this sort keeps that file first.
   const ordered = [...files].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
   for (let i = 0; i < ordered.length; i++) {
     if (ordered[i]!.name === ordered[i - 1]?.name) throw new MigrationHistoryError("DUPLICATE_MIGRATION", `Duplicate migration: ${ordered[i]!.name}. List each migration file once.`, ordered[i]!.name);
     for (const sql of splitStatements(ordered[i]!.sql)) {
+      // splitStatements() strips each comment token before checking whether
+      // anything is left, but the surviving, non-comment characters on
+      // either side of a stripped block comment can themselves spell a new
+      // line comment once concatenated (measured directly: "-/**/-" strips
+      // to "--", which a fresh tokenize() of that string alone reads as one
+      // line comment, not two dashes) -- so this segment can still tokenize
+      // to no significant token at all, and `first` can be undefined.
       const first = significant(tokenize(sql))[0]?.text.toUpperCase();
       if (first && ["BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE"].includes(first)) {
         throw new MigrationHistoryError("MIGRATION_TRANSACTION", "The migration runner owns the transaction. Remove transaction control statements.", ordered[i]!.name);
@@ -248,6 +267,12 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
   const hasSql = storage.sql.exec(`pragma table_info(${HISTORY})`).toArray().some(c => c.name === "sql");
   // Use one ordering for both inputs; SQLite BINARY and JavaScript order
   // supplementary Unicode characters differently.
+  // `name` is this table's own primary key, so two rows here never carry the
+  // same name: a tied comparison never happens. The exact magnitude this
+  // comparator's second branch returns for a real, strictly-greater pair
+  // does not change Array.prototype.sort's own output either, the same
+  // reason (and the same measurement) `ordered`'s own comparator above does
+  // not.
   const history = storage.sql.exec(`select name${hasSql ? ", sql" : ""} from ${HISTORY}`).toArray()
     .sort((a, b) => String(a.name) < String(b.name) ? -1 : String(a.name) > String(b.name) ? 1 : 0);
   for (const [i, row] of history.entries()) {
@@ -259,6 +284,11 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
       if (!options.adoptLegacyHistory) throw new MigrationHistoryError("LEGACY_HISTORY", `Migration ${name} has no recorded SQL. Verify the legacy files before using adoptLegacyHistory.`, name);
     } else if (row.sql !== file.sql) throw new MigrationHistoryError("MIGRATION_CHANGED", `Applied migration changed: ${name}. Restore it and append a new migration.`, name);
   }
+  // `hasSql` false short-circuits this `||` before `.some()` runs, so
+  // `.some()` only ever sees a row read with the "sql" column present; that
+  // column's own value is either a string or SQL NULL (JS `null`), never
+  // the JS value `undefined`, so this second check never adds a row the
+  // first one missed.
   if (!hasSql || history.some(r => r.sql === null || r.sql === undefined)) {
     storage.transactionSync(() => {
       if (!hasSql) storage.sql.exec(`alter table ${HISTORY} add column sql text`);
@@ -293,6 +323,10 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
   // blockConcurrencyWhile(() => migrate(ctx.storage, migrations)) on every
   // instantiation and reactivation, not only the first.
   if (!callerOwnsTransaction && ordered.length > history.length) {
+    // `before` only ever needs a non-null key: the later read of it
+    // (afterKeys.every below) already checks `key !== null` before ever
+    // calling `before.has(key)`, so a null key added here would never be
+    // looked up.
     for (const key of violationKeys(storage, storage.sql.exec(`pragma foreign_key_check`).toArray())) {
       if (key !== null) before.add(key);
     }
@@ -304,7 +338,13 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
       // column -- the same shape introspect() (src/build/migration.ts)
       // already reads, so a generated column a sibling migration added is
       // caught here too, the same as any other column.
-      const actualColumns = storage.sql.exec(`select name from pragma_table_xinfo(?) where hidden in (0, 2, 3)`, table).toArray().map((r) => String(r.name));
+      // Schema-qualified to main (the second argument), the same reason
+      // violationKeys() below qualifies its own table_info and
+      // foreign_key_list calls: an unqualified pragma_table_xinfo(?) resolves
+      // against a same-named TEMP table first when one exists (measured
+      // directly), reading that TEMP table's own, possibly narrower, column
+      // list in place of the main table this check means to protect.
+      const actualColumns = storage.sql.exec(`select name from pragma_table_xinfo(?, 'main') where hidden in (0, 2, 3)`, table).toArray().map((r) => String(r.name));
       if (actualColumns.length === 0) continue;
       const recorded = new Map(columns.map((c) => [c.name, c.def]));
       const unknown = actualColumns.find((n) => !recorded.has(n));
@@ -331,6 +371,10 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
       // table as having a "stale declaration" even when nothing changed.
       const schemaRow = storage.sql.exec(`select sql from sqlite_schema where type = 'table' and lower(name) = lower(?)`, table).toArray()[0];
       const defs = schemaRow ? definitions(String(schemaRow.sql)) : null;
+      // `recorded.get(n) ?? ""` never falls back: `unknown` above already
+      // confirmed `recorded.has(n)` for every `n` this `find` considers, so
+      // `recorded.get(n)` is always the file's own recorded definition, not
+      // undefined, whatever that definition's own text is (including "").
       const changed = actualColumns.find((n) => (defs?.columns.get(n) ?? "") !== (recorded.get(n) ?? ""));
       if (changed !== undefined) {
         throw new MigrationHistoryError(
