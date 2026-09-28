@@ -11,6 +11,15 @@ import { DatabaseSync } from "node:sqlite";
 import { migrate, MigrationHistoryError } from "../src/node.ts";
 import { REBUILD_HEADER } from "../src/build/scan.ts";
 
+const commentOnlyTailFiles = [
+  { name: "0001.sql", sql: "create table t(x);" },
+  { name: "0002.sql", sql: "select 1;\n-/**/-" },
+];
+
+function historyNames(raw: DatabaseSync): string[] {
+  return raw.prepare("select name from solarsql_migrations order by name").all().map((row) => String(row.name));
+}
+
 test("a thrown MigrationHistoryError names itself, not the base Error, in its own .name", () => {
   const raw = new DatabaseSync(":memory:");
   try {
@@ -69,23 +78,24 @@ test("a migration file with only a trailing comment after its last statement doe
   } finally { raw.close(); }
 });
 
-test("a statement whose comment-stripped text spells a new line comment does not crash the transaction-control scan, and does not block an earlier file from applying", () => {
+test("a migration ending with a segment that becomes a line comment applies and records its history", () => {
   const raw = new DatabaseSync(":memory:");
   try {
-    // splitStatements() strips each comment token, then keeps the segment
-    // when what remains is non-empty; here that leaves the two dashes of
-    // "-/**/-" adjacent, with no space where the block comment used to be.
-    // A fresh tokenize() of that surviving text, "--", reads it as one new
-    // line comment (not the two unrelated dashes it started as), so this
-    // segment's own significant-token list is empty.
-    assert.throws(
-      () => migrate(raw, [{ name: "0001.sql", sql: "create table t(x);" }, { name: "0002.sql", sql: "select 1;\n-/**/-" }]),
-      (e: unknown) => {
-        assert.equal(e instanceof TypeError, false, String(e));
-        return true;
-      },
-    );
-    assert.deepEqual(raw.prepare("select name from solarsql_migrations").all().map((r) => r.name), ["0001.sql"]);
+    assert.deepEqual(migrate(raw, commentOnlyTailFiles), ["0001.sql", "0002.sql"]);
+    assert.deepEqual(historyNames(raw), ["0001.sql", "0002.sql"]);
+  } finally { raw.close(); }
+});
+
+test("a Durable Object migration ending with a segment that becomes a line comment applies and records its history", async () => {
+  const raw = new DatabaseSync(":memory:");
+  try {
+    const { migrate: migrateStorage } = await import("../src/durable.ts");
+    const { storageOf } = await import("../src/node.ts");
+    const base = storageOf(raw);
+    const storage = { sql: base.sql, transactionSync: base.transactionSync };
+    assert.equal("inTransaction" in storage, false);
+    assert.deepEqual(migrateStorage(storage, commentOnlyTailFiles), ["0001.sql", "0002.sql"]);
+    assert.deepEqual(historyNames(raw), ["0001.sql", "0002.sql"]);
   } finally { raw.close(); }
 });
 

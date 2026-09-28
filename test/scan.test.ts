@@ -5,7 +5,7 @@ import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
-import { aliasMap, columnRef, created, definitions, leadingComment, namedParams, normalize, paramSites, quoteIdent, renamedColumn, selectItems, splitStatements, sqliteName, tokenize, unconditionalMatchAliases } from "../src/build/scan.ts";
+import { aliasMap, columnRef, created, definitions, leadingComment, namedParams, normalize, paramSites, quoteIdent, renamedColumn, selectItems, significant, splitStatements, sqliteName, tokenize, unconditionalMatchAliases } from "../src/build/scan.ts";
 
 const ident = gs.fromRegex("[a-z_][a-z0-9_]{0,6}");
 const fragment = gs.composite((tc): string => {
@@ -100,6 +100,25 @@ describe("splitStatements", () => {
       const file = statements.map((s) => s + ";").join("\n");
       const expected = statements.map((s) => s.replace(/ \/\* block; comment \*\/$/, ""));
       assert.deepEqual(splitStatements(file), expected);
+    });
+  });
+
+  test("segments without significant tokens are omitted", () => {
+    assert.deepEqual(splitStatements("select 1;\n-/**/-"), ["select 1"]);
+    for (const sql of ["-- x", "/* x */", ";", "-/**/-"]) {
+      assert.deepEqual(splitStatements(sql), [], sql);
+    }
+  });
+
+  test("every returned statement contains a significant token", () => {
+    hegel.test((tc) => {
+      const side = gs.arrays(gs.sampledFrom(["-", "+", "/", "*", " ", "\n", ";"]), { maxSize: 6 });
+      const left = tc.draw(side).join("");
+      const right = tc.draw(side).join("");
+      const comment = tc.draw(gs.text({ alphabet: "abc -;\n", maxSize: 20 }));
+      for (const statement of splitStatements(`${left}/*${comment}*/${right}`)) {
+        assert.ok(significant(tokenize(statement)).length > 0, JSON.stringify(statement));
+      }
     });
   });
 

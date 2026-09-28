@@ -679,8 +679,10 @@ export function rehearseSnapshot(db: DatabaseSync, sql: string, checks: Rehearsa
     stage = 'MIGRATION_FAILED';
     const statements = splitStatements(sql);
     for (const statement of statements) {
-      const verb = significant(tokenize(statement))[0]?.text.toUpperCase();
-      if (verb && ['BEGIN','COMMIT','END','ROLLBACK','SAVEPOINT','RELEASE'].includes(verb)) throw new Error('Rehearsal owns the transaction; remove transaction control statements');
+      // splitStatements() returns only statements with significant tokens,
+      // so the first token always exists here.
+      const verb = significant(tokenize(statement))[0]!.text.toUpperCase();
+      if (['BEGIN','COMMIT','END','ROLLBACK','SAVEPOINT','RELEASE'].includes(verb)) throw new Error('Rehearsal owns the transaction; remove transaction control statements');
     }
     db.exec('begin');
     for (const statement of statements) db.exec(statement);

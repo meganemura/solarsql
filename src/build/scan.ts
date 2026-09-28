@@ -1388,7 +1388,7 @@ export function splitStatements(sql: string): string[] {
     }
     if (t.type === "punct" && t.text === ";" && t.depth === 0 && !inTrigger) {
       const text = stripComments(sql.slice(start, t.start)).trim();
-      if (text.length > 0) out.push(text);
+      if (text.length > 0 && significant(tokenize(text)).length > 0) out.push(text);
       start = t.end;
       first = null;
       createTrigger = false;
@@ -1396,7 +1396,7 @@ export function splitStatements(sql: string): string[] {
     prev = t;
   }
   const rest = stripComments(sql.slice(start)).trim();
-  if (rest.length > 0) out.push(rest);
+  if (rest.length > 0 && significant(tokenize(rest)).length > 0) out.push(rest);
   return out;
 }
 
