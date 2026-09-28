@@ -2048,6 +2048,206 @@ describe("join fan-out: join kind x B's own proof shape (ADR 0136)", () => {
   });
 });
 
+describe("join fan-out: equality collation follows SQLite operand precedence", () => {
+  const engine = new Engine([
+    `create table root_binary(id text primary key not null, code text collate binary not null, unqualified_code text collate binary not null)`,
+    `create table root_nocase_eq(id text primary key not null, code text collate nocase not null)`,
+    `create table agg_eq(id text primary key not null, root_id text not null, val text not null)`,
+    `create table b_eq(id text primary key not null, code text collate binary not null unique)`,
+    `create table other_binary(id text primary key not null, code text collate binary not null)`,
+    `create virtual table root_fts using fts5(id unindexed, code unindexed)`,
+    `create view root_view as select id, code from root_binary`,
+  ]);
+  const t = new Typer(engine, new Map());
+  const joined = (root: string, equality: string) =>
+    `select r.id, json_group_array(json_object('v', a.val)) filter (where a.id is not null) as vs from ${root} r left join agg_eq a on a.root_id = r.id join b_eq b on ${equality} where r.id = :id group by r.id`;
+  const commaJoined = (root: string) =>
+    `select r.id, json_group_array(json_object('v', a.val)) filter (where a.id is not null) as vs from ${root} r left join agg_eq a on a.root_id = r.id, b_eq b where r.id = :id and r.code = b.code group by r.id`;
+  const ungroupedRoot = (root: string, bOn = "b.code = :code") =>
+    `select json_group_array(json_object('v', a.val)) as vs from ${root} r join agg_eq a on a.root_id = r.id join b_eq b on ${bOn}`;
+
+  test("a NOCASE left operand cannot prove a BINARY unique key", () => {
+    assert.throws(() => t.analyze(joined("root_nocase_eq", "r.code = b.code"), "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("a BINARY left operand proves a BINARY unique key", () => {
+    assert.doesNotThrow(() => t.analyze(joined("root_binary", "r.code = b.code"), "m"));
+  });
+
+  test("a BINARY key on the left proves itself against a NOCASE column", () => {
+    assert.doesNotThrow(() => t.analyze(joined("root_nocase_eq", "b.code = r.code"), "m"));
+  });
+
+  test("an explicit BINARY collation on the right proves a BINARY unique key", () => {
+    assert.doesNotThrow(() => t.analyze(joined("root_nocase_eq", "r.code = b.code collate binary"), "m"));
+  });
+
+  test("an explicit NOCASE collation on the left cannot prove a BINARY unique key", () => {
+    assert.throws(() => t.analyze(joined("root_binary", "r.code collate nocase = b.code"), "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("the left explicit collation takes precedence when both operands specify one", () => {
+    assert.doesNotThrow(() => t.analyze(joined("root_nocase_eq", "r.code collate binary = b.code collate nocase"), "m"));
+  });
+
+  test("a nested NOCASE collation in parentheses cannot prove a BINARY key", () => {
+    assert.throws(() => t.analyze(joined("root_binary", "b.code = (r.code collate nocase)"), "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("a nested NOCASE collation before concatenation cannot prove a BINARY key", () => {
+    assert.throws(() => t.analyze(joined("root_binary", "b.code = r.code collate nocase || ''"), "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("a nested NOCASE collation in a function cannot prove a BINARY key", () => {
+    assert.throws(() => t.analyze(joined("root_binary", "b.code = trim(r.code collate nocase)"), "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("a trailing BINARY collation after an earlier NOCASE collation in the same operand cannot prove a BINARY key", () => {
+    assert.throws(() => t.analyze(joined("root_binary", "b.code = r.code collate nocase || 'x' collate binary"), "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("a left explicit BINARY collation wins over an unknown nested right collation", () => {
+    assert.doesNotThrow(() => t.analyze(joined("root_binary", "b.code collate binary = (r.code collate nocase)"), "m"));
+  });
+
+  test("an unknown nested left collation prevents a trailing right BINARY proof", () => {
+    assert.throws(() => t.analyze(joined("root_binary", "trim(r.code collate nocase) = b.code collate binary"), "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  for (const [label, value] of [["parameter", ":code"], ["string", "'A'"], ["number", "1"]]) {
+    test(`a ${label} on the left defers to the BINARY key on the right`, () => {
+      assert.doesNotThrow(() => t.analyze(joined("root_nocase_eq", `${value} = b.code`), "m"));
+    });
+  }
+
+  test("an unresolved expression on the left cannot prove a BINARY key on the right", () => {
+    assert.throws(() => t.analyze(joined("root_binary", "lower(r.code) = b.code"), "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("a compound parameter expression on the left cannot prove a BINARY key on the right", () => {
+    assert.throws(() => t.analyze(joined("root_binary", ":code || r.code = b.code"), "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("an explicit BINARY collation on an expression proves a BINARY key", () => {
+    assert.doesNotThrow(() => t.analyze(joined("root_nocase_eq", "lower(r.code) collate binary = b.code"), "m"));
+  });
+
+  test("a derived-table column on the left cannot prove a BINARY key on the right", () => {
+    const sql =
+      "select r.id, json_group_array(json_object('v', x.code)) as vs from root_binary r join (select code from root_nocase_eq) x on true join b_eq b on x.code = b.code where r.id = :id group by r.id";
+    assert.throws(() => t.analyze(sql, "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("an unqualified column on the left cannot prove a BINARY key on the right", () => {
+    assert.throws(() => t.analyze(joined("root_binary", "unqualified_code = b.code"), "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("a WHERE equality with a NOCASE left operand cannot prove a comma-joined BINARY unique key", () => {
+    assert.throws(() => t.analyze(commaJoined("root_nocase_eq"), "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("a WHERE equality with a BINARY left operand proves a comma-joined BINARY unique key", () => {
+    assert.doesNotThrow(() => t.analyze(commaJoined("root_binary"), "m"));
+  });
+
+  test("a CTE that shadows the other operand's table prevents an ON-clause proof", () => {
+    const sql = `with root_binary as (select * from root_nocase_eq) ${joined("root_binary", "r.code = b.code").replace(" group by r.id", "")}`;
+    assert.throws(() => t.analyze(sql, "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("a CTE that shadows the other operand's table prevents a WHERE-clause proof", () => {
+    const sql = `with root_binary as (select * from root_nocase_eq) ${commaJoined("root_binary").replace(" group by r.id", "")}`;
+    assert.throws(() => t.analyze(sql, "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("a CTE operand cannot supply a same-named table's collation", () => {
+    const sql =
+      "with root_binary as (select * from root_nocase_eq) select r.id, json_group_array(json_object('v', r.code)) as vs from root_binary r join b_eq b on r.code = b.code group by r.id";
+    assert.throws(() => t.analyze(sql, "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("a CTE operand cannot supply a same-named table's collation through USING", () => {
+    const sql =
+      "with root_binary as (select * from root_nocase_eq) select r.id, json_group_array(json_object('v', r.code)) as vs from root_binary r join b_eq b using (code) group by r.id";
+    assert.throws(() => t.analyze(sql, "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("a CTE that shadows the unique-key table cannot supply that table's key", () => {
+    const sql = `with b_eq as (select * from root_nocase_eq) ${joined("root_binary", "r.code = b.code")}`;
+    assert.throws(() => t.analyze(sql, "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("an outer CTE that shadows a table prevents a proof inside a correlated RETURNING subquery", () => {
+    const sql = `with b_eq as (select * from root_nocase_eq)
+      update root_binary set code = code where id = :id
+      returning json((select json_group_array(json_object('v', a.val)) filter (where a.id is not null)
+        from root_binary r left join agg_eq a on a.root_id = r.id join b_eq b on r.code = b.code
+        where r.id = root_binary.id group by r.id)) as vs`;
+    assert.throws(() => t.analyze(sql, "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("an outer CTE prevents a proof inside a JSON object in a correlated RETURNING subquery", () => {
+    const sql = `with root_binary as (select * from root_nocase_eq)
+      update agg_eq set val = val
+      returning json((select json_object('k', json((select json_group_array(json_object('v', r.code))
+        from root_binary r join b_eq b on r.code = b.code)))
+        from agg_eq x where x.id = agg_eq.id)) as vs`;
+    assert.throws(() => t.analyze(sql, "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("USING does not skip a leftmost CTE that shadows a table", () => {
+    const sql =
+      "with root_binary as (select * from root_nocase_eq) select json_group_array(json_object('v', r.id)) as vs from root_binary r, other_binary q join b_eq b using (code) where q.id = :id";
+    assert.throws(() => t.analyze(sql, "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("USING does not skip a leftmost CTE with a distinct name", () => {
+    const sql =
+      "with cte as (select * from root_nocase_eq) select json_group_array(json_object('v', r.id)) as vs from cte r, other_binary q join b_eq b using (code) where q.id = :id";
+    assert.throws(() => t.analyze(sql, "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("USING does not skip a leftmost derived table", () => {
+    const sql =
+      "select json_group_array(json_object('v', r.id)) as vs from (select * from root_nocase_eq) r, other_binary q join b_eq b using (code) where q.id = :id";
+    assert.throws(() => t.analyze(sql, "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+
+  test("a schema-qualified table can still supply its unique key", () => {
+    const sql =
+      "with b_eq as (select * from root_nocase_eq) select r.id, json_group_array(json_object('v', a.val)) filter (where a.id is not null) as vs from root_binary r left join agg_eq a on a.root_id = r.id join main.b_eq b on r.code = b.code where r.id = :id group by r.id";
+    assert.doesNotThrow(() => t.analyze(sql, "m"));
+  });
+
+  test("an FTS5 table as the ungrouped FROM root needs no fan-out proof", () => {
+    assert.doesNotThrow(() => t.analyze(ungroupedRoot("root_fts"), "m"));
+  });
+
+  test("a view as the ungrouped FROM root needs no fan-out proof", () => {
+    assert.doesNotThrow(() => t.analyze(ungroupedRoot("root_view"), "m"));
+  });
+
+  test("a CTE as the ungrouped FROM root needs no fan-out proof", () => {
+    const sql = `with root_cte as (select * from root_binary) ${ungroupedRoot("root_cte")}`;
+    assert.doesNotThrow(() => t.analyze(sql, "m"));
+  });
+
+  test("a derived table as the ungrouped FROM root needs no fan-out proof", () => {
+    assert.doesNotThrow(() => t.analyze(ungroupedRoot("(select * from root_binary)"), "m"));
+  });
+
+  test("a table-valued function as the ungrouped FROM root needs no fan-out proof", () => {
+    const sql =
+      `select json_group_array(json_object('v', a.val)) as vs from json_each('["id"]') r join agg_eq a on a.root_id = cast(r.value as text) join b_eq b on b.code = :code`;
+    assert.doesNotThrow(() => t.analyze(sql, "m"));
+  });
+
+  test("an unproved non-root join is refused when the ungrouped FROM root is exempt", () => {
+    const sql = `with root_cte as (select * from root_binary) ${ungroupedRoot("root_cte", "b.id is not null")}`;
+    assert.throws(() => t.analyze(sql, "m"), (e: unknown) => e instanceof BuildError && /"b"/.test(e.message));
+  });
+});
+
 // A USING column's own equality is `other.col = this.col`, the same
 // equality an ON clause or a WHERE conjunct would give: b's own primary key
 // column here has no other proof route (no ON clause, and WHERE never

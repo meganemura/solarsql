@@ -20,20 +20,45 @@ export type Source = {
   on: string | null;
 };
 export type QueryScope = { ctes: Cte[]; branches: string[]; operators: string[] };
-// One side of an ON clause's equality conjunct: a bare or alias-qualified
-// column, with its own explicit COLLATE override when the conjunct wrote
-// one, or null to defer to the column's declared collation.
-function sideRef(tokens: Token[]): { alias: string | null; column: string; collate: string | null } | null {
+// SQLite applies explicit COLLATE operators inside an operand.
+// `known` records one trailing operator because its precedence is clear.
+// `unknown` records nested or multiple operators because this parser cannot identify SQLite's winning operator.
+// `none` lets typegen use declared column precedence.
+// Typegen rejects an equality with `unknown` rather than prove a key under the wrong collation.
+type ExplicitCollation =
+  | { kind: "known"; name: string }
+  | { kind: "unknown" }
+  | { kind: "none" };
+
+function sideCollation(tokens: Token[]): ExplicitCollation {
+  if (isKeyword(tokens.at(-2), "collate") && tokens.filter((token) => isKeyword(token, "collate")).length === 1) return { kind: "known", name: unquote(tokens.at(-1)!.text).toUpperCase() };
+  if (tokens.some((token) => isKeyword(token, "collate"))) return { kind: "unknown" };
+  return { kind: "none" };
+}
+
+// The parser can remove a known suffix without changing which explicit operator wins.
+// An unknown operand stays unresolved because removing one operator could expose the wrong column shape.
+function sideRef(tokens: Token[]): { alias: string | null; column: string } | null {
   let t = tokens;
-  let collate: string | null = null;
-  if (t.length >= 2 && isKeyword(t[t.length - 2], "collate")) {
-    collate = unquote(t[t.length - 1]!.text).toUpperCase();
+  const collate = sideCollation(t);
+  if (collate.kind === "known") {
     t = t.slice(0, -2);
   }
-  if (t.length === 1 && t[0]!.type === "ident") return { alias: null, column: unquote(t[0]!.text), collate };
-  if (t.length === 3 && t[0]!.type === "ident" && t[1]!.text === "." && t[2]!.type === "ident") return { alias: unquote(t[0]!.text), column: unquote(t[2]!.text), collate };
+  if (t.length === 1 && t[0]!.type === "ident") return { alias: null, column: unquote(t[0]!.text) };
+  if (t.length === 3 && t[0]!.type === "ident" && t[1]!.text === "." && t[2]!.type === "ident") return { alias: unquote(t[0]!.text), column: unquote(t[2]!.text) };
   return null;
 }
+
+// A column keeps its reference so typegen can read its declared collation.
+// A value contributes no declared collation, so SQLite can use the target column's collation.
+type EqualityOperand =
+  | { kind: "column"; alias: string | null; column: string }
+  | { kind: "value" };
+
+// Null marks an expression that is neither a column nor a value.
+// A bare column has a null alias, so typegen cannot use table facts to resolve its collation.
+// The target side preserves operand order because SQLite checks the left column's declared collation before the right column's.
+export type OnEquality = { explicitCollation: ExplicitCollation; other: EqualityOperand | null; targetSide: "left" | "right" };
 
 // Whether `tokens` names `alias` anywhere, qualified (`alias.col`). A join
 // fan-out proof (typegen.ts, ADR 0136) needs the equality's other side to
@@ -46,20 +71,20 @@ function referencesAlias(tokens: Token[], alias: string): boolean {
   return false;
 }
 
-// From one source's ON clause, the columns of `alias` that a depth-0 AND
+// From one ON or WHERE clause, the columns of `alias` that a depth-0 AND
 // chain equates against an expression that does not itself reference
-// `alias`, each with its own explicit COLLATE override or null: a join
-// fan-out proof's per-source half (typegen.ts, ADR 0136). A bare
-// (unqualified) column on either side is not counted, since this parser
-// carries no schema to resolve which source it belongs to. Returns null
+// `alias`. Each result keeps the other operand's classification, the
+// operand order, and an explicit COLLATE state. A bare column keeps no
+// alias, so typegen cannot resolve its declared collation from table facts.
+// Returns null
 // when a depth-0 OR sits in the clause: an OR can satisfy the join without
 // every conjunct holding for every matched row, the same reasoning
 // unconditionalMatchAliases (scan.ts) already applies to WHERE.
-export function onEqualities(on: string, alias: string): Map<string, string | null> | null {
+export function onEqualities(on: string, alias: string): Map<string, OnEquality> | null {
   const tokens = significant(tokenize(on));
   if (tokens.length === 0) return new Map();
   if (tokens.some((t) => t.depth === 0 && isKeyword(t, "or"))) return null;
-  const out = new Map<string, string | null>();
+  const out = new Map<string, OnEquality>();
   let start = 0;
   for (let i = 0; i <= tokens.length; i++) {
     if (i !== tokens.length && !(tokens[i]!.depth === 0 && isKeyword(tokens[i], "and"))) continue;
@@ -67,16 +92,25 @@ export function onEqualities(on: string, alias: string): Map<string, string | nu
     start = i + 1;
     const eq = conjunct.findIndex((t) => t.depth === 0 && t.text === "=");
     if (eq <= 0 || eq >= conjunct.length - 1) continue;
-    const left = sideRef(conjunct.slice(0, eq));
-    const right = sideRef(conjunct.slice(eq + 1));
-    const bSide = left && left.alias !== null && sqliteName(left.alias) === sqliteName(alias) ? { ref: left, other: conjunct.slice(eq + 1) }
-      : right && right.alias !== null && sqliteName(right.alias) === sqliteName(alias) ? { ref: right, other: conjunct.slice(0, eq) }
+    const leftTokens = conjunct.slice(0, eq);
+    const rightTokens = conjunct.slice(eq + 1);
+    const leftCollation = sideCollation(leftTokens);
+    const left = sideRef(leftTokens);
+    const right = sideRef(rightTokens);
+    const target = left && left.alias !== null && sqliteName(left.alias) === sqliteName(alias) ? { ref: left, other: rightTokens, otherRef: right, targetSide: "left" as const }
+      : right && right.alias !== null && sqliteName(right.alias) === sqliteName(alias) ? { ref: right, other: leftTokens, otherRef: left, targetSide: "right" as const }
       : null;
-    if (!bSide || referencesAlias(bSide.other, alias)) continue;
-    // An explicit COLLATE binds to SQLite's comparison operator, not to one
-    // operand: whichever side wrote one decides the comparison's collation,
-    // overriding either operand's own declared collation.
-    out.set(sqliteName(bSide.ref.column), left?.collate ?? right?.collate ?? null);
+    if (!target || referencesAlias(target.other, alias)) continue;
+    const other: EqualityOperand | null = target.otherRef !== null
+      ? { kind: "column", alias: target.otherRef.alias, column: target.otherRef.column }
+      : target.other.length === 1 && ["param", "string", "number"].includes(target.other[0]!.type)
+        ? { kind: "value" }
+        : null;
+    out.set(sqliteName(target.ref.column), {
+      explicitCollation: leftCollation.kind === "none" ? sideCollation(rightTokens) : leftCollation,
+      other,
+      targetSide: target.targetSide,
+    });
   }
   return out;
 }

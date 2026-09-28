@@ -5,7 +5,7 @@
 // Boundary: no file system, no module layout, no boundary check. build.ts
 // owns those. A shape this file cannot type becomes a BuildError with the
 // SQL and the reason.
-import { onEqualities, queryScope, querySources, unionType, unionMembers, type Cte, type Source } from "./scope.ts";
+import { onEqualities, queryScope, querySources, unionType, unionMembers, type Cte, type OnEquality, type Source } from "./scope.ts";
 import { GUARD_TABLE } from "../runtime/plan.ts";
 import type { ColumnFact, Engine, OutputColumn, TableFact } from "./facts.ts";
 import { aliasMap, columnRef, findCall, isKeyword, leadingComment, namedParams, nonNullFilterAlias, paramSites, quoteIdent, returningClause, selectItems, significant, splitAtCommas, sqliteName, tokenize, type JsonKeyRef, type Token, unconditionalMatchAliases, unquote } from "./scan.ts";
@@ -78,6 +78,15 @@ function affinityType(affinity: string): string | null {
 }
 
 type ScopeColumn = Analysis["columns"][number] & { hidden?: boolean; matchOperandOf?: string };
+type SingleRowProof = {
+  sources: Source[];
+  environment: Map<string, Binding>;
+  isRoot: boolean;
+  groupedColumns: Set<string>;
+  where: string | null;
+  hasGroupBy: boolean;
+  usingEqualities: Map<string, string | null>;
+};
 type Binding = Cte & { environment: Map<string, Binding> };
 type ScopeContext = { rows: Map<string, ScopeColumn[]>; visible: ScopeColumn[]; nullable: Set<string>; environment: Map<string, Binding>; active: Set<Binding | string>; parent?: ScopeContext };
 
@@ -717,7 +726,7 @@ export class Typer {
 
     // DISTINCT already removes any duplicate a fan-out join would add
     // (ADR 0136), so the refusal below does not apply to it.
-    if (!isDistinct) this.refuseJoinFanOut(sql, usedAliases, filterText, aliases);
+    if (!isDistinct) this.refuseJoinFanOut(sql, usedAliases, filterText, aliases, scope?.environment ?? new Map());
 
     const element = jsonResultType(this.valueType(sql, inner, aliases, insideNullable, note, scope));
     return `Array<${element}>`;
@@ -737,7 +746,7 @@ export class Typer {
   // same collation that key enforces. Refuses whenever this cannot be
   // shown, the same conservative stance ADR 0047 already takes for scope
   // resolution.
-  private refuseJoinFanOut(sql: string, elementAliases: Set<string>, filterText: string, aliases: Map<string, string | null>): void {
+  private refuseJoinFanOut(sql: string, elementAliases: Set<string>, filterText: string, aliases: Map<string, string | null>, environment: Map<string, Binding>): void {
     let sources: Source[];
     try { sources = querySources(sql); } catch { return; }
     // One FROM source alone has no other alias to multiply rows with. This
@@ -787,8 +796,16 @@ export class Typer {
       const key = sqliteName(source.alias);
       if (A.has(key)) continue;
       if (reached.has(key) && !terminal.has(key)) continue;
-      const usingEqualities = this.usingEqualities(sources, i);
-      if (this.provenSingleRowPerGroup(source, key === rootAlias, groupBy.get(key) ?? new Set(), where, hasGroupBy, usingEqualities)) continue;
+      const usingEqualities = this.usingEqualities(sources, i, environment);
+      if (this.provenSingleRowPerGroup(source, {
+        sources,
+        environment,
+        isRoot: key === rootAlias,
+        groupedColumns: groupBy.get(key) ?? new Set(),
+        where,
+        hasGroupBy,
+        usingEqualities,
+      })) continue;
       throw new BuildError(
         `json_group_array can repeat an element: the join through alias "${source.alias}" is not provably one row per group here, so it can multiply the aggregated rows. Move the one-to-many array into its own correlated subquery instead: json((select json_group_array(...) from <child table> where <child table>.<foreign key> = <this row's key>)).`,
         sql,
@@ -797,24 +814,21 @@ export class Typer {
   }
 
   // A USING column's own equality is `other.col = this.col`, not an ON
-  // clause's own comparison: SQLite reads it under the LEFT (earlier, other)
-  // table's declared collation, never `this` source's own, and never falls
-  // back to the right side the way an ordinary `=` would when the left side
-  // declares none. The earlier source in `sources` (indices before `index`)
-  // that carries the column names it; a valid query has exactly one, since
-  // SQLite itself refuses an ambiguous USING column before this build step
-  // runs. A column this cannot resolve (a derived table or a table-valued
-  // function on the earlier side) is left out of the result, which refuses
-  // it the same conservative way an unresolved ON equality already does.
-  private usingEqualities(sources: Source[], index: number): Map<string, string | null> {
+  // clause's own comparison. SQLite uses the declared collation from the
+  // leftmost earlier source that has the column. It never uses this source's
+  // collation and never falls back to it. A derived table, function, or CTE
+  // can be that leftmost source, but table facts cannot show its columns.
+  // The proof stops there instead of using a later source's collation.
+  private usingEqualities(sources: Source[], index: number, environment: Map<string, Binding>): Map<string, string | null> {
     const out = new Map<string, string | null>();
     const source = sources[index]!;
     for (const column of source.using) {
       const name = sqliteName(column);
       for (let i = 0; i < index; i++) {
         const other = sources[i]!;
-        if (other.query !== null || other.functionSql !== null || other.name === null) continue;
+        if (other.query !== null || other.functionSql !== null || other.name === null || this.isCteSource(other, environment)) break;
         const table = this.tables.get(other.name);
+        if (!table) break;
         const found = table?.columns.find((c) => sqliteName(c.name) === name);
         if (found) { out.set(name, found.collation); break; }
       }
@@ -822,10 +836,35 @@ export class Typer {
     return out;
   }
 
+  // onEqualities resolves explicit precedence before this method applies declared-column and BINARY precedence.
+  // An unknown explicit collation withholds the equality from the proof.
+  // A left-side target uses its own declaration without inspecting the other operand,
+  // because SQLite reads the left column's declared collation first.
+  // For a right-side target, a left value defers to the target's collation.
+  // A left column needs table facts, and an unresolved left expression or
+  // missing facts withhold the equality.
+  // A CTE never inherits facts from a same-named table.
+  private equalityCollation(equality: OnEquality, targetCollation: string, sources: Source[], environment: Map<string, Binding>): string | null {
+    if (equality.explicitCollation.kind === "known") return equality.explicitCollation.name;
+    if (equality.explicitCollation.kind === "unknown") return null;
+    if (equality.targetSide === "left" || equality.other?.kind === "value") return targetCollation;
+    const other = equality.other;
+    if (other === null || other.alias === null) return null;
+    const source = sources.find((candidate) => sqliteName(candidate.alias) === sqliteName(other.alias!));
+    if (!source || source.name === null || this.isCteSource(source, environment)) return null;
+    const table = this.tables.get(source.name);
+    return table?.columns.find((column) => sqliteName(column.name) === sqliteName(other.column))?.collation ?? null;
+  }
+
+  private isCteSource(source: Source, environment: Map<string, Binding>): boolean {
+    return source.schema === null && source.name !== null && environment.has(sqliteName(source.name));
+  }
+
   // Whether `source`'s own rows are provably at most one per group. It has
   // an ON clause: that clause equates every column of its primary key, or
   // of one non-partial, non-expression unique index, with an expression
-  // that does not reference it, under that key's own collation. It is the
+  // that does not reference it. SQLite's comparison collation must match
+  // that key's collation. It is the
   // FROM root, with no GROUP BY at all: with no GROUP BY, the root is the
   // query's own iteration, not a second dimension crossed against another,
   // so it is not a fan-out risk on its own (measured: `json_group_array(...)
@@ -840,28 +879,27 @@ export class Typer {
   // resolves, not this source's own declared collation). A NATURAL join
   // gives no `using` list this parser can read the joined columns from, so
   // a NATURAL-joined non-root source is never proven this way; the same
-  // conservative stance ADR 0047 already takes for scope resolution. A
-  // derived table, a table-valued function, and a full-text search table
-  // (no primary key or unique index pragma reports) are never proven this
-  // way either.
-  private provenSingleRowPerGroup(source: Source, isRoot: boolean, groupedColumns: Set<string>, where: string | null, hasGroupBy: boolean, usingEqualities: Map<string, string | null>): boolean {
-    if (source.query !== null || source.functionSql !== null || source.name === null) return false;
+  // conservative stance ADR 0047 already takes for scope resolution.
+  // The root exemption precedes source-kind checks, so an ungrouped FTS5
+  // table, view, CTE, derived table, or table-valued function root also
+  // qualifies. For every source that is not such a root, a derived
+  // table, view, CTE, table-valued function, and full-text search table are
+  // never proven because table key facts are unavailable.
+  private provenSingleRowPerGroup(source: Source, proof: SingleRowProof): boolean {
+    const { sources, environment, isRoot, groupedColumns, where, hasGroupBy, usingEqualities } = proof;
+    if (source.on === null && isRoot && !hasGroupBy) return true;
+    if (source.query !== null || source.functionSql !== null) return false;
+    if (source.name === null || this.isCteSource(source, environment)) return false;
     const table = this.tables.get(source.name);
     if (!table || table.virtual) return false;
     const pk = table.columns.filter((c) => c.pk > 0).map((c) => ({ name: sqliteName(c.name), collation: c.collation }));
     const candidates = [pk, ...table.uniqueIndexes.map((u) => u.columns.map((c) => ({ name: sqliteName(c.name), collation: c.collation })))].filter((c) => c.length > 0);
-    if (source.on === null && isRoot && !hasGroupBy) return true;
     if (candidates.length === 0) return false;
     const declared = new Map(table.columns.map((c) => [sqliteName(c.name), c.collation]));
-    const matches = (equalities: Map<string, string | null>): boolean =>
+    const matches = (equalities: Map<string, string>): boolean =>
       candidates.some((candidate) => candidate.every((c) => {
         if (!equalities.has(c.name)) return false;
-        // The comparison's effective collation: an explicit COLLATE in the
-        // clause, or a USING column's own resolved left-side collation,
-        // else the column's own declared collation (SQLite's own default
-        // when neither operand writes one).
-        const effective = equalities.get(c.name) ?? declared.get(c.name) ?? "BINARY";
-        return effective === c.collation;
+        return equalities.get(c.name) === c.collation;
       }));
     if (source.on === null) {
       if (candidates.some((candidate) => candidate.every((c) => groupedColumns.has(c.name)))) return true;
@@ -870,20 +908,27 @@ export class Typer {
       // it has resolved one). WHERE can add more, or cover a column USING
       // did not name; a WHERE with a top-level OR proves nothing on its own
       // (onEqualities returns null then), but the USING columns still do.
-      const equalities = new Map(usingEqualities);
+      const equalities = new Map([...usingEqualities].filter((entry): entry is [string, string] => entry[1] !== null));
       if (where !== null) {
         const whereEqualities = onEqualities(where, source.alias);
         // A plain WHERE conjunct writes no COLLATE; it must not overwrite a
         // USING column's own resolved left-side collation with that silence.
         // An explicit COLLATE in the WHERE clause still overrides either way.
-        if (whereEqualities !== null) for (const [column, collate] of whereEqualities) {
-          if (!equalities.has(column) || collate !== null) equalities.set(column, collate);
+        if (whereEqualities !== null) for (const [column, equality] of whereEqualities) {
+          const collate = this.equalityCollation(equality, declared.get(column) ?? "BINARY", sources, environment);
+          if (collate !== null && (!equalities.has(column) || equality.explicitCollation.kind !== "none")) equalities.set(column, collate);
         }
       }
       return matches(equalities);
     }
     const equalities = onEqualities(source.on, source.alias);
-    return equalities !== null && matches(equalities);
+    if (equalities === null) return false;
+    const resolved = new Map<string, string>();
+    for (const [column, equality] of equalities) {
+      const collate = this.equalityCollation(equality, declared.get(column) ?? "BINARY", sources, environment);
+      if (collate !== null) resolved.set(column, collate);
+    }
+    return matches(resolved);
   }
 
   private aliasesIn(expr: string, aliases: Map<string, string | null>): Set<string> {
@@ -1005,17 +1050,19 @@ export class Typer {
     } catch (e) {
       throw new BuildError(`inside json: ${(e as Error).message}`, sql);
     }
-    // The syntactic join walk (the same one a scoped SELECT uses) finds the
-    // nullable aliases; a standalone context, since the detached subquery
-    // carries no CTE or recursion state of its own.
-    const innerNullable = this.sourceContext(detached, new Map(), new Set(), note).context.nullable;
+    // The syntactic join walk uses a standalone context because the detached
+    // subquery has no SELECT parent. The outer WITH bindings remain visible.
+    const environment = new Map<string, Binding>();
+    for (const cte of queryScope(sql, true).ctes) environment.set(sqliteName(cte.name), { ...cte, environment });
+    const innerContext = this.sourceContext(detached, environment, new Set(), note).context;
+    const innerNullable = innerContext.nullable;
     const innerItem = selectItems(detached)![0]!;
     if (isArray) {
-      const arrayType = this.jsonArrayType(detached, innerItem, innerAliases, innerNullable, note);
+      const arrayType = this.jsonArrayType(detached, innerItem, innerAliases, innerNullable, note, innerContext);
       return rowShape === "one-row" ? arrayType : unionType(arrayType, "null");
     }
     // A subquery with no row is NULL.
-    return `${this.jsonObjectType(detached, innerItem.expr, innerItem, innerAliases, innerNullable, note, false)} | null`;
+    return `${this.jsonObjectType(detached, innerItem.expr, innerItem, innerAliases, innerNullable, note, false, innerContext)} | null`;
   }
 
   private parameterScopes(sql: string, offset: number): { start: number; end: number; depth: number }[] {

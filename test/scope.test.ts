@@ -5,7 +5,7 @@ import { test } from "vitest";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
 import { Engine } from "../src/build/facts.ts";
-import { unionType } from "../src/build/scope.ts";
+import { onEqualities, querySources, unionType } from "../src/build/scope.ts";
 import { Typer, type Brand } from "../src/build/typegen.ts";
 
 function fixture(left = true, right = true, matches = true): Engine {
@@ -170,4 +170,69 @@ test("a union drops a literal member the bare string or number type already cove
   assert.equal(unionType("1", "2"), "1 | 2");
   assert.equal(unionType("string", "number"), "string | number");
   assert.equal(unionType('"a"', "null"), '"a" | null');
+});
+
+function otherOperand(expression: string) {
+  return onEqualities(`b.code = ${expression}`, "b")!.get("code")!.other;
+}
+
+test("onEqualities classifies a bare column operand", () => {
+  assert.deepEqual(otherOperand("other"), { kind: "column", alias: null, column: "other" });
+});
+
+test("onEqualities classifies an alias-qualified column operand", () => {
+  assert.deepEqual(otherOperand("x.y"), { kind: "column", alias: "x", column: "y" });
+});
+
+test("onEqualities rejects extra tokens after an alias-qualified column", () => {
+  assert.equal(otherOperand("x.y || 'z'"), null);
+});
+
+test("onEqualities requires an identifier before a column separator", () => {
+  assert.equal(otherOperand("'a'.x"), null);
+});
+
+test("onEqualities requires a column separator between identifiers", () => {
+  assert.equal(otherOperand("x + y"), null);
+});
+
+test("onEqualities requires an identifier after a column separator", () => {
+  assert.equal(otherOperand("x.'a'"), null);
+});
+
+test("querySources rejects a non-identifier FROM source", () => {
+  assert.throws(() => querySources("select * from 1"), /unrecognized FROM source/);
+});
+
+test("querySources uses the name after AS as the source alias", () => {
+  assert.equal(querySources("select * from t as x")[0]!.alias, "x");
+});
+
+test("quoted union members keep union delimiters literal", () => {
+  hegel.test((tc) => {
+    const left = tc.draw(gs.text({ alphabet: "abc", maxSize: 12 }));
+    const right = tc.draw(gs.text({ alphabet: "xyz", maxSize: 12 }));
+    for (const quote of ['"', "'"]) {
+      const member = `${quote}${left}|${right}${quote}`;
+      assert.equal(unionType(member, "null"), `${member} | null`);
+    }
+  });
+});
+
+test("querySources gives a source without USING an empty column list", () => {
+  assert.deepEqual(querySources("select * from t join u on t.id = u.id").map((s) => s.using), [[], []]);
+});
+
+test("querySources does not read a clause keyword as the source's alias", () => {
+  const clauses = ["where a = 1", "group by a", "having count(*) > 0", "window w as ()", "order by a", "limit 1"];
+  for (const clause of clauses) {
+    assert.deepEqual(querySources(`select a from t ${clause}`).map((s) => s.alias), ["t"], clause);
+  }
+  assert.deepEqual(querySources("delete from t returning id").map((s) => s.alias), ["t"]);
+});
+
+test("querySources does not read a join attribute as the previous source's alias", () => {
+  for (const join of ["natural join", "left join", "right join", "full join", "left outer join", "inner join", "cross join"]) {
+    assert.deepEqual(querySources(`select * from t ${join} u`).map((s) => s.alias), ["t", "u"], join);
+  }
 });
