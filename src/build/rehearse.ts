@@ -777,7 +777,13 @@ export function rehearseSnapshot(db: DatabaseSync, sql: string, checks: Rehearsa
       const message = e instanceof Error ? e.message : String(e);
       if (!message.includes('no such database')) result.diagnostics.push({ code: 'DETACH_FAILED', message });
     }
-    rmSync(diffDir, { recursive: true, force: true });
+    // Windows cannot remove an open SQLite file after DETACH fails. Report
+    // cleanup failures without replacing the rehearsal result.
+    try { rmSync(diffDir, { recursive: true, force: true }); }
+    catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      result.diagnostics.push({ code: 'TEMP_CLEANUP_FAILED', message: `Failed to remove temporary directory ${diffDir}: ${message}` });
+    }
   }
   return result;
 }

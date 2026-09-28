@@ -4,6 +4,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: Rehearsal now returns `DETACH_FAILED` and `TEMP_CLEANUP_FAILED` diagnostics when Windows keeps a row-diff snapshot open, instead of throwing during cleanup.
 - Fixed: `splitStatements` now omits segments with no significant SQL tokens after comment removal, so migrations do not pass empty SQL to storage engines.
 - Fixed: Rehearsal now counts rows missing from a primary-key diff as deleted. It also rejects inconsistent diffs caused by primary-key affinity changes (ADR 0139).
 - Fixed: SQLite identifier matching now folds ASCII letters only. Rehearsal now reports lost rows and columns against the correct non-ASCII name. Generated CHECK types no longer merge those column names.

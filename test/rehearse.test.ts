@@ -14,6 +14,22 @@ import { rehearseSnapshot } from '../src/build/rehearse.ts';
 import { diff, introspect, open } from '../src/build/migration.ts';
 import { quoteIdent } from '../src/build/scan.ts';
 
+const cleanupFault = vi.hoisted(() => ({ failDiffCleanup: false, failedPath: undefined as string | undefined }));
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    rmSync: (...args: Parameters<typeof actual.rmSync>) => {
+      const path = String(args[0]);
+      if (cleanupFault.failDiffCleanup && path.includes('solarsql-rehearse-diff-')) {
+        cleanupFault.failedPath = path;
+        throw new Error('cleanup boom');
+      }
+      return actual.rmSync(...args);
+    },
+  };
+});
+
 test('a nullable column transition preserves arbitrary stored values', async () => {
   const { test: property } = await import('@hegeldev/hegel');
   const gs = await import('@hegeldev/hegel/generators');
@@ -1938,21 +1954,49 @@ test('the row-diff schema is detached after a failed rehearsal, so a second call
   } finally { db.close(); }
 });
 
-test('a detach failure other than "no such database" is reported with its own message, after a successful commit', () => {
+// With detachFirst, the real DETACH runs before the error is thrown. The
+// before-copy is then no longer open, so the temporary directory removal
+// succeeds on every platform. Without it, Windows keeps the attached file
+// open and refuses to remove the directory.
+function rehearseWithDetachFailure(message: string, { detachFirst = false } = {}) {
   const db = new DatabaseSync(':memory:');
   const originalExec = db.exec.bind(db);
   try {
     db.exec('create table t(id integer primary key) strict');
     (db as unknown as { exec: typeof db.exec }).exec = ((sql: string) => {
-      if (sql.startsWith('detach ')) throw new Error('boom');
+      if (sql.startsWith('detach ')) {
+        if (detachFirst) originalExec(sql);
+        throw new Error(message);
+      }
       return originalExec(sql);
     }) as typeof db.exec;
-    const result = rehearseSnapshot(db, 'insert into t values (1)');
-    assert.equal(result.ok, true, JSON.stringify(result));
-    assert.deepEqual(result.diagnostics, [{ code: 'DETACH_FAILED', message: 'boom' }]);
+    return rehearseSnapshot(db, 'insert into t values (1)');
   } finally {
     (db as unknown as { exec: typeof db.exec }).exec = originalExec;
     db.close();
+  }
+}
+
+test('a detach failure other than "no such database" is reported with its own message, after a successful commit', () => {
+  const result = rehearseWithDetachFailure('boom', { detachFirst: true });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(result.diagnostics, [{ code: 'DETACH_FAILED', message: 'boom' }]);
+});
+
+test('a temporary-directory cleanup failure after a detach failure is returned as a second diagnostic', () => {
+  cleanupFault.failDiffCleanup = true;
+  cleanupFault.failedPath = undefined;
+  try {
+    const result = rehearseWithDetachFailure('detach boom');
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.diagnostics, [
+      { code: 'DETACH_FAILED', message: 'detach boom' },
+      { code: 'TEMP_CLEANUP_FAILED', message: `Failed to remove temporary directory ${cleanupFault.failedPath}: cleanup boom` },
+    ]);
+  } finally {
+    cleanupFault.failDiffCleanup = false;
+    if (cleanupFault.failedPath) rmSync(cleanupFault.failedPath, { recursive: true, force: true });
+    cleanupFault.failedPath = undefined;
   }
 });
 
