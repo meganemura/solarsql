@@ -33,6 +33,9 @@ export type RehearsalExpected = { dropped?: ExpectedDrop[]; retyped?: ExpectedRe
 export type RehearsalChecks = { queries?: Record<string, string>; assertions?: Record<string, string>; cases?: Record<string, RehearsalCase>; expected?: RehearsalExpected };
 export type RehearsalColumn = { name: string; type: string; notnull: 0 | 1; pk: number };
 export type RowDiff = { compared: true; inserted: number; deleted: number; updated: number } | { compared: false; reason: string };
+type TableComparison =
+  | { compared: true; inserted: number; deleted: number; updated: number; remainingUpdated: number; rowCountMismatch: number }
+  | { compared: false; reason: string };
 export type RehearsalResult = {
   version: 1;
   ok: boolean;
@@ -398,22 +401,18 @@ function retypedColumnsByTable(expected: RehearsalExpected | undefined): Map<str
 }
 
 // Every table present under SQLite's identifier case rule both before and after,
-// excluding a virtual or shadow table on either side. `remainingUpdated`,
-// alongside the reported `rows`, is `diffTable`'s own declaration-aware
-// updated count for every compared table (ADR 0139 amendment): computed
-// here, in the same query that already produces `rows[table].updated`, so
-// `unmatchedRowChanges` can read it back without diffing the table a second
-// time.
+// excluding a virtual or shadow table on either side. Each comparison keeps
+// `diffTable`'s declaration-aware count beside its reported counts, so
+// `unmatchedRowChanges` does not diff the table a second time.
 function diffAllTables(
   db: DatabaseSync,
   before: Record<string, number>, after: Record<string, number>,
   beforeColumns: Record<string, RehearsalColumn[]>, afterColumns: Record<string, RehearsalColumn[]>,
   beforeTypes: Map<string, string>, afterTypes: Map<string, string>,
   retypedColumns: Map<string, Set<string>>,
-): { rows: Record<string, RowDiff>; remainingUpdated: Record<string, number> } {
+): Record<string, TableComparison> {
   const beforeByName = new Map(Object.keys(before).map(name => [sqliteName(name), name]));
-  const rows: Record<string, RowDiff> = {};
-  const remainingUpdated: Record<string, number> = {};
+  const comparisons: Record<string, TableComparison> = {};
   for (const table of Object.keys(after)) {
     const beforeTable = beforeByName.get(sqliteName(table));
     // before and beforeTypes both read the same pre-migration schema:
@@ -433,22 +432,52 @@ function diffAllTables(
     // just built beforeColumns and afterColumns from, so a lookup here can
     // never miss: no fallback array could ever surface.
     const pk = pkPairs(beforeColumns[beforeTable]!, afterColumns[table]!);
-    if (!pk) { rows[table] = { compared: false, reason: 'no primary key, or a changed primary key' }; continue; }
+    if (!pk) { comparisons[table] = { compared: false, reason: 'no primary key, or a changed primary key' }; continue; }
     const mainTable = `main.${quoteIdent(table)}`;
     const beforeTableRef = `${quoteIdent(BEFORE_SCHEMA)}.${quoteIdent(beforeTable)}`;
     const duplicateNullKeys = duplicateNullKeyCount(db, mainTable, pk.map(p => p.after)) > 0
       || duplicateNullKeyCount(db, beforeTableRef, pk.map(p => p.before)) > 0;
     if (duplicateNullKeys) {
-      rows[table] = { compared: false, reason: 'more than one row shares the same primary key containing NULL, so rows cannot be matched one to one' };
+      comparisons[table] = { compared: false, reason: 'more than one row shares the same primary key containing NULL, so rows cannot be matched one to one' };
       continue;
     }
     // Same guarantee as the pkPairs lookup above: both lookups always hit.
     const nonPk = commonColumns(beforeColumns[beforeTable]!, afterColumns[table]!, pk);
     const diffed = diffTable(db, table, beforeTable, pk, nonPk, retypedColumns.get(table));
-    rows[table] = { compared: true, inserted: diffed.inserted, deleted: diffed.deleted, updated: diffed.updated };
-    remainingUpdated[table] = diffed.remainingUpdated;
+    // Row counts reveal losses the primary-key diff misses after a collation
+    // change. Add a positive mismatch so ROWS_LOST_OR_CHANGED reports it.
+    // A negative mismatch can occur when affinity lets one before key match
+    // multiple after keys. Preserve the measured counts because subtraction
+    // would hide losses; the caller rejects the unreliable diff.
+    const unaccounted = before[beforeTable]! + diffed.inserted - diffed.deleted - after[table]!;
+    comparisons[table] = {
+      compared: true,
+      inserted: diffed.inserted,
+      deleted: diffed.deleted + Math.max(unaccounted, 0),
+      updated: diffed.updated,
+      remainingUpdated: diffed.remainingUpdated,
+      rowCountMismatch: unaccounted,
+    };
   }
-  return { rows, remainingUpdated };
+  return comparisons;
+}
+
+function reportedRows(comparisons: Record<string, TableComparison>): Record<string, RowDiff> {
+  return Object.fromEntries(Object.entries(comparisons).map(([table, comparison]) => comparison.compared
+    ? [table, { compared: true, inserted: comparison.inserted, deleted: comparison.deleted, updated: comparison.updated }]
+    : [table, comparison]));
+}
+
+function unreliableRowDiff(
+  comparisons: Record<string, TableComparison>, before: Record<string, number>, after: Record<string, number>,
+): string | null {
+  const beforeByName = new Map(Object.keys(before).map(name => [sqliteName(name), name]));
+  for (const [table, comparison] of Object.entries(comparisons)) {
+    if (!comparison.compared || comparison.rowCountMismatch >= 0) continue;
+    const beforeTable = beforeByName.get(sqliteName(table))!;
+    return `Primary-key row diff for ${table} is inconsistent: before ${before[beforeTable]}, after ${after[table]}, inserted ${comparison.inserted}, deleted ${comparison.deleted}; primary-key affinity differences may make the join many-to-one`;
+  }
+  return null;
 }
 
 // A lost or rewritten row fails the rehearsal by default (owner decision,
@@ -489,8 +518,7 @@ function diffAllTables(
 // and never touches `db` itself. `retyped` never excuses `deleted`, and
 // never a different column's own change on the same row.
 function unmatchedRowChanges(
-  rows: Record<string, RowDiff>, before: Record<string, number>, after: Record<string, number>,
-  remainingUpdated: Record<string, number>,
+  comparisons: Record<string, TableComparison>, before: Record<string, number>, after: Record<string, number>,
   expected: RehearsalExpected | undefined,
 ): { unexpected: string[]; stale: string[] } {
   const deletedDeclared = new Set((expected?.deleted ?? []).map(r => r.table));
@@ -499,13 +527,17 @@ function unmatchedRowChanges(
   const unexpected: string[] = [];
   const matchedDeleted = new Set<string>();
   const matchedUpdated = new Set<string>();
-  for (const [table, diff] of Object.entries(rows)) {
-    if (diff.compared) {
-      if (diff.deleted > 0) {
+  for (const [table, comparison] of Object.entries(comparisons)) {
+    if (comparison.compared) {
+      if (comparison.deleted > 0) {
         if (deletedDeclared.has(table)) matchedDeleted.add(table);
-        else unexpected.push(`deleted ${table} (${diff.deleted})`);
+        else {
+          const inferred = comparison.rowCountMismatch;
+          const explanation = inferred > 0 ? `; includes ${inferred} not found by the primary-key diff and inferred from the row-count mismatch, possibly because rows merged after a primary-key collation change` : '';
+          unexpected.push(`deleted ${table} (${comparison.deleted}${explanation})`);
+        }
       }
-      const updated = remainingUpdated[table]!;
+      const updated = comparison.remainingUpdated;
       if (updated > 0) {
         if (updatedDeclared.has(table)) matchedUpdated.add(table);
         else unexpected.push(`updated ${table} (${updated})`);
@@ -711,11 +743,13 @@ export function rehearseSnapshot(db: DatabaseSync, sql: string, checks: Rehearsa
       return constants.SQLITE_OK;
     });
     db.exec(`attach database ${sqlString(beforeCopyPath)} as ${quoteIdent(BEFORE_SCHEMA)}`);
-    const diffed = diffAllTables(db, result.before, result.after, result.columns.before, result.columns.after, beforeTypes, afterTypes, retypedColumnsByTable(checks.expected));
-    result.rows = diffed.rows;
+    const comparisons = diffAllTables(db, result.before, result.after, result.columns.before, result.columns.after, beforeTypes, afterTypes, retypedColumnsByTable(checks.expected));
+    result.rows = reportedRows(comparisons);
+    const rowDiffError = unreliableRowDiff(comparisons, result.before, result.after);
+    if (rowDiffError) throw new Error(rowDiffError);
     stage = 'ROWS_LOST_OR_CHANGED';
     {
-      const { unexpected, stale } = unmatchedRowChanges(result.rows, result.before, result.after, diffed.remainingUpdated, checks.expected);
+      const { unexpected, stale } = unmatchedRowChanges(comparisons, result.before, result.after, checks.expected);
       const messages = [...unexpected, ...stale];
       if (messages.length > 0) throw new Error(`Rows lost or changed unexpectedly: ${messages.join(', ')}`);
     }
