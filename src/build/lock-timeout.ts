@@ -1,14 +1,13 @@
 // Responsibility: the busy-timeout budget and lock diagnostic that every
 // file-backed read-only DatabaseSync open in src/build/ shares (query.ts,
-// rehearse.ts; analyze.ts's own open is out of scope for this file -- see
-// its own TODO). node:sqlite's `timeout` option defaults to 0, so an
+// rehearse.ts, and analyze.ts). node:sqlite's `timeout` option defaults to 0, so an
 // overlapping open on a WAL file another process holds a lock on fails at
 // once with SQLITE_BUSY/SQLITE_LOCKED instead of waiting the lock out
 // (measured: a lock held 1.5-2.3s is waited out with a timeout; timeout 0
 // fails immediately). See docs/ ADR 0140.
 // Boundary: pure functions only. No DatabaseSync import here, so a caller
-// with no SQLite dependency (a future analyze.ts refactor, a test) can
-// import this without pulling node:sqlite in.
+// with no SQLite dependency, such as a test, can import this without
+// pulling node:sqlite in.
 
 // The CLI's own parent-process deadline (--timeout-ms) runs in the parent
 // (cli.ts); the worker must stop waiting on a lock well before that
