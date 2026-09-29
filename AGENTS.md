@@ -44,7 +44,8 @@ If you want to cite an internal document, write its substance in place instead.
 
 - `npm test` runs `vitest run --project unit`, the in-process files directly under `test/` (node:sqlite only, 754 tests, 753 passing and 1 skipped, about 6 seconds). `npm run test:all` runs `vitest run`, all three projects: `unit` plus `test/slow/` (`cli.test.ts`, `cli-discovery.test.ts`, and `pack.test.ts`, which spawn `tsc`, `npm pack`, and the CLI as child processes; `rehearse-file.test.ts`, whose two tests go through `rehearse()`'s on-disk backup) and `test/miniflare/` (workerd); together 952 tests (951 passing, 1 skipped), about 80 seconds, though the two added directories vary with machine load. CI runs `npm run test:all`.
 - `npm run typecheck` runs `tsc --noEmit` over `src/`, `test/`, `example/`, and `spike/`.
-- `.github/workflows/ci.yml` runs the tests, the typecheck, and the example's `build --check` on Node 24 and 26, on ubuntu, macOS, and Windows, and on each line's floor (24.20.0 and 26.7.0, ubuntu only), for every push and pull request to main.
+- `npm run archstrict` runs `archstrict check`. `build` and `runtime` are directory modules; each package export (`index.ts`, `d1.ts`, `durable.ts`, `node.ts`) is its own file. Crossings that already exist are frozen in `archstrict.todo.json`.
+- `.github/workflows/ci.yml` runs the tests, the typecheck, the module-boundary check, and the example's `build --check` on Node 24 and 26, on ubuntu, macOS, and Windows, and on each line's floor (24.20.0 and 26.7.0, ubuntu only), for every push and pull request to main.
 - `.github/workflows/publish.yml` runs on a `v*` tag. The steps and the trusted-publisher settings are in `docs/releasing.md`.
 - `npm run build` emits `dist/` from `src/`. Only the pack test needs it.
 - `node src/build/cli.ts build example/solarsql.config.ts` builds the example from the source.
@@ -54,3 +55,14 @@ If you want to cite an internal document, write its substance in place instead.
 - `npm run test:mutation` runs StrykerJS across all of `src/`. Incremental mode keeps its result in `reports/`. A full run takes hours, so CI does not run it. The configuration's judgment calls are in ADR 0141.
 
 The `spike/` directory holds the experiments. They are evidence for the ADRs.
+
+
+<!-- ARCHSTRICT_START -->
+## archstrict
+
+In projects with an `archstrict.config.ts` (module-boundary/architecture linting), run `archstrict rules <path>` BEFORE creating a file or adding an import - it reports the module, tags, and constraints that would govern that path, even before it exists. Run `archstrict check` after editing to confirm.
+
+The full rule reference (every rule's evidence/because/do shape, the config schema, the pre-edit query) is at `node_modules/archstrict/skills/archstrict/SKILL.md` when installed via npm - read it before configuring `archstrict.config.ts`, or when a violation's `do:` text alone isn't enough.
+
+If there is no `archstrict.config.ts`, skip archstrict entirely - it may not be installed here.
+<!-- ARCHSTRICT_END -->

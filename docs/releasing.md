@@ -4,6 +4,8 @@ Each version step below is one command, run from the root, on a clean `main` tha
 
 solarsql is already on npm. Pushing a `v*` tag runs [`.github/workflows/publish.yml`](../.github/workflows/publish.yml). The workflow checks out that tag, installs from the lockfile, builds `dist/`, runs the release checks, and runs `npm publish`. npm authenticates with the GitHub Actions OIDC token for the GitHub Environment `publish`. Provenance is attached because the repository and the package are public. The environment is the human gate: the job waits until it is approved. The workflow stores no `NPM_TOKEN`, and the repository secrets do not keep one.
 
+After `npm publish` succeeds, the workflow's `release` job creates the GitHub release from that version's CHANGELOG section. That job is separate so `contents: write` never sits on the job that holds the npm OIDC token. The publish job keeps `contents: read`.
+
 `dist/` is gitignored. The workflow builds it, then `prepublishOnly` builds it again, and that tree is what is published. The tarball contains `src/`, `dist/`, `skills/`, `README.md`, `CHANGELOG.md`, `LICENSE`, `llms.txt`, and `package.json`.
 
 The trusted publisher and the GitHub Environment `publish` are already configured, as of 2026-09-23. Nothing in this repository creates them. Recreate either only when it is missing, using the values below.
@@ -47,11 +49,12 @@ After bumping the `miniflare` dependency: read the pinned workerd tag's `MODULE.
 
 1. Choose the version by SemVer (before 1.0, a minor version may change the API; `CHANGELOG.md`'s own opening line says so). Set it in `package.json`, then turn `CHANGELOG.md`'s `## Unreleased` heading into `## <version> (<date>)`. Add a `## Unreleased` heading first if none exists.
 2. `npm install --package-lock-only` so the lock file carries the version.
-3. `npm run test:all` and `npm run typecheck`.
+3. `npm run test:all`, `npm run typecheck`, and `npm run archstrict`.
 4. `npm pack --dry-run` and read the file list: `src/`, `dist/`, `skills/`, `README.md`, `CHANGELOG.md`, `LICENSE`, `llms.txt`, `package.json`, and nothing else.
 5. Commit as `release: <version>`, tag `v<version>`, push the commit and the tag. The tag without the leading `v` is the `package.json` version; the workflow stops when they differ. The tag push starts the workflow.
-6. Approve the `publish` environment on that Actions run. The approval is requested when the job waits on that environment, which happens only after the tag starts `publish.yml`. The workflow uses Node 24 on `ubuntu-latest` with the npm registry URL set. It requires Node 24.20 or later on that line and npm 11.5.1 or later. It runs `npm ci`, `npm run build`, a check that the build did not modify tracked files, `npm run typecheck`, and `npm run test:all`, then `npm publish`. `dist/` is gitignored, so the new build output is expected and is what gets packed.
-7. A GitHub release from the tag, with that version's CHANGELOG entry as its text. `--notes-file CHANGELOG.md` would paste every version, so extract the section first: `awk '/^## <version>/{f=1;next} /^## /{f=0} f' CHANGELOG.md > notes.md`, then `gh release create v<version> --title v<version> --notes-file notes.md`.
+6. Approve the `publish` environment on that Actions run. The approval is requested when the job waits on that environment, which happens only after the tag starts `publish.yml`. The workflow uses Node 24 on `ubuntu-latest` with the npm registry URL set. It requires Node 24.20 or later on that line and npm 11.5.1 or later. It runs `npm ci`, `npm run build`, a check that the build did not modify tracked files, `npm run typecheck`, `npm run archstrict`, and `npm run test:all`, then `npm publish`. `dist/` is gitignored, so the new build output is expected and is what gets packed.
+7. After `npm publish` succeeds, the workflow's `release` job creates the GitHub release. It extracts only that version's section from `CHANGELOG.md` (the whole file would carry every version), and it skips a release that already exists, so re-running the tag is safe. If that job fails, extract the section and create the release by hand: `awk -v v=<version> '$0 ~ "^## " v " " {in_version=1; next} /^## /{in_version=0} in_version' CHANGELOG.md > notes.md`, then `gh release create v<version> --title v<version> --notes-file notes.md --verify-tag`.
 
-Approving the `publish` environment, and a change of the repository's visibility, are the owner's to run.
+The owner performs the commit, the tag, the push, and the approval of the `publish` environment. The workflow then publishes to npm and creates the GitHub release.
+A change of the repository's visibility is the owner's to run.
 When the repository is public, private vulnerability reporting stays on in its Security settings; `SECURITY.md` points there, and the setting exists only for a public repository.

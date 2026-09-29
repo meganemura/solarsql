@@ -1,7 +1,7 @@
-# The tests, the typecheck, and the example's build check, on the two Node
-# lines the package supports and on each line's floor (24.20.0 and 26.7.0,
-# ubuntu only, ADR 0129). The remote test skips without SOLARSQL_REMOTE_URL,
-# so this workflow needs no secret.
+# The tests, the typecheck, the module-boundary check, and the example's build
+# check, on the two Node lines the package supports and on each line's floor
+# (24.20.0 and 26.7.0, ubuntu only, ADR 0129). The remote test skips without
+# SOLARSQL_REMOTE_URL, so this workflow needs no secret.
 name: ci
 on:
   push:
@@ -33,5 +33,6 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run archstrict
       - run: npm run test:all
       - run: node src/build/cli.ts build --check example/solarsql.config.ts

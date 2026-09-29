@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "modules": {
+    "build": [
+      {"rule":"cycle","path":"src/build/query.ts","evidence":"build -> node.ts -> build"},
+      {"rule":"public-surface-bypass","path":"src/durable.ts","evidence":"'./build/scan.ts' resolved to module 'build', which has no index.ts, index.tsx, index.mts, index.cts","specifier":"./build/scan.ts","target":"src/build/scan.ts"},
+      {"rule":"public-surface-bypass","path":"src/node.ts","evidence":"'./build/scan.ts' resolved to module 'build', which has no index.ts, index.tsx, index.mts, index.cts","specifier":"./build/scan.ts","target":"src/build/scan.ts"}
+    ],
+    "runtime": [
+      {"rule":"public-surface-bypass","path":"src/build/build.ts","evidence":"'../runtime/plan.ts' resolved to module 'runtime', which has no index.ts, index.tsx, index.mts, index.cts","specifier":"../runtime/plan.ts","target":"src/runtime/plan.ts"},
+      {"rule":"public-surface-bypass","path":"src/build/cli.ts","evidence":"'../runtime/node-version.ts' resolved to module 'runtime', which has no index.ts, index.tsx, index.mts, index.cts","specifier":"../runtime/node-version.ts","target":"src/runtime/node-version.ts"},
+      {"rule":"public-surface-bypass","path":"src/build/typegen.ts","evidence":"'../runtime/plan.ts' resolved to module 'runtime', which has no index.ts, index.tsx, index.mts, index.cts","specifier":"../runtime/plan.ts","target":"src/runtime/plan.ts"},
+      {"rule":"public-surface-bypass","path":"src/d1.ts","evidence":"'./runtime/plan.ts' resolved to module 'runtime', which has no index.ts, index.tsx, index.mts, index.cts","specifier":"./runtime/plan.ts","target":"src/runtime/plan.ts"},
+      {"rule":"public-surface-bypass","path":"src/durable.ts","evidence":"'./runtime/plan.ts' resolved to module 'runtime', which has no index.ts, index.tsx, index.mts, index.cts","specifier":"./runtime/plan.ts","target":"src/runtime/plan.ts"},
+      {"rule":"public-surface-bypass","path":"src/index.ts","evidence":"'./runtime/failure.ts' resolved to module 'runtime', which has no index.ts, index.tsx, index.mts, index.cts","specifier":"./runtime/failure.ts","target":"src/runtime/failure.ts"},
+      {"rule":"public-surface-bypass","path":"src/index.ts","evidence":"'./runtime/id.ts' resolved to module 'runtime', which has no index.ts, index.tsx, index.mts, index.cts","specifier":"./runtime/id.ts","target":"src/runtime/id.ts"},
+      {"rule":"public-surface-bypass","path":"src/node.ts","evidence":"'./runtime/node-limits.ts' resolved to module 'runtime', which has no index.ts, index.tsx, index.mts, index.cts","specifier":"./runtime/node-limits.ts","target":"src/runtime/node-limits.ts"},
+      {"rule":"public-surface-bypass","path":"src/node.ts","evidence":"'./runtime/node-version.ts' resolved to module 'runtime', which has no index.ts, index.tsx, index.mts, index.cts","specifier":"./runtime/node-version.ts","target":"src/runtime/node-version.ts"}
+    ]
+  }
+}

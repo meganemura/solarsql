@@ -4,6 +4,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Added: `npm run archstrict` checks module boundaries with archstrict 0.1.0. `build` and `runtime` are directory modules; each package export is its own file. Crossings that already exist are frozen in `archstrict.todo.json`.
+- Changed: a `v*` tag's publish workflow creates the GitHub release from that version's CHANGELOG section after `npm publish`, in a separate job. That job is the only one with `contents: write`.
 - Changed: The fan-out proof now exempts an ungrouped FROM root before source checks, so an FTS5 table, a view, a CTE, a derived table, or a table-valued function can be that root.
 - Fixed: Rehearsal now detects opposing primary-key fan-ins independently, so an affinity split cannot cancel a collation merge and hide a lost row.
 - Fixed: The `json_group_array` join fan-out proof now uses SQLite's comparison collation, so a broader left operand cannot falsely prove a narrower unique key.
