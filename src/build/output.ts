@@ -2,7 +2,7 @@
 // Boundary: callers decide which inputs and SQLite companion files must be preserved.
 import { lstatSync, readlinkSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { BuildError } from "./typegen.ts";
+import { BuildError } from "./build-error.ts";
 
 function destination(path: string, seen = new Set<string>()): string {
   const absolute = resolve(path);

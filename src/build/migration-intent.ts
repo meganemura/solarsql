@@ -3,7 +3,7 @@
 // migration diff rejects an intent that does not match the actual removal.
 import { readFileSync } from "node:fs";
 import type { DropIntent, Rename } from "./migration.ts";
-import { BuildError } from "./typegen.ts";
+import { BuildError } from "./build-error.ts";
 
 export type MigrationIntent = { drops: DropIntent[]; renames: Rename[] };
 

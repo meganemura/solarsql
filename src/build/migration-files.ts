@@ -3,7 +3,7 @@
 import { closeSync, linkSync, openSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { render } from "./migration.ts";
-import { BuildError } from "./typegen.ts";
+import { BuildError } from "./build-error.ts";
 import { announceMigrationLock } from "./machine.ts";
 import type { RebuildRecord } from "./scan.ts";
 

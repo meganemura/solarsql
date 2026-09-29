@@ -1,7 +1,7 @@
 // Responsibility: constrain catalog roles and reject transaction-ending schema conflicts.
 // Boundary: SQLite validates the grammar; this scanner recognizes only these fixed shapes.
 import { isKeyword, significant, splitStatements, tokenize } from "./scan.ts";
-import { BuildError } from "./typegen.ts";
+import { BuildError } from "./build-error.ts";
 
 // These clauses end the transaction that the adapter needs for a command's
 // rollback guarantee, even when the command's own statements use plain SQL.

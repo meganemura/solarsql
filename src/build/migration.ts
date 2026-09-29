@@ -11,7 +11,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { withDeniedFunctions, withWorkerdLimits } from "./facts.ts";
 import { created, definitions, isKeyword, normalize, parseRebuildRecords, quoteIdent, redeclaredByFile, REBUILD_HEADER, renamedColumn, revivedDeclaration, searchFill, splitStatements, tokenize, triggerInsertTarget, type RebuildRecord, type Token, unknownDeclaration } from "./scan.ts";
-import { BuildError } from "./typegen.ts";
+import { BuildError } from "./build-error.ts";
 
 export type Column = { name: string; type: string; notnull: boolean; dflt: string | null; pk: number; def: string; generated: boolean };
 export type ForeignKey = { table: string; from: string; to: string; onUpdate: string; onDelete: string };

@@ -14,7 +14,7 @@ import type { Entry, Query } from "../index.ts";
 import { node } from "../node.ts";
 import { load } from "./build.ts";
 import { busyTimeoutMs, isLockError, lockMessage } from "./lock-timeout.ts";
-import { BuildError } from "./typegen.ts";
+import { BuildError } from "./build-error.ts";
 
 export type QueryTarget = { module: string; catalog: string; name: string };
 

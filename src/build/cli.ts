@@ -19,7 +19,7 @@ import { announceWorkerDone, isCliWorker, isReportWorker, printReport, runHuman,
 import { protectInputs, writeGeneratedFile } from "./output.ts";
 import { parseQueryTarget, runQuery } from "./query.ts";
 import { shellArgument } from "./shell.ts";
-import { BuildError } from "./typegen.ts";
+import { BuildError } from "./build-error.ts";
 
 const usage = `usage:
   solarsql --help                             show commands without loading a project

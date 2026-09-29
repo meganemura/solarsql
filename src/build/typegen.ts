@@ -9,20 +9,11 @@ import { onEqualities, queryScope, querySources, unionType, unionMembers, type C
 import { GUARD_TABLE } from "../runtime/plan.ts";
 import type { ColumnFact, Engine, OutputColumn, TableFact } from "./facts.ts";
 import { aliasMap, columnRef, findCall, isKeyword, leadingComment, namedParams, nonNullFilterAlias, paramSites, quoteIdent, returningClause, selectItems, significant, splitAtCommas, sqliteName, tokenize, type JsonKeyRef, type Token, unconditionalMatchAliases, unquote } from "./scan.ts";
+import { BuildError } from "./build-error.ts";
 
-export class BuildError extends Error {
-  readonly sql: string | undefined;
-  readonly locations: string[] = [];
-  // A short next step for a JSON diagnostic consumer (build --json's own
-  // "action" field); undefined when the message has no single next step.
-  readonly action: string | undefined;
-  constructor(message: string, sql?: string, action?: string) {
-    super(sql === undefined ? message : `${message}\n  in: ${sql.replace(/\s+/g, " ").trim()}`);
-    this.name = "BuildError";
-    this.sql = sql;
-    this.action = action;
-  }
-}
+// Re-exported so a caller that already imports the typer can catch the same
+// error. Callers that only throw or catch it import build-error.ts.
+export { BuildError };
 
 // Where the id type of each table lives, so the generated file of one module
 // can import the ids of the tables its foreign keys reference.
