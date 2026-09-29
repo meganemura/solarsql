@@ -791,7 +791,7 @@ test('rows reports 0/0/0 for a leaf rebuild that changes no data', () => {
     db.exec("create table customers(id integer primary key, name text) strict; insert into customers values (1,'a'),(2,'b'),(3,'c')");
     const result = rehearseSnapshot(db, 'alter table customers add column note text');
     assert.equal(result.ok, true, JSON.stringify(result));
-    assert.deepEqual(result.rows, { customers: { compared: true, inserted: 0, deleted: 0, updated: 0 } });
+    assert.deepEqual(result.rows, { customers: { compared: true, inserted: 0, deleted: 0, updated: 0, remainingUpdated: 0 } });
   } finally { db.close(); }
 });
 
@@ -801,7 +801,7 @@ test('rows reports updated for a value rewrite that keeps the same rows', () => 
     db.exec("create table customers(id integer primary key, name text) strict; insert into customers values (1,'a'),(2,'B')");
     const result = rehearseSnapshot(db, 'update customers set name = upper(name)', { expected: { updated: [{ table: 'customers' }] } });
     assert.equal(result.ok, true, JSON.stringify(result));
-    assert.deepEqual(result.rows, { customers: { compared: true, inserted: 0, deleted: 0, updated: 1 } });
+    assert.deepEqual(result.rows, { customers: { compared: true, inserted: 0, deleted: 0, updated: 1, remainingUpdated: 1 } });
   } finally { db.close(); }
 });
 
@@ -811,7 +811,7 @@ test('rows reports deleted for a lost row', () => {
     db.exec("create table customers(id integer primary key, name text) strict; insert into customers values (1,'a'),(2,'b'),(3,'c')");
     const result = rehearseSnapshot(db, "delete from customers where id = 3", { expected: { deleted: [{ table: 'customers' }] } });
     assert.equal(result.ok, true, JSON.stringify(result));
-    assert.deepEqual(result.rows, { customers: { compared: true, inserted: 0, deleted: 1, updated: 0 } });
+    assert.deepEqual(result.rows, { customers: { compared: true, inserted: 0, deleted: 1, updated: 0, remainingUpdated: 0 } });
   } finally { db.close(); }
 });
 
@@ -820,7 +820,7 @@ test('rows reports a deletion when a NOCASE primary-key rebuild merges two rows'
   try {
     const result = rehearseSnapshot(db, primaryKeyCollationRebuild('nocase'));
     assert.equal(result.ok, false);
-    assert.deepEqual(result.rows.items, { compared: true, inserted: 0, deleted: 1, updated: 0 });
+    assert.deepEqual(result.rows.items, { compared: true, inserted: 0, deleted: 1, updated: 0, remainingUpdated: 0 });
     assert.equal(result.diagnostics[0]?.code, 'ROWS_LOST_OR_CHANGED');
     assert.equal(result.diagnostics[0]?.message, 'Rows lost or changed unexpectedly: deleted items (1)');
   } finally { db.close(); }
@@ -838,7 +838,7 @@ test('an ambiguous before-row match fails without hiding an unmatched deletion',
       alter table n rename to t
     `, { expected: { retyped: [{ table: 't', column: 'id' }], deleted: [{ table: 't' }] } });
     assert.equal(result.ok, false);
-    assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 1, updated: 0 });
+    assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 1, updated: 0, remainingUpdated: 0 });
     assert.equal(result.diagnostics[0]?.code, 'ROW_DIFF_FAILED');
     assert.equal(result.diagnostics[0]?.message, 'Primary-key row diff for t is unreliable: 1 before row matched two or more after rows; primary-key affinity or collation differences made the join non-one-to-one');
   } finally { db.close(); }
@@ -856,7 +856,7 @@ test('one before row matching two after rows fails the row diff', () => {
       alter table n rename to t
     `, { expected: { retyped: [{ table: 't', column: 'id' }], deleted: [{ table: 't' }] } });
     assert.equal(result.ok, false);
-    assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 0, updated: 0 });
+    assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 0, updated: 0, remainingUpdated: 0 });
     assert.equal(result.diagnostics[0]?.code, 'ROW_DIFF_FAILED');
     assert.equal(result.diagnostics[0]?.message, 'Primary-key row diff for t is unreliable: 1 before row matched two or more after rows; primary-key affinity or collation differences made the join non-one-to-one');
   } finally { db.close(); }
@@ -873,7 +873,7 @@ test('opposite primary-key fan-ins do not cancel each other', () => {
       alter table n rename to t
     `, { expected: { retyped: [{ table: 't', column: 'id' }] } });
     assert.equal(result.ok, false);
-    assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 1, updated: 0 });
+    assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 1, updated: 0, remainingUpdated: 0 });
     assert.equal(result.diagnostics[0]?.code, 'ROW_DIFF_FAILED');
     assert.equal(result.diagnostics[0]?.message, 'Primary-key row diff for t is unreliable: 1 before row matched two or more after rows; primary-key affinity or collation differences made the join non-one-to-one');
   } finally { db.close(); }
@@ -920,7 +920,7 @@ test('rows reports two deletions when three primary keys merge into one', () => 
   try {
     const result = rehearseSnapshot(db, primaryKeyCollationRebuild('nocase'));
     assert.equal(result.ok, false);
-    assert.deepEqual(result.rows.items, { compared: true, inserted: 0, deleted: 2, updated: 0 });
+    assert.deepEqual(result.rows.items, { compared: true, inserted: 0, deleted: 2, updated: 0, remainingUpdated: 0 });
     assert.equal(result.diagnostics[0]?.code, 'ROWS_LOST_OR_CHANGED');
     assert.equal(result.diagnostics[0]?.message, 'Rows lost or changed unexpectedly: deleted items (2)');
   } finally { db.close(); }
@@ -931,7 +931,7 @@ test('a merged row stays unchanged when one before row has its values', () => {
   try {
     const result = rehearseSnapshot(db, primaryKeyCollationRebuild('nocase'), { expected: { deleted: [{ table: 'items' }] } });
     assert.equal(result.ok, true, JSON.stringify(result));
-    assert.deepEqual(result.rows.items, { compared: true, inserted: 0, deleted: 1, updated: 0 });
+    assert.deepEqual(result.rows.items, { compared: true, inserted: 0, deleted: 1, updated: 0, remainingUpdated: 0 });
   } finally { db.close(); }
 });
 
@@ -945,7 +945,7 @@ test('NOCASE primary-key merges report one deletion for each extra before row', 
     try {
       const result = rehearseSnapshot(db, primaryKeyCollationRebuild('nocase'), { expected: { deleted: [{ table: 'items' }] } });
       assert.equal(result.ok, true, JSON.stringify(result));
-      assert.deepEqual(result.rows.items, { compared: true, inserted: 0, deleted: count - 1, updated: 0 });
+      assert.deepEqual(result.rows.items, { compared: true, inserted: 0, deleted: count - 1, updated: 0, remainingUpdated: 0 });
     } finally { db.close(); }
   });
 });
@@ -955,7 +955,7 @@ test('expected.deleted accepts rows merged by a NOCASE primary-key rebuild', () 
   try {
     const result = rehearseSnapshot(db, primaryKeyCollationRebuild('nocase'), { expected: { deleted: [{ table: 'items' }] } });
     assert.equal(result.ok, true, JSON.stringify(result));
-    assert.deepEqual(result.rows.items, { compared: true, inserted: 0, deleted: 1, updated: 0 });
+    assert.deepEqual(result.rows.items, { compared: true, inserted: 0, deleted: 1, updated: 0, remainingUpdated: 0 });
   } finally { db.close(); }
 });
 
@@ -965,7 +965,7 @@ test('an inserted row counts only as inserted', () => {
     db.exec("create table customers(id integer primary key, name text) strict; insert into customers values (1,'a')");
     const result = rehearseSnapshot(db, "insert into customers values (2,'b')");
     assert.equal(result.ok, true, JSON.stringify(result));
-    assert.deepEqual(result.rows, { customers: { compared: true, inserted: 1, deleted: 0, updated: 0 } });
+    assert.deepEqual(result.rows, { customers: { compared: true, inserted: 1, deleted: 0, updated: 0, remainingUpdated: 0 } });
   } finally { db.close(); }
 });
 
@@ -974,7 +974,7 @@ test('rows stays compared with no changes when a NOCASE primary-key rebuild merg
   try {
     const result = rehearseSnapshot(db, primaryKeyCollationRebuild('nocase'));
     assert.equal(result.ok, true, JSON.stringify(result));
-    assert.deepEqual(result.rows.items, { compared: true, inserted: 0, deleted: 0, updated: 0 });
+    assert.deepEqual(result.rows.items, { compared: true, inserted: 0, deleted: 0, updated: 0, remainingUpdated: 0 });
   } finally { db.close(); }
 });
 
@@ -1018,8 +1018,8 @@ test('rows attributes a deletion to table Ä without attributing it to table ä'
     const result = rehearseSnapshot(db, 'delete from "Ä" where id = 2');
     assert.equal(result.ok, false);
     assert.deepEqual(result.rows, {
-      'Ä': { compared: true, inserted: 0, deleted: 1, updated: 0 },
-      'ä': { compared: true, inserted: 0, deleted: 0, updated: 0 },
+      'Ä': { compared: true, inserted: 0, deleted: 1, updated: 0, remainingUpdated: 0 },
+      'ä': { compared: true, inserted: 0, deleted: 0, updated: 0, remainingUpdated: 0 },
     });
     assert.equal(result.diagnostics[0]?.message, 'Rows lost or changed unexpectedly: deleted Ä (1)');
   } finally { db.close(); }
@@ -1032,8 +1032,8 @@ test('rows attributes a deletion to table ä without attributing it to table Ä'
     const result = rehearseSnapshot(db, 'delete from "ä" where id = 1');
     assert.equal(result.ok, false);
     assert.deepEqual(result.rows, {
-      'Ä': { compared: true, inserted: 0, deleted: 0, updated: 0 },
-      'ä': { compared: true, inserted: 0, deleted: 1, updated: 0 },
+      'Ä': { compared: true, inserted: 0, deleted: 0, updated: 0, remainingUpdated: 0 },
+      'ä': { compared: true, inserted: 0, deleted: 1, updated: 0, remainingUpdated: 0 },
     });
     assert.equal(result.diagnostics[0]?.message, 'Rows lost or changed unexpectedly: deleted ä (1)');
   } finally { db.close(); }
@@ -1057,7 +1057,7 @@ test('rows compares over the columns a rebuild kept, without throwing on a dropp
     const rebuild = 'create table t_new(id integer primary key, keep text) strict; insert into t_new select id, keep from t; drop table t; alter table t_new rename to t;';
     const result = rehearseSnapshot(db, rebuild, { expected: { dropped: [{ table: 't', column: 'drop_me' }] } });
     assert.equal(result.ok, true, JSON.stringify(result));
-    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 0 } });
+    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 0, remainingUpdated: 0 } });
   } finally { db.close(); }
 });
 
@@ -1067,7 +1067,7 @@ test('rows reports updated for a note column moving to and from NULL', () => {
     db.exec("create table t(id integer primary key, note text); insert into t values (1,null),(2,'kept'),(3,null)");
     const result = rehearseSnapshot(db, "update t set note = 'filled' where note is null", { expected: { updated: [{ table: 't' }] } });
     assert.equal(result.ok, true, JSON.stringify(result));
-    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 2 } });
+    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 2, remainingUpdated: 2 } });
   } finally { db.close(); }
 });
 
@@ -1122,7 +1122,7 @@ test('rows reports 0/0/0 for a no-op rehearsal on a table with one NULL-keyed ro
     db.exec("create table t(k text primary key, v int); insert into t values (null,1),('a',2)");
     const result = rehearseSnapshot(db, 'select 1');
     assert.equal(result.ok, true, JSON.stringify(result));
-    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 0 } });
+    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 0, remainingUpdated: 0 } });
   } finally { db.close(); }
 });
 
@@ -1132,7 +1132,7 @@ test('rows reports deleted when a NULL-keyed row is actually removed, if it is t
     db.exec("create table t(k text primary key, v int); insert into t values (null,1),('a',2)");
     const result = rehearseSnapshot(db, 'delete from t where k is null', { expected: { deleted: [{ table: 't' }] } });
     assert.equal(result.ok, true, JSON.stringify(result));
-    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 1, updated: 0 } });
+    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 1, updated: 0, remainingUpdated: 0 } });
   } finally { db.close(); }
 });
 
@@ -1142,7 +1142,7 @@ test('rows reports updated when a NULL-keyed row is rewritten, if it is the only
     db.exec("create table t(k text primary key, v int); insert into t values (null,1),('a',2)");
     const result = rehearseSnapshot(db, 'update t set v = 9 where k is null', { expected: { updated: [{ table: 't' }] } });
     assert.equal(result.ok, true, JSON.stringify(result));
-    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 1 } });
+    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 1, remainingUpdated: 1 } });
   } finally { db.close(); }
 });
 
@@ -1152,7 +1152,7 @@ test('rows reports 0/0/0 for a no-op rehearsal on a composite primary key with a
     db.exec('create table t(a text, b integer not null, v int, primary key (a, b)); insert into t values (null,1,10),(null,2,20),(\'x\',1,30)');
     const result = rehearseSnapshot(db, 'select 1');
     assert.equal(result.ok, true, JSON.stringify(result));
-    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 0 } });
+    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 0, remainingUpdated: 0 } });
   } finally { db.close(); }
 });
 
@@ -1193,7 +1193,7 @@ test('rows reports updated for upper() on a COLLATE NOCASE column and for a rety
       db.exec("create table t(id integer primary key, name text collate nocase) strict; insert into t values (1,'abc'),(2,'def')");
       const result = rehearseSnapshot(db, "update t set name = upper(name) where id = 1", { expected: { updated: [{ table: 't' }] } });
       assert.equal(result.ok, true, JSON.stringify(result));
-      assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 1 } });
+      assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 1, remainingUpdated: 1 } });
     } finally { db.close(); }
   }
   {
@@ -1207,7 +1207,7 @@ test('rows reports updated for upper() on a COLLATE NOCASE column and for a rety
       // predicts that column's own values will differ.
       const result = rehearseSnapshot(db, rebuild, { expected: { retyped: [{ table: 'items', column: 'qty' }] } });
       assert.equal(result.ok, true, JSON.stringify(result));
-      assert.deepEqual(result.rows, { items: { compared: true, inserted: 0, deleted: 0, updated: 2 } });
+      assert.deepEqual(result.rows, { items: { compared: true, inserted: 0, deleted: 0, updated: 2, remainingUpdated: 0 } });
     } finally { db.close(); }
   }
 });
@@ -1334,7 +1334,7 @@ test('expected.retyped does not excuse a retyped column whose own value actually
       const rebuild = 'create table "_new_t"(id integer primary key, q text) strict; insert into "_new_t" select id, null from t; drop table t; alter table "_new_t" rename to t';
       const result = rehearseSnapshot(db, rebuild, { expected: { retyped: [{ table: 't', column: 'q' }], updated: [{ table: 't' }] } });
       assert.equal(result.ok, true, JSON.stringify(result));
-      assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 1 } });
+      assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 1, remainingUpdated: 1 } });
     } finally { db.close(); }
   }
 });
@@ -1366,7 +1366,7 @@ test('expected.retyped does not excuse a genuine rewrite hidden by a NOCASE coll
       const rebuild = 'create table "_new_t"(id integer primary key, q text collate nocase) strict; insert into "_new_t" select id, q from t; drop table t; alter table "_new_t" rename to t';
       const result = rehearseSnapshot(db, rebuild, { expected: { retyped: [{ table: 't', column: 'q' }] } });
       assert.equal(result.ok, true, JSON.stringify(result));
-      assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 1 } });
+      assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 1, remainingUpdated: 0 } });
     } finally { db.close(); }
   }
 });
@@ -1390,7 +1390,7 @@ test('expected.retyped does not excuse a genuine rewrite hidden by an RTRIM coll
       const rebuild = 'create table "_new_t"(id integer primary key, q text collate rtrim) strict; insert into "_new_t" select id, q from t; drop table t; alter table "_new_t" rename to t';
       const result = rehearseSnapshot(db, rebuild, { expected: { retyped: [{ table: 't', column: 'q' }] } });
       assert.equal(result.ok, true, JSON.stringify(result));
-      assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 1 } });
+      assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 1, remainingUpdated: 0 } });
     } finally { db.close(); }
   }
 });
@@ -1406,7 +1406,7 @@ test('expected.retyped matches a retyped column by its before-side name, even wh
     const rebuild = 'create table "_new_items"(id integer primary key, qty text) strict; insert into "_new_items" select id, Qty from items; drop table items; alter table "_new_items" rename to items';
     const result = rehearseSnapshot(db, rebuild, { expected: { retyped: [{ table: 'items', column: 'Qty' }] } });
     assert.equal(result.ok, true, JSON.stringify(result));
-    assert.deepEqual(result.rows, { items: { compared: true, inserted: 0, deleted: 0, updated: 2 } });
+    assert.deepEqual(result.rows, { items: { compared: true, inserted: 0, deleted: 0, updated: 2, remainingUpdated: 0 } });
   } finally { db.close(); }
 });
 
@@ -1516,7 +1516,7 @@ test('a Hegel property: a no-op rebuild always reports 0/0/0 for every random ro
       for (const [id, v] of rows) insert.run({ id, v });
       const result = rehearseSnapshot(db, 'alter table t add column note text');
       assert.equal(result.ok, true, JSON.stringify(result));
-      assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 0, updated: 0 });
+      assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 0, updated: 0, remainingUpdated: 0 });
     } finally { db.close(); }
   });
 });
@@ -1832,7 +1832,7 @@ test('rows omits a table the migration created, rather than diffing it against n
     db.exec('create table t(id integer primary key) strict');
     const result = rehearseSnapshot(db, "create table added(id integer primary key) strict; insert into added values (1)");
     assert.equal(result.ok, true, JSON.stringify(result));
-    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 0 } });
+    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 0, remainingUpdated: 0 } });
   } finally { db.close(); }
 });
 
@@ -1864,7 +1864,7 @@ test('rows excludes the primary key column from its own value comparison, so a N
     db.exec("create table t(id text primary key collate nocase, v integer) strict; insert into t values ('abc', 1)");
     const result = rehearseSnapshot(db, "update t set id = upper(id)");
     assert.equal(result.ok, true, JSON.stringify(result));
-    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 0 } });
+    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 0, remainingUpdated: 0 } });
   } finally { db.close(); }
 });
 
@@ -1894,7 +1894,7 @@ test('a table named after a denied pragma name still has its rows diffed, not au
     db.exec("create table writable_schema(id integer primary key, v text) strict; insert into writable_schema values (1, 'a')");
     const result = rehearseSnapshot(db, "update writable_schema set v = 'b' where id = 1", { expected: { updated: [{ table: 'writable_schema' }] } });
     assert.equal(result.ok, true, JSON.stringify(result));
-    assert.deepEqual(result.rows, { writable_schema: { compared: true, inserted: 0, deleted: 0, updated: 1 } });
+    assert.deepEqual(result.rows, { writable_schema: { compared: true, inserted: 0, deleted: 0, updated: 1, remainingUpdated: 1 } });
   } finally { db.close(); }
 });
 
@@ -2128,4 +2128,60 @@ test('a failed commit reports MIGRATION_FAILED with the commit error, leaving ok
     (db as unknown as { exec: typeof db.exec }).exec = originalExec;
     db.close();
   }
+});
+
+// solarsql-e3hh: result.rows names both the strict updated count and the
+// declaration-aware remainingUpdated the ROWS_LOST_OR_CHANGED message uses.
+test('rows names remainingUpdated beside updated when a retyped column still leaves a genuine rewrite', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table items (id integer primary key not null, value text); insert into items values (1, '1'), (2, 'x')");
+    const migration = `
+      create table replacement (id integer primary key not null, value integer);
+      insert into replacement select id, cast(value as integer) from items;
+      drop table items;
+      alter table replacement rename to items;
+    `;
+    const result = rehearseSnapshot(db, migration, { expected: { retyped: [{ table: 'items', column: 'value' }] } });
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics[0]!.code, 'ROWS_LOST_OR_CHANGED');
+    assert.equal(result.diagnostics[0]!.message, 'Rows lost or changed unexpectedly: updated items (1)');
+    assert.deepEqual(result.rows.items, { compared: true, inserted: 0, deleted: 0, updated: 2, remainingUpdated: 1 });
+  } finally { db.close(); }
+});
+
+// solarsql-e3hh: expected.retyped matches a table renamed only in ASCII case.
+test('expected.retyped matches a table whose name changed only in ASCII case', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec(`create table "Items" (id integer primary key not null, value text); insert into "Items" values (1, '1')`);
+    const migration = `
+      alter table "Items" rename to old_items;
+      create table items (id integer primary key not null, value integer);
+      insert into items select id, cast(value as integer) from old_items;
+      drop table old_items;
+    `;
+    const result = rehearseSnapshot(db, migration, { expected: { retyped: [{ table: 'Items', column: 'value' }] } });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows.items, { compared: true, inserted: 0, deleted: 0, updated: 1, remainingUpdated: 0 });
+  } finally { db.close(); }
+});
+
+// Non-ASCII case remains distinct: Ä and ä do not merge for expected.retyped.
+test('expected.retyped does not merge non-ASCII table names that differ only in case', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec(`create table "Ä" (id integer primary key not null, value text); create table "ä" (id integer primary key not null, value text); insert into "Ä" values (1, '1'); insert into "ä" values (1, '1')`);
+    const migration = `
+      create table "Ä_new" (id integer primary key not null, value integer);
+      insert into "Ä_new" select id, cast(value as integer) from "Ä";
+      drop table "Ä";
+      alter table "Ä_new" rename to "Ä";
+    `;
+    // Declaring retyped on ä must not excuse a retype of Ä.
+    const result = rehearseSnapshot(db, migration, { expected: { retyped: [{ table: 'ä', column: 'value' }] } });
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics[0]!.code, 'SCHEMA_SHAPE_CHANGED');
+    assert.match(result.diagnostics[0]!.message, /retyped Ä\.value|expected retyped ä\.value did not happen/);
+  } finally { db.close(); }
 });

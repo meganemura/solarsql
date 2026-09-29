@@ -32,7 +32,7 @@ export type ExpectedRowChange = { table: string };
 export type RehearsalExpected = { dropped?: ExpectedDrop[]; retyped?: ExpectedRetype[]; deleted?: ExpectedRowChange[]; updated?: ExpectedRowChange[] };
 export type RehearsalChecks = { queries?: Record<string, string>; assertions?: Record<string, string>; cases?: Record<string, RehearsalCase>; expected?: RehearsalExpected };
 export type RehearsalColumn = { name: string; type: string; notnull: 0 | 1; pk: number };
-export type RowDiff = { compared: true; inserted: number; deleted: number; updated: number } | { compared: false; reason: string };
+export type RowDiff = { compared: true; inserted: number; deleted: number; updated: number; remainingUpdated: number } | { compared: false; reason: string };
 type TableComparison =
   | { compared: true; inserted: number; deleted: number; updated: number; remainingUpdated: number }
   | { compared: false; reason: string };
@@ -195,8 +195,11 @@ type SchemaShapeFinding = { table: string; column?: string; kind: 'dropped' | 'r
 // cannot lose data a caller relied on).
 function schemaShapeFindings(before: Record<string, RehearsalColumn[]>, after: Record<string, RehearsalColumn[]>): SchemaShapeFinding[] {
   const findings: SchemaShapeFinding[] = [];
+  // Pair tables the way diffAllTables already does: SQLite folds only ASCII
+  // case, so Items and items are one table while Ä and ä stay distinct.
+  const afterByFolded = new Map(Object.entries(after).map(([name, cols]) => [sqliteName(name), cols]));
   for (const [table, beforeColumns] of Object.entries(before)) {
-    const afterColumns = after[table];
+    const afterColumns = afterByFolded.get(sqliteName(table));
     if (!afterColumns) { findings.push({ table, kind: 'dropped' }); continue; }
     const afterByName = new Map(afterColumns.map(c => [sqliteName(c.name), c]));
     for (const column of beforeColumns) {
@@ -215,15 +218,25 @@ function findingKey(f: { table: string; column?: string }): string {
 // A stale expected entry -- naming a loss this migration did not actually
 // perform -- is refused too, so an old checks.json cannot pre-authorize a
 // future, unrelated loss it was never reviewed against.
+function schemaShapeKey(f: { table: string; column?: string }): string {
+  // Fold only the table (and column) under SQLite's ASCII identifier rule so
+  // expected.retyped on Items.value matches a finding keyed from before-side
+  // Items after a case-only rename to items, without merging Ä with ä.
+  return f.column ? `${sqliteName(f.table)}.${sqliteName(f.column)}` : sqliteName(f.table);
+}
+
 function unmatchedSchemaShape(findings: SchemaShapeFinding[], expected: RehearsalExpected | undefined): { unexpected: SchemaShapeFinding[]; stale: string[] } {
-  const droppedKeys = new Set((expected?.dropped ?? []).map(findingKey));
-  const retypedKeys = new Set((expected?.retyped ?? []).map(findingKey));
-  const unexpected = findings.filter(f => !(f.kind === 'dropped' ? droppedKeys : retypedKeys).has(findingKey(f)));
-  const foundDropped = new Set(findings.filter(f => f.kind === 'dropped').map(findingKey));
-  const foundRetyped = new Set(findings.filter(f => f.kind === 'retyped').map(findingKey));
+  const droppedExpected = expected?.dropped ?? [];
+  const retypedExpected = expected?.retyped ?? [];
+  const droppedKeys = new Set(droppedExpected.map(schemaShapeKey));
+  const retypedKeys = new Set(retypedExpected.map(schemaShapeKey));
+  const unexpected = findings.filter(f => !(f.kind === 'dropped' ? droppedKeys : retypedKeys).has(schemaShapeKey(f)));
+  const foundDropped = new Set(findings.filter(f => f.kind === 'dropped').map(schemaShapeKey));
+  const foundRetyped = new Set(findings.filter(f => f.kind === 'retyped').map(schemaShapeKey));
+  // Stale messages keep the caller's spelling (findingKey), not the folded key.
   const stale = [
-    ...[...droppedKeys].filter(k => !foundDropped.has(k)).map(k => `dropped ${k}`),
-    ...[...retypedKeys].filter(k => !foundRetyped.has(k)).map(k => `retyped ${k}`),
+    ...droppedExpected.filter(e => !foundDropped.has(schemaShapeKey(e))).map(e => `dropped ${findingKey(e)}`),
+    ...retypedExpected.filter(e => !foundRetyped.has(schemaShapeKey(e))).map(e => `retyped ${findingKey(e)}`),
   ];
   return { unexpected, stale };
 }
@@ -377,7 +390,7 @@ function diffTable(db: DatabaseSync, table: string, beforeTable: string, pk: Col
   let remainingUpdated = 0;
   if (nonPk.length > 0) {
     const strictTerms = nonPk.map(c => `(a.${quoteIdent(c.after)} is not b.${quoteIdent(c.before)} collate binary or typeof(a.${quoteIdent(c.after)}) is not typeof(b.${quoteIdent(c.before)}))`);
-    const relaxedTerms = nonPk.map((c, i) => valuePreservingColumns.has(c.before) ? `(a.${quoteIdent(c.after)} is not b.${quoteIdent(c.before)} collate binary)` : strictTerms[i]!);
+    const relaxedTerms = nonPk.map((c, i) => valuePreservingColumns.has(sqliteName(c.before)) ? `(a.${quoteIdent(c.after)} is not b.${quoteIdent(c.before)} collate binary)` : strictTerms[i]!);
     const row = db.prepare(`select count(*) filter (where not exists (select 1 from ${beforeTableRef} b where ${pkJoin} and not (${strictTerms.join(' or ')}))) as updated, count(*) filter (where not exists (select 1 from ${beforeTableRef} b where ${pkJoin} and not (${relaxedTerms.join(' or ')}))) as remaining from ${mainTable} a where exists (select 1 from ${beforeTableRef} b where ${pkJoin})`).get();
     updated = Number(row!.updated);
     remainingUpdated = Number(row!.remaining);
@@ -397,11 +410,15 @@ function retypedColumnsByTable(expected: RehearsalExpected | undefined): Map<str
   // genuinely be absent, and a fallback array here would only ever add a
   // phantom entry no real table name could match, giving a mutant nothing
   // for a test to observe.
+  // Keys are sqliteName(table) so a case-only table rename (Items -> items)
+  // still finds the declaration when diffAllTables looks up the after name.
+  // Column names are folded the same way for Qty -> qty.
   if (expected?.retyped) {
     for (const r of expected.retyped) {
-      const columns = byTable.get(r.table) ?? new Set<string>();
-      columns.add(r.column);
-      byTable.set(r.table, columns);
+      const key = sqliteName(r.table);
+      const columns = byTable.get(key) ?? new Set<string>();
+      columns.add(sqliteName(r.column));
+      byTable.set(key, columns);
     }
   }
   return byTable;
@@ -451,7 +468,7 @@ function diffAllTables(
     }
     // Same guarantee as the pkPairs lookup above: both lookups always hit.
     const nonPk = commonColumns(beforeColumns[beforeTable]!, afterColumns[table]!, pk);
-    const diffed = diffTable(db, table, beforeTable, pk, nonPk, retypedColumns.get(table));
+    const diffed = diffTable(db, table, beforeTable, pk, nonPk, retypedColumns.get(nameKey));
     comparisons[table] = {
       compared: true,
       inserted: diffed.inserted,
@@ -471,8 +488,11 @@ function diffAllTables(
 }
 
 function reportedRows(comparisons: Record<string, TableComparison>): Record<string, RowDiff> {
+  // `updated` is the strict count; `remainingUpdated` is the declaration-aware
+  // count ROWS_LOST_OR_CHANGED's message reports. Naming both stops an agent
+  // from seeing two unexplained numbers for one table.
   return Object.fromEntries(Object.entries(comparisons).map(([table, comparison]) => comparison.compared
-    ? [table, { compared: true, inserted: comparison.inserted, deleted: comparison.deleted, updated: comparison.updated }]
+    ? [table, { compared: true, inserted: comparison.inserted, deleted: comparison.deleted, updated: comparison.updated, remainingUpdated: comparison.remainingUpdated }]
     : [table, comparison]));
 }
 
