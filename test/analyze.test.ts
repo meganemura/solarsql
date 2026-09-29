@@ -100,6 +100,10 @@ test('schema-only analysis rejects invalid inputs and shares duplicate SQL metad
   assert.equal(same.generated.match(/params: \{ n: number \}/g)?.length,1);
 });
 
+test('schema-only analysis accepts a trailing BOM-only statement', () => {
+  analyzeSchema("create table t(a);\ufeff", {});
+});
+
 test('schema-only analysis refuses ON CONFLICT ROLLBACK in each supported constraint', () => {
   for (const constraint of [
     'id text primary key on conflict rollback not null',

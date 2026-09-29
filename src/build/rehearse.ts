@@ -671,10 +671,10 @@ export function rehearseSnapshot(db: DatabaseSync, sql: string, checks: Rehearsa
     stage = 'MIGRATION_FAILED';
     const statements = splitStatements(sql);
     for (const statement of statements) {
-      // splitStatements() returns only statements with significant tokens,
-      // so the first token always exists here.
-      const verb = significant(tokenize(statement))[0]!.text.toUpperCase();
-      if (['BEGIN','COMMIT','END','ROLLBACK','SAVEPOINT','RELEASE'].includes(verb)) throw new Error('Rehearsal owns the transaction; remove transaction control statements');
+      // SQLite rejects some characters that tokenize() classifies as
+      // whitespace. Let execution report that error when no verb exists.
+      const verb = significant(tokenize(statement))[0]?.text.toUpperCase();
+      if (['BEGIN','COMMIT','END','ROLLBACK','SAVEPOINT','RELEASE'].some(control => control === verb)) throw new Error('Rehearsal owns the transaction; remove transaction control statements');
     }
     db.exec('begin');
     for (const statement of statements) db.exec(statement);

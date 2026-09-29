@@ -1353,8 +1353,101 @@ export function definitions(sql: string): { columns: Map<string, string>; constr
 export function splitStatements(sql: string): string[] {
   const all = tokenize(sql);
   const out: string[] = [];
+  // The edges and the empty-statement test follow SQLite's own lexer, not
+  // tokenize(). tokenize() reads every /\s/ character as whitespace. SQLite
+  // reads only these six, rejects a token that starts with "\v", and reads a
+  // BOM at a token start as a space. sqlite3_exec also skips all six after a
+  // statement that ran. A mismatch either drops a statement SQLite rejects or
+  // passes an empty one that a Durable Object refuses.
+  const isSqliteSpace =(character: string | undefined): boolean =>
+    character === " " || character === "\t" || character === "\n" || character === "\v" || character === "\f" || character === "\r";
+  const canStartSqliteSpace = (character: string | undefined): boolean =>
+    character === " " || character === "\t" || character === "\n" || character === "\f" || character === "\r";
+  const isSqliteIdentifierCharacter = (character: string | undefined): boolean =>
+    character !== undefined && (/[A-Za-z0-9_$]/.test(character) || character.charCodeAt(0) >= 0x80);
+  const sqliteLexemeAt = (text: string, start: number): { end: number; kind: "space" | "comment" | "content" } => {
+    if (text[start] === "\ufeff") return { end: start + 1, kind: "space" };
+    if (canStartSqliteSpace(text[start])) {
+      let end = start + 1;
+      while (isSqliteSpace(text[end])) end++;
+      return { end, kind: "space" };
+    }
+    if (text.startsWith("--", start)) {
+      let end = start + 2;
+      while (end < text.length && text[end] !== "\n") end++;
+      return { end, kind: "comment" };
+    }
+    if (text.startsWith("/*", start)) {
+      const close = text.indexOf("*/", start + 2);
+      return { end: close < 0 ? text.length : close + 2, kind: "comment" };
+    }
+    const quote = text[start];
+    if (quote === "'" || quote === '"' || quote === "`") {
+      let end = start + 1;
+      while (end < text.length) {
+        if (text[end] !== quote) { end++; continue; }
+        if (text[end + 1] === quote) { end += 2; continue; }
+        end++;
+        break;
+      }
+      return { end, kind: "content" };
+    }
+    if (quote === "[") {
+      const close = text.indexOf("]", start + 1);
+      return { end: close < 0 ? text.length : close + 1, kind: "content" };
+    }
+    if (/[0-9]/.test(text[start] ?? "") || (text[start] === "." && /[0-9]/.test(text[start + 1] ?? ""))) {
+      let end = start + 1;
+      while (/[0-9]/.test(text[end] ?? "")) end++;
+      if (text[end] === ".") {
+        end++;
+        while (/[0-9]/.test(text[end] ?? "")) end++;
+      }
+      if (text[end] === "e" || text[end] === "E") {
+        end++;
+        if (text[end] === "+" || text[end] === "-") end++;
+        while (/[0-9]/.test(text[end] ?? "")) end++;
+      }
+      while (isSqliteIdentifierCharacter(text[end])) end++;
+      return { end, kind: "content" };
+    }
+    if (isSqliteIdentifierCharacter(text[start]) || [":", "@", "$"].includes(text[start]!)) {
+      let end = start + 1;
+      while (isSqliteIdentifierCharacter(text[end])) end++;
+      return { end, kind: "content" };
+    }
+    return { end: start + 1, kind: "content" };
+  };
+  const trimSqliteEdges = (text: string, followsSemicolon: boolean): string => {
+    let start = 0;
+    if (followsSemicolon) while (isSqliteSpace(text[start])) start++;
+    while (start < text.length) {
+      const token = sqliteLexemeAt(text, start);
+      if (token.kind !== "space") break;
+      start = token.end;
+    }
+    let at = start;
+    let trailingSpace: number | null = null;
+    while (at < text.length) {
+      const token = sqliteLexemeAt(text, at);
+      if (token.kind === "space") trailingSpace ??= at;
+      else trailingSpace = null;
+      at = token.end;
+    }
+    return text.slice(start, trailingSpace ?? text.length);
+  };
+  const hasSqliteStatement = (text: string): boolean => {
+    let at = 0;
+    while (at < text.length) {
+      const token = sqliteLexemeAt(text, at);
+      if (token.kind === "content") return true;
+      at = token.end;
+    }
+    return false;
+  };
   let inTrigger = false;
   let start = 0;
+  let followsSemicolon = false;
   // Only a CREATE TRIGGER statement has a BEGIN ... END body. A table named
   // `begin` or a BEGIN TRANSACTION statement must not open one.
   let createTrigger = false;
@@ -1387,24 +1480,22 @@ export function splitStatements(sql: string): string[] {
       triggerBegin = null;
     }
     if (t.type === "punct" && t.text === ";" && t.depth === 0 && !inTrigger) {
-      const text = stripComments(sql.slice(start, t.start)).trim();
-      if (text.length > 0 && significant(tokenize(text)).length > 0) out.push(text);
+      // Each statement keeps its source text, comments included. SQLite keeps
+      // comment text in a declared type, a CTAS column name, and a DEFAULT, so
+      // a rewrite can change the column's affinity or name.
+      const text = trimSqliteEdges(sql.slice(start, t.start), followsSemicolon);
+      const hasStatement = hasSqliteStatement(text);
+      if (hasStatement) out.push(text);
       start = t.end;
+      followsSemicolon = hasStatement;
       first = null;
       createTrigger = false;
     }
     prev = t;
   }
-  const rest = stripComments(sql.slice(start)).trim();
-  if (rest.length > 0 && significant(tokenize(rest)).length > 0) out.push(rest);
+  const rest = trimSqliteEdges(sql.slice(start), followsSemicolon);
+  if (hasSqliteStatement(rest)) out.push(rest);
   return out;
-}
-
-function stripComments(text: string): string {
-  return tokenize(text)
-    .filter((t) => t.type !== "comment")
-    .map((t) => t.text)
-    .join("");
 }
 
 // Only the complete predicate proves this alias present. An OR, a different

@@ -8,12 +8,35 @@
 import { test } from "vitest";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { migrate, MigrationHistoryError } from "../src/node.ts";
+import { migrate as migrateStorage } from "../src/durable.ts";
+import { migrate, MigrationHistoryError, storageOf } from "../src/node.ts";
 import { REBUILD_HEADER } from "../src/build/scan.ts";
 
-const commentOnlyTailFiles = [
-  { name: "0001.sql", sql: "create table t(x);" },
-  { name: "0002.sql", sql: "select 1;\n-/**/-" },
+const separatedMinusMigration = [{
+  name: "0001.sql",
+  sql: "create table r(v); insert into r values (1 -/**/- 2)",
+}];
+
+const commentedTypeMigration = [{
+  name: "0001.sql",
+  sql: "create table r(a foo /* text */ bar); insert into r values (1)",
+}];
+
+const invalidCommentBoundaryMigrations = ["-/**/-\n select 1", "select 1;\n-/**/-"];
+const invalidWhitespaceMigration = [{ name: "0001.sql", sql: "create table r(a);\u3000" }];
+const bomOnlyMigration = [{ name: "0001.sql", sql: "\ufeff" }];
+const verticalTabTailMigration = [{ name: "0001.sql", sql: "create table r(a);\v" }];
+
+type MigrationRunner = (raw: DatabaseSync, files: readonly { name: string; sql: string }[]) => string[];
+
+const migrationRunners: readonly (readonly [string, MigrationRunner])[] = [
+  ["Node", (raw, files) => migrate(raw, files)],
+  ["Durable Object", (raw, files) => {
+    const base = storageOf(raw);
+    const storage = { sql: base.sql, transactionSync: base.transactionSync };
+    assert.equal("inTransaction" in storage, false);
+    return migrateStorage(storage, files);
+  }],
 ];
 
 function historyNames(raw: DatabaseSync): string[] {
@@ -78,26 +101,60 @@ test("a migration file with only a trailing comment after its last statement doe
   } finally { raw.close(); }
 });
 
-test("a migration ending with a segment that becomes a line comment applies and records its history", () => {
-  const raw = new DatabaseSync(":memory:");
-  try {
-    assert.deepEqual(migrate(raw, commentOnlyTailFiles), ["0001.sql", "0002.sql"]);
-    assert.deepEqual(historyNames(raw), ["0001.sql", "0002.sql"]);
-  } finally { raw.close(); }
-});
+for (const [runtime, runMigrations] of migrationRunners) {
+  test(`${runtime} migrations keep minus tokens separated across a block comment`, () => {
+    const raw = new DatabaseSync(":memory:");
+    try {
+      assert.deepEqual(runMigrations(raw, separatedMinusMigration), ["0001.sql"]);
+      assert.equal(raw.prepare("select v from r").get()!.v, 3);
+      assert.deepEqual(historyNames(raw), ["0001.sql"]);
+    } finally { raw.close(); }
+  });
 
-test("a Durable Object migration ending with a segment that becomes a line comment applies and records its history", async () => {
-  const raw = new DatabaseSync(":memory:");
-  try {
-    const { migrate: migrateStorage } = await import("../src/durable.ts");
-    const { storageOf } = await import("../src/node.ts");
-    const base = storageOf(raw);
-    const storage = { sql: base.sql, transactionSync: base.transactionSync };
-    assert.equal("inTransaction" in storage, false);
-    assert.deepEqual(migrateStorage(storage, commentOnlyTailFiles), ["0001.sql", "0002.sql"]);
-    assert.deepEqual(historyNames(raw), ["0001.sql", "0002.sql"]);
-  } finally { raw.close(); }
-});
+  test(`${runtime} migrations preserve comments in declared types`, () => {
+    const raw = new DatabaseSync(":memory:");
+    try {
+      assert.deepEqual(runMigrations(raw, commentedTypeMigration), ["0001.sql"]);
+      assert.equal(raw.prepare("select typeof(a) as t from r").get()!.t, "text");
+      assert.deepEqual(historyNames(raw), ["0001.sql"]);
+    } finally { raw.close(); }
+  });
+
+  test(`${runtime} migrations apply and record a BOM-only file`, () => {
+    const raw = new DatabaseSync(":memory:");
+    try {
+      assert.deepEqual(runMigrations(raw, bomOnlyMigration), ["0001.sql"]);
+      assert.deepEqual(historyNames(raw), ["0001.sql"]);
+    } finally { raw.close(); }
+  });
+
+  test(`${runtime} migrations apply and record a vertical tab after a statement`, () => {
+    const raw = new DatabaseSync(":memory:");
+    try {
+      assert.deepEqual(runMigrations(raw, verticalTabTailMigration), ["0001.sql"]);
+      assert.equal(raw.prepare("select name from sqlite_schema where name = 'r'").get()!.name, "r");
+      assert.deepEqual(historyNames(raw), ["0001.sql"]);
+    } finally { raw.close(); }
+  });
+
+  test(`${runtime} migrations reject invalid minus tokens separated by a block comment without recording history`, () => {
+    for (const sql of invalidCommentBoundaryMigrations) {
+      const raw = new DatabaseSync(":memory:");
+      try {
+        assert.throws(() => runMigrations(raw, [{ name: "0001.sql", sql }]));
+        assert.deepEqual(historyNames(raw), [], sql);
+      } finally { raw.close(); }
+    }
+  });
+
+  test(`${runtime} migrations reject non-SQLite whitespace without recording history`, () => {
+    const raw = new DatabaseSync(":memory:");
+    try {
+      assert.throws(() => runMigrations(raw, invalidWhitespaceMigration));
+      assert.deepEqual(historyNames(raw), []);
+    } finally { raw.close(); }
+  });
+}
 
 test("a missing migration names the file and states the repair", () => {
   const raw = new DatabaseSync(":memory:");

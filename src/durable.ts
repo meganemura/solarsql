@@ -250,10 +250,10 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
   for (let i = 0; i < ordered.length; i++) {
     if (ordered[i]!.name === ordered[i - 1]?.name) throw new MigrationHistoryError("DUPLICATE_MIGRATION", `Duplicate migration: ${ordered[i]!.name}. List each migration file once.`, ordered[i]!.name);
     for (const sql of splitStatements(ordered[i]!.sql)) {
-      // splitStatements() returns only statements with significant tokens,
-      // so the first token always exists here.
-      const first = significant(tokenize(sql))[0]!.text.toUpperCase();
-      if (["BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE"].includes(first)) {
+      // SQLite rejects some characters that tokenize() classifies as
+      // whitespace. Let execution report that error when no verb exists.
+      const first = significant(tokenize(sql))[0]?.text.toUpperCase();
+      if (["BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE"].some((control) => control === first)) {
         throw new MigrationHistoryError("MIGRATION_TRANSACTION", "The migration runner owns the transaction. Remove transaction control statements.", ordered[i]!.name);
       }
     }

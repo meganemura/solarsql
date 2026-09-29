@@ -10,7 +10,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 - Fixed: Rehearsal now detects opposing primary-key fan-ins independently, so an affinity split cannot cancel a collation merge and hide a lost row.
 - Fixed: The `json_group_array` join fan-out proof now uses SQLite's comparison collation, so a broader left operand cannot falsely prove a narrower unique key.
 - Fixed: Rehearsal now returns `DETACH_FAILED` and `TEMP_CLEANUP_FAILED` diagnostics when Windows keeps a row-diff snapshot open, instead of throwing during cleanup.
-- Fixed: `splitStatements` now omits segments with no significant SQL tokens after comment removal, so migrations do not pass empty SQL to storage engines.
+- Fixed: `splitStatements` now preserves each executable statement's source text and follows SQLite's empty-statement rules for comments, BOMs, and vertical tabs. This preserves schema text and prevents empty SQL from reaching storage engines.
 - Fixed: Rehearsal now counts rows missing from a primary-key diff as deleted. It also rejects inconsistent diffs caused by primary-key affinity changes (ADR 0139).
 - Fixed: SQLite identifier matching now folds ASCII letters only. Rehearsal now reports lost rows and columns against the correct non-ASCII name. Generated CHECK types no longer merge those column names.
 - Fixed: `migrate()`'s pre-existing-violation check (ADR 0123) now reads the table `pragma_foreign_key_check` names schema-qualified to `main`; before this fix, a TEMP table of the same name shadowed those reads, so `migrate()` could misreport a violation the current migration file itself introduced as one that predates it.

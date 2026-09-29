@@ -3,6 +3,7 @@
 // parameter, and statements split at top-level semicolons only.
 import { describe, test } from "vitest";
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
 import { aliasMap, columnRef, created, definitions, leadingComment, namedParams, normalize, paramSites, quoteIdent, renamedColumn, selectItems, significant, splitStatements, sqliteName, tokenize, unconditionalMatchAliases } from "../src/build/scan.ts";
@@ -21,6 +22,47 @@ const fragment = gs.composite((tc): string => {
   }
 });
 const sqlish = gs.composite((tc): string => tc.draw(gs.arrays(fragment, { minSize: 0, maxSize: 12 })).join(""));
+
+function assertSplitMatchesSQLite(sql: string, query: string, expected: unknown): void {
+  const direct = new DatabaseSync(":memory:");
+  const split = new DatabaseSync(":memory:");
+  try {
+    direct.exec(sql);
+    for (const part of splitStatements(sql)) split.exec(part);
+    assert.equal(Object.values(direct.prepare(query).get()!)[0], expected);
+    assert.equal(Object.values(split.prepare(query).get()!)[0], expected);
+  } finally { direct.close(); split.close(); }
+}
+
+function sqliteError(run: () => void): string {
+  let caught: unknown;
+  try { run(); } catch (error) { caught = error; }
+  assert.ok(caught instanceof Error);
+  return caught.message;
+}
+
+function assertSplitFailsAsSQLite(sql: string): void {
+  const direct = new DatabaseSync(":memory:");
+  const split = new DatabaseSync(":memory:");
+  try {
+    const directMessage = sqliteError(() => direct.exec(sql));
+    const splitMessage = sqliteError(() => {
+      for (const part of splitStatements(sql)) split.exec(part);
+    });
+    assert.equal(splitMessage, directMessage);
+  } finally { direct.close(); split.close(); }
+}
+
+function sqliteExecSucceeds(sql: string, splitFirst: boolean): boolean {
+  const db = new DatabaseSync(":memory:");
+  try {
+    if (splitFirst) for (const statement of splitStatements(sql)) db.exec(statement);
+    else db.exec(sql);
+    return true;
+  } catch {
+    return false;
+  } finally { db.close(); }
+}
 
 test("sqliteName folds ASCII case and preserves non-ASCII case", () => {
   hegel.test((tc) => {
@@ -98,27 +140,94 @@ describe("splitStatements", () => {
     hegel.test((tc) => {
       const statements = tc.draw(gs.arrays(statement, { minSize: 0, maxSize: 5 }));
       const file = statements.map((s) => s + ";").join("\n");
-      const expected = statements.map((s) => s.replace(/ \/\* block; comment \*\/$/, ""));
-      assert.deepEqual(splitStatements(file), expected);
+      assert.deepEqual(splitStatements(file), statements);
     });
   });
 
-  test("segments without significant tokens are omitted", () => {
-    assert.deepEqual(splitStatements("select 1;\n-/**/-"), ["select 1"]);
-    for (const sql of ["-- x", "/* x */", ";", "-/**/-"]) {
+  test("comment-only segments are omitted", () => {
+    for (const sql of ["-- x", "/* x */", ";"]) {
       assert.deepEqual(splitStatements(sql), [], sql);
     }
   });
 
-  test("every returned statement contains a significant token", () => {
+  test("a block comment keeps adjacent minus tokens separate", () => {
+    const statements = splitStatements("select 1 -/**/- 2");
+    assert.deepEqual(statements, ["select 1 -/**/- 2"]);
+    const db = new DatabaseSync(":memory:");
+    try {
+      assert.equal(Object.values(db.prepare(statements[0]!).get()!)[0], 3);
+    } finally { db.close(); }
+  });
+
+  test("minus tokens separated by a block comment remain a statement", () => {
+    assert.deepEqual(splitStatements("select 1;\n-/**/-"), ["select 1", "-/**/-"]);
+    assert.deepEqual(splitStatements("-/**/-"), ["-/**/-"]);
+  });
+
+  test("comments in declared types preserve SQLite affinity", () => {
+    for (const sql of [
+      "create table r(a foo /* text */ bar); insert into r values (1)",
+      "create table r(a foo -- text\n bar); insert into r values (1)",
+    ]) {
+      assertSplitMatchesSQLite(sql, "select typeof(a) from r", "text");
+    }
+  });
+
+  test("a CTAS column name preserves its source comment", () => {
+    assertSplitMatchesSQLite("create table r as select 1/**/+1", "select name from pragma_table_info('r')", "1/**/+1");
+  });
+
+  test("a DEFAULT expression preserves its source comment", () => {
+    assertSplitMatchesSQLite("create table r(a integer default (1/**/+1))", "select dflt_value from pragma_table_info('r')", "1/**/+1");
+  });
+
+  test("non-ASCII characters at a CTAS column boundary remain in its name", () => {
+    for (const suffix of ["\u3000", "\u00a0"]) {
+      assertSplitMatchesSQLite(`create table r as select 1 as a${suffix}`, "select name from pragma_table_info('r')", `a${suffix}`);
+    }
+  });
+
+  test("non-SQLite whitespace after a statement remains an invalid segment", () => {
+    for (const suffix of ["\u3000", "\u2028"]) assertSplitFailsAsSQLite(`create table r(a);${suffix}`);
+  });
+
+  test("a vertical tab attached to a statement remains invalid", () => {
+    assertSplitFailsAsSQLite("create table r(a)\u000b");
+  });
+
+  test("a leading BOM remains accepted by SQLite", () => {
+    const sql = "\ufeffcreate table r(a)";
+    assertSplitMatchesSQLite(sql, "select name from sqlite_schema where type = 'table'", "r");
+  });
+
+  test("BOM and vertical-tab boundaries match SQLite execution", () => {
+    const cases = [
+      ["BOM after a statement", "create table r(a);\ufeff", true],
+      ["BOM before a semicolon", "\ufeff;create table r(a)", true],
+      ["BOM-only file", "\ufeff", true],
+      ["BOM with SQLite whitespace", "\ufeff  \n", true],
+      ["BOM with a block comment", "\ufeff/* header */\n", true],
+      ["vertical tab after a statement", "create table r(a);\v", true],
+      ["space and vertical tab after a statement", "create table r(a); \v", true],
+      ["vertical tab before a second statement", "select 1;\v select 2", true],
+      ["vertical tab after a line comment", "create table r(a); -- x\n\v", true],
+      ["vertical tab attached to a statement", "create table r(a)\v", false],
+      ["leading vertical tab", "\vcreate table r(a)", false],
+      ["BOM inside a token", "select\ufeff 1", false],
+      ["BOM inside a numeric token", "select 1.\ufeff", false],
+    ] as const;
+    for (const [name, sql, expected] of cases) {
+      const direct = sqliteExecSucceeds(sql, false);
+      assert.equal(direct, expected, name);
+      assert.equal(sqliteExecSucceeds(sql, true), direct, name);
+    }
+  });
+
+  test("splitting small SQL files matches SQLite execution", () => {
     hegel.test((tc) => {
-      const side = gs.arrays(gs.sampledFrom(["-", "+", "/", "*", " ", "\n", ";"]), { maxSize: 6 });
-      const left = tc.draw(side).join("");
-      const right = tc.draw(side).join("");
-      const comment = tc.draw(gs.text({ alphabet: "abc -;\n", maxSize: 20 }));
-      for (const statement of splitStatements(`${left}/*${comment}*/${right}`)) {
-        assert.ok(significant(tokenize(statement)).length > 0, JSON.stringify(statement));
-      }
+      const fragments = gs.sampledFrom(["select 1", "select 1.", ";", " ", "\t", "\n", "\v", "\ufeff", "/* c */", "-- c\n", "\u3000"]);
+      const sql = tc.draw(gs.arrays(fragments, { maxSize: 8 })).join("");
+      assert.equal(sqliteExecSucceeds(sql, true), sqliteExecSucceeds(sql, false), JSON.stringify(sql));
     });
   });
 

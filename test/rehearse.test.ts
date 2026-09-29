@@ -1717,17 +1717,31 @@ test('every transaction-control statement is refused before rehearsal opens its 
   } finally { db.close(); }
 });
 
-// stripComments joins a segment's remaining tokens with no separator, so a
-// block comment sitting directly between two hyphens ("-/**/-") leaves
-// "--" behind; re-tokenized on its own, that text opens a line comment, so
-// the segment carries no significant token at all.
-test('a statement that becomes a line comment only once its own block comment is stripped is a no-op, not a crash', () => {
+// A block comment is SQL whitespace. Keeping it in the statement preserves
+// the two minus tokens, so the significant segment reaches SQLite.
+test('minus tokens separated by a block comment fail rehearsal', () => {
   const db = new DatabaseSync(':memory:');
   try {
     const result = rehearseSnapshot(db, 'create table t(a);-/**/- hi');
-    assert.deepEqual(result.diagnostics, []);
-    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics[0]?.code, 'MIGRATION_FAILED');
+    assert.equal(db.prepare("select count(*) as n from sqlite_schema where name = 't'").get()!.n, 0);
   } finally { db.close(); }
+});
+
+test('a non-SQLite whitespace statement fails rehearsal with SQLite\'s error', () => {
+  const db = new DatabaseSync(':memory:');
+  const direct = new DatabaseSync(':memory:');
+  try {
+    let message = '';
+    assert.throws(() => direct.exec('\u3000'), (error: unknown) => {
+      message = (error as Error).message;
+      return true;
+    });
+    const result = rehearseSnapshot(db, '\u3000');
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.diagnostics, [{ code: 'MIGRATION_FAILED', message }]);
+  } finally { db.close(); direct.close(); }
 });
 
 test('a deferred foreign-key violation left by the migration fails before commit', () => {
