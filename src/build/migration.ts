@@ -407,10 +407,13 @@ function same(a: unknown, b: unknown): boolean {
 // portion of this pattern (^, the whitespace counts inside "create table"
 // and the optional "if not exists" group, and IF NOT EXISTS itself) never
 // sees a different input to match against; only the name alternation
-// (quoted, backtick, bracketed, or bare) reads text a caller actually
-// controls.
+// (double-quoted, single-quoted, backtick, bracketed, or bare) reads text a
+// caller actually controls. Single quotes are SQLite's fourth identifier
+// quote form; without them, a name holding a space or "(" left the trailing
+// quote and the rest of the name in the CREATE body, and the rebuild failed
+// at execution with a syntax error rather than at build time.
 function renamedCreate(sql: string, newName: string): string {
-  return sql.replace(/^(\s*create\s+table\s+(?:if\s+not\s+exists\s+)?)("(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]|[^\s(]+)/i, `$1${quoteIdent(newName)}`);
+  return sql.replace(/^(\s*create\s+table\s+(?:if\s+not\s+exists\s+)?)("(?:[^"]|"")*"|'(?:[^']|'')*'|`[^`]*`|\[[^\]]*\]|[^\s(]+)/i, `$1${quoteIdent(newName)}`);
 }
 
 function tableStatements(current: Table, target: Table, renames: readonly Rename[], drops: readonly DropIntent[], keptIndexes: readonly string[]): Plan & { rebuilt?: boolean } {
