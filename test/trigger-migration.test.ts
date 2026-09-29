@@ -46,3 +46,48 @@ test("a trigger whose body changed under the same name is dropped, then created 
     `CREATE TRIGGER notes_touch after update on notes BEGIN update notes set body = upper(new.body) where id = new.id; END`,
   ]);
 });
+
+// The body BEGIN is not always the first bare `begin`: a trigger named
+// begin, a WHEN column, or UPDATE OF begin must keep that spelling and
+// still uppercase only the body opener (and END) for remote D1.
+const tableWithBeginCol = `create table t (id integer primary key not null, begin integer) strict`;
+
+test("a trigger named begin uppercases the body BEGIN, not the name", () => {
+  const trigger = `create trigger begin after insert on t begin select 1; end`;
+  const plan = diff(introspect(open([tableWithBeginCol])), introspect(open([tableWithBeginCol, trigger])));
+  assert.equal(plan.kind, "ok");
+  if (plan.kind !== "ok") return;
+  assert.equal(plan.statements[0], `CREATE TRIGGER begin after insert on t BEGIN select 1; END`);
+});
+
+test("a WHEN clause reading new.begin keeps the column and uppercases the body BEGIN", () => {
+  const trigger = `create trigger trg after insert on t when new.begin > 0 begin select 1; end`;
+  const plan = diff(introspect(open([tableWithBeginCol])), introspect(open([tableWithBeginCol, trigger])));
+  assert.equal(plan.kind, "ok");
+  if (plan.kind !== "ok") return;
+  assert.equal(plan.statements[0], `CREATE TRIGGER trg after insert on t when new.begin > 0 BEGIN select 1; END`);
+});
+
+test("UPDATE OF begin keeps the column name and uppercases the body BEGIN", () => {
+  const trigger = `create trigger trg after update of begin on t begin select 1; end`;
+  const plan = diff(introspect(open([tableWithBeginCol])), introspect(open([tableWithBeginCol, trigger])));
+  assert.equal(plan.kind, "ok");
+  if (plan.kind !== "ok") return;
+  assert.equal(plan.statements[0], `CREATE TRIGGER trg after update of begin on t BEGIN select 1; END`);
+});
+
+test("a quoted trigger name begin keeps its quotes and uppercases the body BEGIN", () => {
+  const trigger = `create trigger "begin" after insert on t begin select 1; end`;
+  const plan = diff(introspect(open([tableWithBeginCol])), introspect(open([tableWithBeginCol, trigger])));
+  assert.equal(plan.kind, "ok");
+  if (plan.kind !== "ok") return;
+  assert.equal(plan.statements[0], `CREATE TRIGGER "begin" after insert on t BEGIN select 1; END`);
+});
+
+test("a begin column inside the body stays lowercase while the opener is uppercase", () => {
+  const trigger = `create trigger trg after insert on t begin select begin from t; end`;
+  const plan = diff(introspect(open([tableWithBeginCol])), introspect(open([tableWithBeginCol, trigger])));
+  assert.equal(plan.kind, "ok");
+  if (plan.kind !== "ok") return;
+  assert.equal(plan.statements[0], `CREATE TRIGGER trg after insert on t BEGIN select begin from t; END`);
+});

@@ -884,7 +884,13 @@ function triggerForD1(sql: string): string {
   // unquoted spelling of begin or end can match below; restricting the
   // check to ident tokens excludes no token type actually reachable here.
   const bare = (t: Token, word: string) => t.type === "ident" && t.text.toLowerCase() === word;
-  const begin = tokens.find((t) => bare(t, "begin"));
+  // The body opener is not always the first bare `begin`: the trigger name,
+  // an UPDATE OF column list, or a WHEN expression can spell the same word
+  // (ADR 0036 needs the body BEGIN uppercase for remote D1). Walk the
+  // CREATE TRIGGER header, then take the next bare `begin` that is not a
+  // `new.begin` / `old.begin` qualification. The closing END is still the
+  // last bare `end` (CASE...END pairs sit earlier).
+  const begin = triggerBodyBegin(tokens, bare);
   const end = tokens.findLast((t) => bare(t, "end"));
   // Every caller passes a trigger's own SQL from introspect(), read back
   // from SQLite's own sqlite_schema. SQLite only stores that row once the
@@ -893,6 +899,92 @@ function triggerForD1(sql: string): string {
   let out = sql;
   for (const t of [end, begin]) out = out.slice(0, t.start) + t.text.toUpperCase() + out.slice(t.end);
   return out;
+}
+
+function triggerBodyBegin(tokens: Token[], bare: (t: Token, word: string) => boolean): Token | undefined {
+  const significant = tokens.filter((t) => t.type !== "ws" && t.type !== "comment");
+  let i = 0;
+  const at = () => significant[i];
+  const take = () => significant[i++];
+  const is = (word: string) => {
+    const t = at();
+    return t !== undefined && bare(t, word);
+  };
+  if (!is("create")) return undefined;
+  take();
+  if (!is("trigger")) return undefined;
+  take();
+  if (is("if")) {
+    take();
+    if (is("not")) take();
+    if (is("exists")) take();
+  }
+  // Trigger name: one significant token (bare or quoted).
+  if (at() === undefined) return undefined;
+  take();
+  if (is("instead")) {
+    take();
+    if (is("of")) take();
+  } else if (is("before") || is("after")) {
+    take();
+  }
+  if (is("delete") || is("insert")) {
+    take();
+  } else if (is("update")) {
+    take();
+    if (is("of")) {
+      take();
+      while (at() !== undefined) {
+        take(); // column name
+        const t = at();
+        if (t?.type === "punct" && t.text === ",") {
+          take();
+          continue;
+        }
+        break;
+      }
+    }
+  }
+  if (!is("on")) return undefined;
+  take();
+  if (at() === undefined) return undefined;
+  take(); // table name
+  if (is("for")) {
+    take();
+    if (is("each")) take();
+    if (is("row")) take();
+  }
+  if (is("when")) {
+    take();
+    let depth = 0;
+    while (at() !== undefined) {
+      const t = at()!;
+      if (t.type === "punct" && t.text === "(") {
+        depth++;
+        take();
+        continue;
+      }
+      if (t.type === "punct" && t.text === ")") {
+        depth--;
+        take();
+        continue;
+      }
+      if (depth === 0 && bare(t, "begin")) {
+        const prev = significant[i - 1];
+        // `new.begin` / `old.begin` in the WHEN expression is a column, not
+        // the body opener. An unqualified WHEN column named begin is not
+        // required by current tickets; treat a dotted form as the column.
+        if (prev?.type === "punct" && prev.text === ".") {
+          take();
+          continue;
+        }
+        return t;
+      }
+      take();
+    }
+    return undefined;
+  }
+  return significant.find((t, idx) => idx >= i && bare(t, "begin"));
 }
 
 // wrangler applies `migrations/<NNNN>_<name>.sql` in name order and records
