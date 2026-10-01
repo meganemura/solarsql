@@ -262,3 +262,119 @@ test("a validateParams error for a command with an assert names only user parame
     });
   } finally { raw.close(); }
 });
+
+test("schema declarations preserve their SQL and identify each object kind", async () => {
+  const { table, index, view, trigger, search } = await import("../src/index.ts");
+  const { test: property } = await import("@hegeldev/hegel");
+  const gs = await import("@hegeldev/hegel/generators");
+  property((tc) => {
+    const sql = tc.draw(gs.text());
+    for (const [kind, declare] of [
+      ["table", table], ["index", index], ["view", view], ["trigger", trigger], ["search", search],
+    ] as const) {
+      assert.deepEqual(declare(sql), { kind, sql });
+    }
+  });
+});
+
+test("query catalogs identify their entries and supply complete metadata before generation", async () => {
+  const { queries } = await import("../src/index.ts");
+  const q = queries(meta, { byId: selectLog });
+  assert.deepEqual(q.byId, { kind: "query", name: "byId", sql: selectLog, meta: meta[selectLog] });
+  assert.equal(q.entries.byId, q.byId);
+  const missing: Meta<Record<string, { params: {}; row: {} }>> = {};
+  const expected = { params: [], encode: [], json: [], reads: [] };
+  const unbuilt = queries(missing, { probe: "select 1" });
+  assert.deepEqual(unbuilt.probe, { kind: "query", name: "probe", sql: "select 1", meta: expected });
+  const c = commands(missing, { probe: { plan: ["select 1", sqlAssert("ready", "1")], returns: "select 2" } });
+  assert.deepEqual(c.probe.meta, { statements: [expected, expected], returns: expected, asserts: ["ready"] });
+});
+
+test("assert declarations preserve valid names and reject invalid prefixes and suffixes", async () => {
+  const { test: property } = await import("@hegeldev/hegel");
+  const gs = await import("@hegeldev/hegel/generators");
+  property((tc) => {
+    const name = tc.draw(gs.characters({ alphabet: "abcdefghijklmnopqrstuvwxyz_" }))
+      + tc.draw(gs.text({ alphabet: "abcdefghijklmnopqrstuvwxyz_0123456789" }));
+    const predicate = tc.draw(gs.text());
+    assert.deepEqual(sqlAssert(name, predicate), { kind: "assert", name, predicate });
+    for (const invalid of ["", "0" + name, "!" + name, name + "!", name + "\n", name + "A"]) {
+      assert.throws(() => sqlAssert(invalid, predicate), {
+        name: "Error", message: `assert name must match [a-z_][a-z0-9_]*: ${invalid}`,
+      });
+    }
+  });
+});
+
+test("empty command plans have no statements or asserts", () => {
+  const c = commands(meta, { empty: { plan: [] } });
+  assert.deepEqual(c.empty, {
+    kind: "command", name: "empty", plan: [], returns: null,
+    meta: { statements: [], returns: null, asserts: [] }, included: [], returningIndex: null,
+  });
+});
+
+test("included commands retain assert order, item ranges, and nested provenance", async () => {
+  const { test: property } = await import("@hegeldev/hegel");
+  const gs = await import("@hegeldev/hegel/generators");
+  property((tc) => {
+    const prefix = tc.draw(gs.arrays(gs.just<typeof insertLog>(insertLog)));
+    const suffix = tc.draw(gs.arrays(gs.just<typeof insertToken>(insertToken)));
+    const before = sqlAssert("before", foundOnce);
+    const inside = sqlAssert("inside", foundOnce);
+    const after = sqlAssert("after", foundOnce);
+    const leaf = commands(meta, { leaf: { plan: [deleteReturning, inside] } }).leaf;
+    const middle = commands(meta, { middle: { plan: [leaf] } }).middle;
+    const c = commands(meta, { outer: { plan: [...prefix, before, leaf, after, ...suffix, middle] } }).outer;
+    assert.deepEqual(c.plan, [...prefix, before, deleteReturning, inside, after, ...suffix, deleteReturning, inside]);
+    assert.deepEqual(c.meta.asserts, ["before", "inside", "after", "inside"]);
+    assert.deepEqual(c.meta.statements, [
+      ...prefix.map(() => meta[insertLog]), meta[foundOnce], meta[deleteReturning], meta[foundOnce],
+      meta[foundOnce], ...suffix.map(() => meta[insertToken]), meta[deleteReturning], meta[foundOnce],
+    ]);
+    assert.deepEqual(c.included, [
+      { name: "leaf", from: prefix.length + 1, to: prefix.length + 3 },
+      { name: "middle", from: prefix.length + suffix.length + 4, to: prefix.length + suffix.length + 6, nested: true },
+    ]);
+    assert.equal(c.returningIndex, null);
+  });
+});
+
+test("command construction retains the first own returning item", async () => {
+  const { test: property } = await import("@hegeldev/hegel");
+  const gs = await import("@hegeldev/hegel/generators");
+  property((tc) => {
+    const prefix = tc.draw(gs.arrays(gs.just<typeof insertLog>(insertLog)));
+    // Construction precedes build validation, which reports multiple row
+    // sources. Keep the first candidate until that validation runs.
+    const c = commands(meta, { consume: { plan: [...prefix, deleteReturning, deleteReturning] } }).consume;
+    assert.equal(c.returningIndex, prefix.length);
+    assert.equal(commands(meta, { seed: { plan: prefix } }).seed.returningIndex, null);
+  });
+});
+
+test("configuration preserves the caller's object and module order", async () => {
+  const { config } = await import("../src/index.ts");
+  const { test: property } = await import("@hegeldev/hegel");
+  const gs = await import("@hegeldev/hegel/generators");
+  property((tc) => {
+    const modules = tc.draw(gs.arrays(gs.text()));
+    const c = { modules, migrations: tc.draw(gs.text()), library: tc.draw(gs.text()) };
+    assert.equal(config(c), c);
+    assert.equal(config(c).modules, modules);
+  });
+});
+
+// Only an object is an included command. A function that carries a full
+// command shape is still one plan item, so its inner plan is not spliced in.
+test("a function carrying a command shape stays one plan item and is not spliced in", () => {
+  const sql = "select 1";
+  const meta = { [sql]: { params: [], encode: [], json: [], reads: [] } } as unknown as Meta<Record<string, { params: {}; row: {} }>>;
+  const inner = commands(meta, { x: { plan: [sql] } }).x;
+  const shaped = Object.assign(function x() {}, { kind: inner.kind, plan: inner.plan, meta: inner.meta, included: inner.included, returns: inner.returns, returningIndex: inner.returningIndex });
+  const c = commands(meta, { outer: { plan: [shaped as never] } }).outer;
+  assert.equal(c.plan.length, 1);
+  assert.equal(c.plan[0], shaped);
+  assert.deepEqual(c.included, []);
+  assert.deepEqual(c.meta.asserts, ["x"]);
+});
