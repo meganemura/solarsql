@@ -1,7 +1,11 @@
 // Responsibility: exercise worker messages and report validation in the test process.
-// Boundary: child processes supply reports only; CLI execution budgets belong to other tests.
+// Boundary: fixtures supply child behavior; these tests run the parent in-process.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { ChildProcess } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import { afterEach, test, vi } from "vitest";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
@@ -32,6 +36,239 @@ afterEach(() => {
   process.off = savedOff;
   process.stdout.write = savedWrite;
   vi.resetModules();
+});
+
+const parentFixture = fileURLToPath(new URL("./fixtures/machine-parent.ts", import.meta.url));
+const realSetTimeout = globalThis.setTimeout;
+const realClearTimeout = globalThis.clearTimeout;
+const parentRoots: string[] = [];
+const parentChildren: ChildProcess[] = [];
+const parentExceptions: unknown[] = [];
+const rehearsalReceipts: string[] = [];
+
+function timeoutTest(name: string, body: () => Promise<void>) {
+  test(name, async () => {
+    // Timer exceptions reach Vitest as unhandled errors outside the test.
+    // Collect them here so this test can fail with an assertion.
+    const listeners = process.rawListeners("uncaughtException");
+    const exceptions: unknown[] = [];
+    process.removeAllListeners("uncaughtException");
+    savedOn.call(process, "uncaughtException", error => { exceptions.push(error); });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await body();
+    } finally {
+      process.removeAllListeners("uncaughtException");
+      for (const listener of listeners) savedOn.call(process, "uncaughtException", listener);
+      assert.deepEqual(exceptions, [], "The deadline timer must not throw.");
+    }
+  });
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  for (const child of parentChildren.splice(0)) {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  }
+  for (const receipt of rehearsalReceipts.splice(0)) {
+    if (!existsSync(receipt)) continue;
+    const [root] = JSON.parse(readFileSync(receipt, "utf8"));
+    // A deleted cleanup branch can leave the fixture's snapshot behind.
+    if (typeof root === "string" && dirname(root) === tmpdir()) parentRoots.push(root);
+  }
+  for (const root of parentRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+  assert.deepEqual(parentExceptions.splice(0), []);
+});
+
+function parentRoot() {
+  const root = mkdtempSync(join(tmpdir(), "solarsql-parent-test-"));
+  parentRoots.push(root);
+  return root;
+}
+
+async function parentChannel(error?: Error) {
+  const channel = await load("other", "other");
+  assert.equal(channel.machine.isReportWorker(), false);
+  const errors: string[] = [];
+  vi.spyOn(console, "error").mockImplementation(value => { errors.push(String(value)); });
+  const emit = ChildProcess.prototype.emit;
+  vi.spyOn(ChildProcess.prototype, "emit").mockImplementation(function (this: ChildProcess, event, ...args) {
+    if (event === "message" && args[0] === "fixture-ping" && this.connected) this.send("fixture-pong");
+    if (event === "message" && args[0] === "fixture-ready") {
+      // Wait for the child's messages and files before advancing its deadline.
+      // A real timer keeps a thrown deadline error on the uncaught-error path.
+      realSetTimeout(() => {
+        try {
+          if (vi.isFakeTimers()) vi.advanceTimersByTime(1000);
+        } finally {
+          if (!this.killed && this.connected) this.send("fixture-release");
+        }
+      }, 0);
+    }
+    if (event === "spawn") {
+      parentChildren.push(this);
+      if (error) emit.call(this, "error", error);
+    }
+    // Listener exceptions must fail this test instead of escaping into the runner.
+    try { return emit.call(this, event, ...args); }
+    catch (exception) { parentExceptions.push(exception); return false; }
+  });
+  return { ...channel, errors };
+}
+
+async function bounded<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([promise, new Promise<never>((_, reject) => {
+      timer = realSetTimeout(() => reject(new Error("The parent did not settle within 10 seconds.")), 10_000);
+    })]);
+  } finally { realClearTimeout(timer); }
+}
+
+function reportOutput() {
+  const writes = captureOutput();
+  process.stdout.write = ((text: string, callback: Callback) => {
+    writes.push({ text, callback });
+    callback(null);
+    return true;
+  }) as typeof process.stdout.write;
+  return () => {
+    assert.equal(writes.length, 1);
+    return JSON.parse(writes[0]!.text);
+  };
+}
+
+test("machine rejects primitive, array, and function reports after IPC serialization", async () => {
+  const { machine } = await parentChannel();
+  await hegel.testAsync(async tc => {
+    for (const value of [tc.draw(gs.integers()), tc.draw(gs.text()), tc.draw(gs.booleans()), tc.draw(gs.arrays(gs.integers()))]) {
+      const report = reportOutput();
+      assert.equal(await bounded(machine.runMachine(fileURLToPath(new URL("./fixtures/machine-report.ts", import.meta.url)), [JSON.stringify(value)], { timeoutMs: 5000 })), 1);
+      assert.equal(report().diagnostics[0].code, "BUILD_WORKER_FAILED");
+    }
+  }, { testCases: 5 });
+  const report = reportOutput();
+  assert.equal(await bounded(machine.runMachine(parentFixture, ["inspect", JSON.stringify({ mode: "function-report" })], { timeoutMs: 5000 })), 1);
+  assert.equal(report().diagnostics[0].code, "BUILD_WORKER_FAILED");
+});
+
+test("rehearsal removes nested snapshots and returns the worker report", async () => {
+  const { machine } = await parentChannel();
+  const receipt = join(parentRoot(), "receipt.json");
+  rehearsalReceipts.push(receipt);
+  const report = reportOutput();
+  assert.equal(await bounded(machine.runRehearsalProcess(parentFixture, ["rehearse", JSON.stringify({ mode: "report", receipt })], 5000)), 0);
+  assert.deepEqual(report(), { version: 1, ok: true, diagnostics: [] });
+  const [root, tmp, temp] = JSON.parse(readFileSync(receipt, "utf8"));
+  assert.match(basename(root), /^solarsql-rehearse-run-/);
+  assert.equal(tmp, root);
+  assert.equal(temp, root);
+  assert.equal(existsSync(root), false);
+});
+
+test("rehearsal cleanup accepts a root already removed by the worker", async () => {
+  const { machine } = await parentChannel();
+  const receipt = join(parentRoot(), "receipt.json");
+  rehearsalReceipts.push(receipt);
+  const report = reportOutput();
+  assert.equal(await bounded(machine.runRehearsalProcess(parentFixture, ["rehearse", JSON.stringify({ mode: "remove-root", receipt })], 5000)), 0);
+  assert.equal(report().ok, true);
+  assert.equal(existsSync(JSON.parse(readFileSync(receipt, "utf8"))[0]), false);
+});
+
+for (const mode of ["failure", "wait"] as const) {
+  timeoutTest(`rehearsal reports ${mode === "failure" ? "a failed worker" : "an expired budget"} with its diagnostic and recovery action`, async () => {
+    const { machine } = await parentChannel();
+    const report = reportOutput();
+    assert.equal(await bounded(machine.runRehearsalProcess(parentFixture, ["rehearse", JSON.stringify({ mode, delay: 3000 })], 1000)), 1);
+    const diagnostic = report().diagnostics[0];
+    assert.equal(diagnostic.code, mode === "failure" ? "REHEARSAL_WORKER_FAILED" : "REHEARSAL_TIMEOUT");
+    assert.equal(diagnostic.action, "Inspect the proposed SQL and source workload. Set --timeout-ms to a larger positive budget if the work requires more time.");
+  });
+}
+
+test("human worker preserves exit codes without printing an error", async () => {
+  const { machine, errors } = await parentChannel();
+  await hegel.testAsync(async tc => {
+    const code = tc.draw(gs.integers({ minValue: 0, maxValue: 255 }));
+    assert.equal(await bounded(machine.runHuman(parentFixture, ["query", JSON.stringify({ mode: "wait", delay: 0, code })], 5000)), code);
+    assert.deepEqual(errors, []);
+  }, { testCases: 8 });
+});
+
+test("human worker returns failure after signal termination", async () => {
+  const { machine, errors } = await parentChannel();
+  assert.equal(await bounded(machine.runHuman(parentFixture, ["query", JSON.stringify({ mode: "signal" })], 5000)), 1);
+  assert.deepEqual(errors, []);
+});
+
+test("human worker reports a child error even when the child exits with another code", async () => {
+  // A real fork still supplies close and exit; only the asynchronous error is injected.
+  const { machine, errors } = await parentChannel(new Error("worker channel failed"));
+  assert.equal(await bounded(machine.runHuman(parentFixture, ["query", JSON.stringify({ mode: "failure" })], 5000)), 1);
+  assert.deepEqual(errors, ["error: worker channel failed"]);
+});
+
+for (const command of ["migration", "build", "query"]) for (const announced of [false, true]) for (const present of [false, true]) {
+  timeoutTest(`human timeout: ${command}, announced=${announced}, present=${present}`, async () => {
+    const { machine, errors } = await parentChannel();
+    const root = parentRoot();
+    const path = join(root, "migration.lock");
+    const receipt = join(root, "receipt");
+    if (present) writeFileSync(path, "lock");
+    assert.equal(await bounded(machine.runHuman(parentFixture, [command, JSON.stringify({ mode: announced ? "lock" : "wait", path, receipt, delay: 3000 })], 1000)), 1);
+    assert.equal(parentChildren.at(-1)!.signalCode, "SIGKILL");
+    if (announced) assert.equal(readFileSync(receipt, "utf8"), "acknowledged");
+    const lock = command !== "query" && announced && present
+      ? ` The migration lock remains at ${path}. Inspect it and remove it only after this worker has stopped.` : "";
+    assert.deepEqual(errors, [`error: The operation exceeded its 1000ms time budget. Inspect the configuration import and generated output before you set --timeout-ms to a larger positive budget.${lock}`]);
+  });
+}
+
+timeoutTest("human parent acknowledges only the first valid lock message", async () => {
+  const { machine, errors } = await parentChannel();
+  const root = parentRoot();
+  const path = join(root, "migration.lock");
+  const receipt = join(root, "messages.jsonl");
+  writeFileSync(path, "lock");
+  writeFileSync(receipt, "");
+  assert.equal(await bounded(machine.runHuman(parentFixture, ["migration", JSON.stringify({ mode: "raw-lock", path, receipt, delay: 3000 })], 1000)), 1);
+  const messages = readFileSync(receipt, "utf8").trim().split("\n").map(line => JSON.parse(line));
+  assert.equal(messages.length, 1);
+  assert.deepEqual(messages[0], { protocol: "solarsql.direct-worker.v1", token: messages[0].token, type: "migration-lock-ack", nonce: "accepted" });
+  assert.match(messages[0].token, /^[0-9a-f-]{36}$/);
+  assert.match(errors[0]!, /The migration lock remains at /);
+});
+
+timeoutTest("worker done cancels the deadline while the child finishes exiting", async () => {
+  const { machine, errors } = await parentChannel();
+  assert.equal(await bounded(machine.runHuman(parentFixture, ["query", JSON.stringify({ mode: "done", code: 7, delay: 50 })], 1000)), 7);
+  assert.deepEqual(errors, []);
+});
+
+for (const [field, value] of [["protocol", "wrong"], ["token", "wrong"], ["type", "wrong"], ["code", "7"]] as const) {
+  timeoutTest(`human parent ignores worker done with an invalid ${field}`, async () => {
+    const { machine, errors } = await parentChannel();
+    assert.equal(await bounded(machine.runHuman(parentFixture, ["query", JSON.stringify({ mode: "raw-done", field, value, delay: 3000 })], 1000)), 1);
+    assert.match(errors[0]!, /exceeded its 1000ms time budget/);
+  });
+}
+
+timeoutTest("human parent ignores a null control message", async () => {
+  const { machine, errors } = await parentChannel();
+  const receipt = join(parentRoot(), "messages.jsonl");
+  writeFileSync(receipt, "");
+  assert.equal(await bounded(machine.runHuman(parentFixture, ["query", JSON.stringify({ mode: "raw-lock", path: "missing.lock", receipt, delay: 3000 })], 1000)), 1);
+  assert.match(errors[0]!, /exceeded its 1000ms time budget/);
+});
+
+test("human parent releases its deadline after the child closes", async () => {
+  const { machine, errors } = await parentChannel();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  assert.equal(await bounded(machine.runHuman(parentFixture, ["query", JSON.stringify({ mode: "wait", delay: 0, code: 7 })], 5000)), 7);
+  assert.deepEqual(errors, []);
+  assert.equal(vi.getTimerCount(), 0);
 });
 
 async function load(reportMarker = "ipc", cliMarker = "ipc", hasSend = true, token: string | null = "cli-token") {

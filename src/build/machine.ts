@@ -71,6 +71,8 @@ export async function printReport(report: unknown): Promise<void> {
   }
 }
 
+// JSON IPC omits a function-valued report and preserves primitives without report fields.
+// The field checks also reject truthy primitives if the object guard is omitted.
 function validReport(value: unknown): value is { version: 1; ok: boolean; diagnostics: unknown[] } {
   if (!value || typeof value !== "object") return false;
   const report = value as Record<string, unknown>;
