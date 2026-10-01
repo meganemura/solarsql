@@ -80,6 +80,8 @@ function referencesAlias(tokens: Token[], alias: string): boolean {
 // when a depth-0 OR sits in the clause: an OR can satisfy the join without
 // every conjunct holding for every matched row, the same reasoning
 // unconditionalMatchAliases (scan.ts) already applies to WHERE.
+// An empty token list also reaches an empty result through the conjunct loop.
+// The early return avoids that work without changing the result.
 export function onEqualities(on: string, alias: string): Map<string, OnEquality> | null {
   const tokens = significant(tokenize(on));
   if (tokens.length === 0) return new Map();
@@ -115,6 +117,9 @@ export function onEqualities(on: string, alias: string): Map<string, OnEquality>
   return out;
 }
 
+// Each caller selects an opening parenthesis after a name, AS, a hint, USING, or a source separator.
+// Starting one token earlier crosses that prefix and reaches the same close in validated SQL.
+// The tokenizer keeps tokens inside the pair at greater depth; only its closing parenthesis restores the opening depth.
 function close(tokens: Token[], index: number): number {
   const depth = tokens[index]!.depth;
   let i = index + 1;

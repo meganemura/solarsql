@@ -410,3 +410,142 @@ test("querySources reads the source after a table named window with an implicit 
   assert.deepEqual(querySources("select * from window w join u on w.a = u.a").map((s) => [s.alias, s.name]), [["w", "window"], ["u", "u"]]);
   assert.deepEqual(querySources("select * from window w, u").map((s) => [s.alias, s.name]), [["w", "window"], ["u", "u"]]);
 });
+
+test("onEqualities excludes circular references and preserves independent operands", () => {
+  hegel.test((tc) => {
+    const suffix = tc.draw(gs.text({ alphabet: "abcdef", minSize: 1, maxSize: 8 }));
+    const alias = `t_${suffix}`;
+    for (const expression of [`${alias}.other`, `1 + ${alias}.other`, `coalesce(x.other, ${alias}.other)`]) {
+      assert.deepEqual(onEqualities(`${alias}.id = ${expression}`, alias), new Map());
+      assert.deepEqual(onEqualities(`${expression} = ${alias}.id`, alias), new Map());
+    }
+    for (const expression of [`'${alias}' || '.'`, `${alias} + 1`, `x.${alias}`]) {
+      assert.equal(onEqualities(`${alias}.id = ${expression}`, alias)!.size, 1);
+    }
+  });
+});
+
+test("onEqualities distinguishes outer disjunctions from nested expressions", () => {
+  assert.equal(onEqualities("b.id = x.id or b.id = 1", "b"), null);
+  assert.deepEqual([...onEqualities("b.id = (x.id or x.other) and b.code = 1", "b")!.keys()], ["id", "code"]);
+  assert.deepEqual([...onEqualities("b.id = (x.id and x.other) and b.code = 1", "b")!.keys()], ["id", "code"]);
+  assert.deepEqual(onEqualities("(b.id = x.id)", "b"), new Map());
+});
+
+test("onEqualities ignores empty operands and clauses", () => {
+  for (const clause of ["", " -- empty", "= b.id", "b.id =", "and b.id = and", "b.id"]) {
+    assert.deepEqual(onEqualities(clause, "b"), new Map(), clause);
+  }
+});
+
+test("onEqualities preserves collated columns and operand order", () => {
+  for (const [clause, side, other] of [
+    ["b.id collate nocase = x.id", "left", { kind: "column", alias: "x", column: "id" }],
+    ["x.id = b.id collate nocase", "right", { kind: "column", alias: "x", column: "id" }],
+    ["b.id = other collate nocase", "left", { kind: "column", alias: null, column: "other" }],
+  ] as const) {
+    assert.deepEqual(onEqualities(clause, "b")!.get("id"), {
+      explicitCollation: { kind: "known", name: "NOCASE" }, other, targetSide: side,
+    });
+  }
+  assert.deepEqual(onEqualities("other = b.id", "b")!.get("id"), {
+    explicitCollation: { kind: "none" }, other: { kind: "column", alias: null, column: "other" }, targetSide: "right",
+  });
+});
+
+test("onEqualities keeps literal values separate from column references", () => {
+  for (const value of ["1", "'text'", ":id"]) {
+    assert.deepEqual(otherOperand(value), { kind: "value" });
+  }
+  assert.deepEqual(otherOperand("'a'.x"), null);
+});
+
+test("onEqualities retains a nested conjunction before an outer equality", () => {
+  assert.deepEqual(onEqualities("(1 and 2) = b.id", "b")!.get("id"), {
+    explicitCollation: { kind: "none" }, other: null, targetSide: "right",
+  });
+  assert.deepEqual(onEqualities("b.id = (1 and b.other)", "b"), new Map());
+  assert.deepEqual(onEqualities("(x.id = 1) = b.id", "b")!.get("id"), {
+    explicitCollation: { kind: "none" }, other: null, targetSide: "right",
+  });
+});
+
+test("onEqualities distinguishes single quoted source names from quote characters in an alias", () => {
+  const engine = fixture();
+  try {
+    const clause = `"'a'".id = 'a'.id`;
+    const sql = `select * from a as "'a'" join a as a on ${clause}`;
+    assert.equal(engine.db.prepare(sql).all().length, 1);
+    assert.deepEqual(onEqualities(clause, "'a'")!.get("id"), {
+      explicitCollation: { kind: "none" }, other: null, targetSide: "left",
+    });
+  } finally { engine.close(); }
+});
+
+test("queryScope keeps compound operators inside a derived query", () => {
+  const sql = "select * from (select 1 union select 2 intersect select 3 except select 4)";
+  assert.deepEqual(queryScope(sql), { ctes: [], branches: [sql], operators: [] });
+});
+
+test("queryScope retains CTE hints, columns, and nested query text", () => {
+  const engine = fixture();
+  try {
+    for (const hint of ["", "materialized", "not materialized"]) {
+      const sql = `with x(id, n) as ${hint} (select (select 1), 2), y as (select * from x) select * from y`;
+      assert.equal(engine.db.prepare(sql).get()!.n, 2);
+      assert.deepEqual(queryScope(sql), {
+        ctes: [{ name: "x", columns: ["id", "n"], sql: "select (select 1), 2" },
+          { name: "y", columns: [], sql: "select * from x" }],
+        branches: ["select * from y"], operators: [],
+      });
+    }
+    assert.deepEqual(queryScope("with x as (select 1) select * from x", true), {
+      ctes: [{ name: "x", columns: [], sql: "select 1" }], branches: [], operators: [],
+    });
+    assert.deepEqual(queryScope("with x as (select 1)", true), {
+      ctes: [{ name: "x", columns: [], sql: "select 1" }], branches: [], operators: [],
+    });
+  } finally { engine.close(); }
+});
+
+test("queryScope reports incomplete query and CTE syntax", () => {
+  for (const sql of ["with x as (select 1", "with x(a"]) {
+    assert.throws(() => queryScope(sql), /unclosed query scope/);
+  }
+  for (const sql of ["with x", "with x select 1"]) {
+    assert.throws(() => queryScope(sql), /unrecognized CTE binding/);
+  }
+  for (const sql of ["with x as", "with x as select 1"]) {
+    assert.throws(() => queryScope(sql), /unrecognized CTE query/);
+  }
+  for (const sql of ["", "delete from t"]) {
+    assert.throws(() => queryScope(sql), /query scope needs SELECT or VALUES/);
+  }
+});
+
+test("query scopes preserve balanced expressions with SQLite keyword names", () => {
+  hegel.test((tc) => {
+    const name = tc.draw(gs.sampledFrom(["window", "begin", "end"]));
+    const value = tc.draw(gs.integers({ minValue: 0, maxValue: 100 }));
+    const depth = tc.draw(gs.integers({ minValue: 0, maxValue: 8 }));
+    const expression = `${"(".repeat(depth)}${value}${")".repeat(depth)}`;
+    const body = `select ${expression} as id`;
+    const engine = fixture();
+    try {
+      for (const hint of ["", "materialized", "not materialized"]) {
+        const sql = `with ${name}(id) as ${hint} (${body}) select id from ${name}`;
+        assert.equal(engine.db.prepare(sql).get()!.id, value);
+        assert.deepEqual(queryScope(sql), {
+          ctes: [{ name, columns: ["id"], sql: body }], branches: [`select id from ${name}`], operators: [],
+        });
+      }
+      const sql = `select * from (${body}) as ${name} join json_each('[0]') as j using(id)`;
+      engine.db.prepare(sql).all();
+      assert.deepEqual(querySources(sql).map((source) => [source.query, source.functionSql, source.using]),
+        [[body, null, []], [null, "json_each('[0]')", ["id"]]]);
+      for (const blank of ["", " \t\n", "-- empty\n", "/* empty */"]) {
+        assert.deepEqual(onEqualities(blank, name), new Map());
+      }
+    } finally { engine.close(); }
+  });
+});
