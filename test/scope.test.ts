@@ -1,11 +1,12 @@
 // Responsibility: compare inferred scalar guarantees with real SQLite rows across query scopes.
 // Boundary: this oracle understands scalar unions, not TypeScript's complete type language.
 import assert from "node:assert/strict";
+import { Worker } from "node:worker_threads";
 import { test } from "vitest";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
 import { Engine } from "../src/build/facts.ts";
-import { onEqualities, querySources, unionType } from "../src/build/scope.ts";
+import { onEqualities, queryScope, querySources, unionType } from "../src/build/scope.ts";
 import { Typer, type Brand } from "../src/build/typegen.ts";
 
 function fixture(left = true, right = true, matches = true): Engine {
@@ -235,4 +236,177 @@ test("querySources does not read a join attribute as the previous source's alias
   for (const join of ["natural join", "left join", "right join", "full join", "left outer join", "inner join", "cross join"]) {
     assert.deepEqual(querySources(`select * from t ${join} u`).map((s) => s.alias), ["t", "u"], join);
   }
+});
+
+test("queryScope separates compound operators and trims branch text", () => {
+  assert.deepEqual(queryScope("  select 1  INTERSECT select 2 EXCEPT select 3 UNION ALL select 4;  \n"), {
+    ctes: [], branches: ["select 1", "select 2", "select 3", "select 4"],
+    operators: ["intersect", "except", "union all"],
+  });
+  for (const ending of [";", "; ", ";  \n", "  "]) {
+    assert.deepEqual(queryScope(`select 1${ending}`).branches, ["select 1"]);
+  }
+});
+
+test("queryScope keeps nested clauses and removes only the compound tail", () => {
+  const first = "select (select x from t order by x limit 1)";
+  const last = "select (select y from u order by y limit 2)";
+  for (const tail of ["order by 1", "limit 1", "order by 1 limit 1"]) {
+    assert.deepEqual(queryScope(`${first} union ${last} ${tail}`).branches, [first, last]);
+  }
+  assert.deepEqual(queryScope("select x from t order by x limit 1").branches, ["select x from t order by x limit 1"]);
+});
+
+test("querySources records complete named and derived bindings", () => {
+  assert.deepEqual(querySources("select * from main.t as x"), [{
+    alias: "x", name: "t", schema: "main", query: null, functionSql: null,
+    join: "inner", using: [], natural: false, on: null,
+  }]);
+  assert.equal(querySources("from t")[0]!.name, "t");
+  assert.equal(querySources("select * from t x")[0]!.alias, "x");
+  assert.deepEqual(querySources("select * from ( select 1), (values(2))").map((s) => [s.alias, s.query]),
+    [["__source_1", " select 1"], ["__source_2", "values(2)"]]);
+  assert.deepEqual(querySources("select * from (with x as (select 1) select * from x) y").map((s) => s.alias), ["y"]);
+  assert.deepEqual(querySources("select * from json_each('[1]') j, t").map((s) => [s.alias, s.functionSql]),
+    [["j", "json_each('[1]')"], ["t", null]]);
+});
+
+test("querySources reports missing and unsupported sources", () => {
+  for (const sql of ["select * from"]) {
+    assert.throws(() => querySources(sql), /missing FROM source/);
+  }
+  for (const body of ["t join u", "t, (select 1)"]) {
+    assert.throws(() => querySources(`select * from (${body})`), /parenthesized join groups need an explicit SELECT scope/);
+  }
+  assert.throws(() => querySources("select * from 1"), /unrecognized FROM source/);
+});
+
+test("querySources retains USING columns and subsequent joins", () => {
+  const sources = querySources('select * from t join u using("a", b) left join v using(b)');
+  assert.deepEqual(sources.map((s) => [s.alias, s.using, s.join]),
+    [["t", [], "inner"], ["u", ["a", "b"], "inner"], ["v", ["b"], "left"]]);
+  assert.deepEqual(querySources("select * from t using").map((s) => s.using), [[]]);
+});
+
+test("querySources preserves nested ON expressions and resets comma joins", () => {
+  const on = "t.id = (select u.id from u left join v on u.id=v.id order by u.id limit 1)";
+  const sources = querySources(`select * from t natural left join u on ${on}  , v join w on w.id = v.id  where 1`);
+  assert.deepEqual(sources.map((s) => [s.alias, s.join, s.natural, s.on]), [
+    ["t", "inner", false, null], ["u", "left", true, on],
+    ["v", "inner", false, null], ["w", "inner", false, "w.id = v.id"],
+  ]);
+  assert.equal(querySources("select * from t join u on")[1]!.on, "");
+  assert.deepEqual(querySources("select * from t indexed by idx").map((s) => s.alias), ["t"]);
+  assert.deepEqual(querySources("select * from t (ignored, left)").map((s) => s.alias), ["t"]);
+});
+
+test("querySources classifies all join attributes and clause boundaries", () => {
+  for (const [words, join, natural] of [
+    ["natural", "inner", true], ["left", "left", false], ["right", "right", false],
+    ["full", "full", false], ["inner", "inner", false], ["outer left", "left", false],
+    ["cross", "inner", false], ["left right", "full", false],
+  ] as const) {
+    assert.deepEqual(querySources(`select * from t ${words} join u`).map((s) => [s.alias, s.join, s.natural]),
+      [["t", "inner", false], ["u", join, natural]]);
+  }
+  for (const clause of ["where 1", "group by a", "having 1", "window w as ()", "order by a", "limit 1", "returning a"]) {
+    assert.deepEqual(querySources(`select * from t join u on t.a=u.a ${clause}`).map((s) => [s.alias, s.on]),
+      [["t", null], ["u", "t.a=u.a"]]);
+  }
+});
+
+test("unionType preserves escaped literals and nested member unions", () => {
+  hegel.test((tc) => {
+    const text = tc.draw(gs.text());
+    const member = JSON.stringify(`${text}"|end`);
+    assert.equal(unionType(member, "null"), `${member} | null`);
+    for (const nested of ['{ x: string | null }', "(string | null)", "[string | null]", "Array<string | null>"]) {
+      assert.equal(unionType(nested, "null"), `${nested} | null`);
+    }
+  });
+});
+
+test("unionType absorbs complete literals and preserves larger type expressions", () => {
+  assert.equal(unionType("number", "12", "-12.34", "1.2"), "number");
+  for (const member of ["Brand12", "12Brand", "12.x", 'Brand<"a">', '"a"[]', 'Brand & "a"']) {
+    assert.equal(unionType("string", "number", member), `string | number | ${member}`);
+  }
+  hegel.test((tc) => {
+    const literal = JSON.stringify(tc.draw(gs.text()));
+    const integer = String(tc.draw(gs.integers()));
+    assert.equal(unionType("string", literal), "string");
+    assert.equal(unionType("number", integer), "number");
+    assert.equal(unionType(literal, integer), `${literal} | ${integer}`);
+  });
+});
+
+// A worker lets the test stop a parser that fails to advance its cursor.
+async function scopeResult(method: "querySources" | "unionType", args: string[]): Promise<unknown> {
+  const worker = new Worker(`
+    const { parentPort, workerData } = require("node:worker_threads");
+    import(workerData.url).then((scope) => parentPort.postMessage(scope[workerData.method](...workerData.args)));
+  `, { eval: true, workerData: { url: new URL("../src/build/scope.ts", import.meta.url).href, method, args } });
+  try {
+    return await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("scope parsing did not finish")), 3000);
+      worker.once("message", (value) => { clearTimeout(timer); resolve(value); });
+      worker.once("error", (error) => { clearTimeout(timer); reject(error); });
+    });
+  } finally { await worker.terminate(); }
+}
+
+test("querySources skips nested compound sources", async () => {
+  const sql = "select a from t as x union select (select a from u left join v using(a))";
+  const expected = [{ alias: "x", name: "t", schema: null, query: null, functionSql: null, join: "inner", using: [], natural: false, on: null }];
+  assert.deepEqual(await scopeResult("querySources", [sql]), expected);
+  assert.deepEqual(querySources(sql), expected);
+});
+
+test("unionType preserves escaped quote boundaries", async () => {
+  const literal = JSON.stringify('a"|b');
+  assert.equal(await scopeResult("unionType", [literal, "null"]), `${literal} | null`);
+  assert.equal(unionType(literal, "null"), `${literal} | null`);
+});
+
+test("unionType preserves spacing inside nested unions", () => {
+  hegel.test((tc) => {
+    const spaces = tc.draw(gs.sampledFrom(["", "  ", "\t"]));
+    const nested = `Array<string${spaces}|${spaces}null>`;
+    assert.equal(unionType(nested, "null"), `${nested} | null`);
+  });
+});
+
+test("querySources ignores an attribute without a following JOIN", () => {
+  assert.deepEqual(querySources("select * from t as x union select left from u").map((s) => s.alias), ["x"]);
+});
+
+test("querySources starts ON text after an explicit keyword alias", async () => {
+  const sql = "select * from t join u as left on t.id = 1";
+  const expected = [
+    { alias: "t", name: "t", schema: null, query: null, functionSql: null,
+      join: "inner", using: [], natural: false, on: null },
+    { alias: "left", name: "u", schema: null, query: null, functionSql: null,
+      join: "inner", using: [], natural: false, on: "t.id = 1" },
+  ];
+  assert.deepEqual(await scopeResult("querySources", [sql]), expected);
+  assert.deepEqual(querySources(sql), expected);
+});
+
+test("querySources keeps keyword aliases separate from following join attributes", async () => {
+  const sql = "select * from t as natural join u";
+  const expected = [
+    { alias: "natural", name: "t", schema: null, query: null, functionSql: null,
+      join: "inner", using: [], natural: false, on: null },
+    { alias: "u", name: "u", schema: null, query: null, functionSql: null,
+      join: "inner", using: [], natural: false, on: null },
+  ];
+  assert.deepEqual(await scopeResult("querySources", [sql]), expected);
+  assert.deepEqual(querySources(sql), expected);
+});
+
+// SQLite reads WINDOW as a keyword only before `name AS`, so a table may be
+// named window; the source after its implicit alias must still be read.
+test("querySources reads the source after a table named window with an implicit alias", () => {
+  assert.deepEqual(querySources("select * from window w join u on w.a = u.a").map((s) => [s.alias, s.name]), [["w", "window"], ["u", "u"]]);
+  assert.deepEqual(querySources("select * from window w, u").map((s) => [s.alias, s.name]), [["w", "window"], ["u", "u"]]);
 });

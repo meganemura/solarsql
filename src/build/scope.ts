@@ -167,6 +167,8 @@ export function queryScope(sql: string, bindingsOnly = false): QueryScope {
   }
   let end = sql.length;
   if (operators.length > 0) {
+    // SQLite permits compound ORDER BY and LIMIT only after the last arm, so earlier depth-zero tokens cannot be tails.
+    // The final arm starts with SELECT or VALUES, so its first token cannot be a tail clause.
     const tail = tokens.find((t) => t.depth === 0 && t.start >= start && (isKeyword(t, "order") || isKeyword(t, "limit")));
     if (tail) end = tail.start;
   }
@@ -226,8 +228,10 @@ export function querySources(sql: string): Source[] {
       if (t.depth !== 0) { i++; continue; }
       if (clauses.has(t.text.toLowerCase())) return sources;
       if (isKeyword(t, "using") && tokens[i + 1]?.text === "(") {
+        // USING and the preceding source token both have depth zero; either cursor reaches the same closing parenthesis.
         const end = close(tokens, i + 1);
         source.using = tokens.slice(i + 2, end).filter((t) => t.text !== ",").map((t) => unquote(t.text));
+        // Revisiting the last USING item skips its nested token, then the closing parenthesis advances without changing a source.
         i = end + 1;
         continue;
       }
@@ -241,7 +245,9 @@ export function querySources(sql: string): Source[] {
         continue;
       }
       if (t.text === ",") { i++; join = "inner"; natural = false; break; }
+      // A token outside the join keywords leaves words empty and fails the inner JOIN check, so scanning it has no effect.
       if (isKeyword(t, "join") || attributes.has(t.text.toLowerCase())) {
+        // Join classification reads only full, left, right, and natural; any other entry in words has no effect.
         const words: string[] = [];
         let j = i;
         while (tokens[j] && attributes.has(tokens[j]!.text.toLowerCase())) words.push(tokens[j++]!.text.toLowerCase());
@@ -291,6 +297,7 @@ export function unionMembers(...types: string[]): string[] {
   // number member, is untouched (ADR 0098).
   const hasString = parts.includes("string");
   const hasNumber = parts.includes("number");
+  // When both bare types are absent, both filter predicates are false and the filter retains every member.
   if (!hasString && !hasNumber) return parts;
   return parts.filter((part) =>
     !(hasString && /^"(?:[^"\\]|\\.)*"$/.test(part)) && !(hasNumber && /^-?\d+(?:\.\d+)?$/.test(part)));
