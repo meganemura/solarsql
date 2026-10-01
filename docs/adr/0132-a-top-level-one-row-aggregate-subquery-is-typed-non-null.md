@@ -32,4 +32,4 @@ Two call sites in `Typer` stop applying ADR 0048's blanket scalar-subquery nulla
 - The same forms under GROUP BY, HAVING, or OVER still type `| null`, and under LIMIT/OFFSET are refused, the same rule ADR 0130 already applies to the nested case.
 - `(select cast(count(*) as integer) ...)` types `number`; `(select cast(max(...) as integer) ...)` and `(select cast(sum(...) as integer) ...)` stay `number | null`.
 - `cast((select count(*) ...) as integer)` (the CAST outside the subquery, ADR 0048's original shape, pinned at `test/shapes.test.ts`) is unchanged: `castNeverNull` does not treat a `select` as a bare column reference or a known never-null call, so it stays `number | null`.
-- `queries.md:70` and `:101` and a two-sibling-array recipe are Agent A's file in this round; their text is in this task's report, not committed here.
+- A provably one-row scalar SELECT keeps its inner column's type and adds no `| null` of its own. A FILTER-guarded `json_group_array` gives `[]` for a parent with no children. For two child arrays on one parent, use one correlated `json_group_array` subquery per child (`skills/solarsql/references/queries.md` shows the recipe).

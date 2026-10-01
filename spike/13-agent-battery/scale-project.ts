@@ -28,10 +28,9 @@ export const SCALE_M = 20;
 // actual foreign key between them (t{i}.parent_id references t{i-1}(id), the
 // only relationship spike/12's generator gives), so the task's "which
 // references it" is true of the generated project instead of asserted by
-// the task text alone. The spec's own module numbers (3 and 7) name no such
-// relationship in this generator; adapting the pair is the one deviation
-// from the spec's literal wording, made under its own "adapt the wording to
-// the generator's actual table names" allowance. They live in
+// the task text alone. The study design first named modules 3 and 7, which
+// this generator does not relate, so the task uses this pair instead and
+// names the generator's actual tables. They live in
 // cascade-check.ts, since the check worker needs them in its own process
 // without importing this file.
 
@@ -59,8 +58,8 @@ export function writeFlatProject(dir: string, n: number, m: number, libraryPath:
 
 // Builds and writes the first migration, the same "ship the fresh project"
 // step a developer runs once after `solarsql init`, so both arms start from
-// a passing `build --check` before a scenario's task ever touches them (this
-// is the setup-time assertion the spec's Build step 2 asks for).
+// a passing `build --check` before a scenario's task ever touches them, so a
+// failure after the task is the task's own.
 async function establishBaseline(configPath: string, cliPath: string): Promise<void> {
   await build(configPath);
   const result = await migration(configPath, "init");

@@ -1339,14 +1339,12 @@ test('expected.retyped does not excuse a retyped column whose own value actually
   }
 });
 
-// Second review round, 2026-09-27: the relaxed predicate's plain `IS NOT`
-// used to run under the after column's own declared collation, so a rebuild
-// that also declares NOCASE or RTRIM on the retyped column let a genuine
-// rewrite escape as "value-preserving". `COLLATE BINARY` on the relaxed
-// predicate closes this: it governs only the collating sequence for a text
-// comparison, not SQLite's own comparison affinity conversion between a
-// TEXT-affinity value and a NUMERIC-affinity value, so a value-preserving
-// retype (same number, different affinity) still passes.
+// The relaxed predicate's plain `IS NOT` used the after column's declared
+// collation. A rebuild that added NOCASE or RTRIM could therefore hide a
+// genuine rewrite as "value-preserving". `COLLATE BINARY` prevents this by
+// governing the text comparison's collating sequence. SQLite still applies
+// comparison affinity between TEXT-affinity and NUMERIC-affinity values,
+// so a retype that preserves the number still passes.
 test('expected.retyped does not excuse a genuine rewrite hidden by a NOCASE collation on the retyped column', () => {
   {
     const db = new DatabaseSync(':memory:');
@@ -2130,7 +2128,7 @@ test('a failed commit reports MIGRATION_FAILED with the commit error, leaving ok
   }
 });
 
-// solarsql-e3hh: result.rows names both the strict updated count and the
+// result.rows names both the strict updated count and the
 // declaration-aware remainingUpdated the ROWS_LOST_OR_CHANGED message uses.
 test('rows names remainingUpdated beside updated when a retyped column still leaves a genuine rewrite', () => {
   const db = new DatabaseSync(':memory:');
@@ -2150,7 +2148,7 @@ test('rows names remainingUpdated beside updated when a retyped column still lea
   } finally { db.close(); }
 });
 
-// solarsql-e3hh: expected.retyped matches a table renamed only in ASCII case.
+// expected.retyped matches a table renamed only in ASCII case.
 test('expected.retyped matches a table whose name changed only in ASCII case', () => {
   const db = new DatabaseSync(':memory:');
   try {

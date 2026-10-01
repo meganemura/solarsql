@@ -148,7 +148,7 @@ One model, three runs per pass, task wording that names a `deleted_at` column an
 
 ### 3.6 Spend
 
-The 30 earlier runs (section 2's first pass and rename re-run, an unreported ddl-only re-run, and section 3's owned, flat, and owned re-run) summed to 15.65 USD in `costUsd`, recorded earlier today before their `.scratch` directories were deleted; the after-ADR-0127 owned re-run's three runs sum to 3.24 USD, from `.scratch/battery-2026-09-19-owned3/metrics.jsonl`. Together with about 0.2 USD of preflights, the day's total across every battery run is about 19.1 USD. Section 3's own three passes (owned, flat, owned re-run) are 8.03 USD of that total; section 2's own spend figures stay unchanged.
+The 30 earlier runs summed to 15.65 USD in `costUsd`. These include section 2's first pass, rename re-run, and an unreported ddl-only re-run, plus section 3's owned, flat, and owned re-run. The measurement recorded that total earlier that day, before the runs' temporary directories were deleted. The three owned runs after ADR 0127 cost 3.24 USD. With about 0.2 USD of preflights, the day's total across every battery run is about 19.1 USD. Section 3's three passes (owned, flat, owned re-run) cost 8.03 USD of that total. Section 2's spend figures stay unchanged.
 
 ## 4. An assert's SQL text, and workerd's per-text statement cache
 

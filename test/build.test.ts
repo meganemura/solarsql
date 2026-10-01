@@ -693,11 +693,10 @@ void includingRejectsNumber;
     }
   });
 
-  // The structural per-view boundary check (build.ts) already ran on every
-  // declared view before this round, whether or not any query selects from
-  // it -- but only for table accesses, through a permissive authorizer that
-  // never denies a function. This view is never selected anywhere, so
-  // nothing else in the build would ever prepare its body.
+  // The structural per-view boundary check (build.ts) checks every declared
+  // view, even when no query selects from it. Its table-access authorizer
+  // permits function calls, so it must also prepare the view with the
+  // function allowlist. Only that check prepares this fixture's view.
   test("an orphan view, never selected by any query, is still refused for a function call in its body", async () => {
     const dir = copy();
     try {
@@ -709,10 +708,10 @@ void includingRejectsNumber;
     }
   });
 
-  // The structural per-trigger boundary check builds its own synthetic
-  // firing statement regardless of whether any plan item fires the trigger
-  // for real -- but, before this round, also only for table accesses. This
-  // trigger's table and event are exercised by no command plan item.
+  // The structural per-trigger boundary check builds a synthetic firing
+  // statement even when no plan item fires the trigger. The table-access
+  // check permits function calls, so the synthetic statement also needs
+  // the function allowlist. Only that check fires this fixture's trigger.
   test("an orphan trigger, never fired by any plan item, is still refused for a function call in its body", async () => {
     const dir = copy();
     try {

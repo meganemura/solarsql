@@ -390,7 +390,7 @@ describe("Engine", () => {
 // of them by default, so a statement that passes engine.prepare() or the
 // Engine constructor's DDL loop must also fail (or pass) the same way
 // workerd's own connection would. Each pair below pins one limit's boundary
-// on both sides -- measurements this round of work took directly.
+// on both sides, from direct measurements (ADR 0134).
 describe("workerd's prepare-time limits", () => {
   const engine = new Engine(ddl);
 

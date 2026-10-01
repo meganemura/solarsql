@@ -6,7 +6,7 @@ Status: accepted (2026-09-16)
 
 ADR 0113 made `Engine.prepare()` (`src/build/facts.ts`) deny a query or a command plan item that calls a SQL function outside a local copy of D1 and a Durable Object's own SQLite allowlist. That decision named its own unmeasured adjacent scope: DDL. The `Engine` constructor runs every `CREATE TABLE`, `CREATE VIEW`, and `CREATE TRIGGER` statement through `this.db.exec(s)`, with no authorizer at all, so a function call written directly inside a CHECK constraint, a view body, or a trigger body was not checked by that decision.
 
-This round measured that boundary directly, in `node:sqlite` and against real D1 and Durable Object storage (Miniflare), across five DDL shapes.
+The measurements for this decision tested that boundary directly, in `node:sqlite` and against real D1 and Durable Object storage (Miniflare), across five DDL shapes.
 
 ### CHECK constraints: no indirect catch path
 

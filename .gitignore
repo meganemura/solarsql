@@ -1,7 +1,7 @@
 # Local-only project instructions
 CLAUDE.local.md
 
-# Task specs and worker reports. Never referenced from committed content.
+# Local working files for this checkout (see AGENTS.md). Never referenced from committed content.
 .claude-team/
 
 node_modules/

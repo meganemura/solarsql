@@ -8,8 +8,8 @@
 // real deploy targets, not only against the local copy in facts.ts.
 // Boundary: no assertions about the build's own error message live here;
 // test/facts.test.ts owns those. No case in this file sits between 15,000
-// and 25,000 VDBE ops: this round measured node:sqlite and a local
-// Durable Object disagreeing in that band (a local DO accepted up to 21,843
+// and 25,000 VDBE ops: the measurements behind ADR 0134 found node:sqlite
+// and a local Durable Object disagreeing in that band (a local DO accepted up to 21,843
 // ops on macOS where node:sqlite's own vdbeOp 25,000 already refuses), so a
 // case there would pin a boundary this library cannot make both engines
 // agree on.

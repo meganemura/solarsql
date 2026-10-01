@@ -138,8 +138,7 @@ const RULES: readonly Rule[] = [
   // "SQLITE_LOCKED ... indicates a conflict within the same database
   // connection." The page also notes SQLITE_BUSY can occur later in a
   // transaction (on a write, or at commit), not only at the start; this
-  // module still reports not_applied for the plain, unqualified message,
-  // matching the coordinator's classification for this rule.
+  // module still reports not_applied for the plain, unqualified message.
   { reason: "sqlite_busy", test: (m) => m.includes("SQLITE_BUSY") || m.includes("SQLITE_LOCKED") || m.includes("database is locked"), class: NOT_APPLIED },
   // Any other SQLite extended result code in the text is the engine's own
   // classification. This is a catch-all, not a page citation: none of the
