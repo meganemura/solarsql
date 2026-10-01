@@ -40,13 +40,13 @@ test("a changed search table with the documented trigger gets the insert, before
   assert.deepEqual(
     plan.statements.map((s) => s.split("(")[0]!.trim().toLowerCase()),
     [
-      "drop table \"order_search\"",
+      "drop table main.\"order_search\"",
       "create virtual table order_search using fts5",
-      "insert into \"order_search\"",
-      "create trigger order_search_insert after insert on orders begin insert into order_search",
+      "insert into main.\"order_search\"",
+      "create trigger main.order_search_insert after insert on orders begin insert into order_search",
     ],
   );
-  assert.deepEqual(plan.statements[2], `insert into "order_search" ("order_id", "note") select "id", "note" from "orders"`);
+  assert.deepEqual(plan.statements[2], `insert into main."order_search" ("order_id", "note") select "id", "note" from main."orders"`);
   const db = applied([render(1, "v1", v1).sql, "insert into orders values ('a', 'gift');", "insert into order_search values ('a', 'gift');"]);
   db.exec("begin");
   for (const s of splitStatements(render(2, "v2", plan.statements).sql)) db.exec(s);
@@ -67,7 +67,7 @@ test("a new search table on a base table that already has rows: the insert is em
   const plan = diff(introspect(open(current)), introspect(open(target)));
   assert.equal(plan.kind, "ok");
   if (plan.kind !== "ok") return;
-  assert.deepEqual(plan.statements[1], `insert into "order_search" ("order_id", "note") select "id", "note" from "orders"`);
+  assert.deepEqual(plan.statements[1], `insert into main."order_search" ("order_id", "note") select "id", "note" from main."orders"`);
   const db = applied([render(1, "v1", current).sql, "insert into orders values ('a', 'gift');"]);
   db.exec("begin");
   for (const s of splitStatements(render(2, "v2", plan.statements).sql)) db.exec(s);
@@ -125,7 +125,7 @@ test("an unrelated trigger on another table does not turn one matching search tr
   assert.equal(plan.kind, "ok");
   if (plan.kind !== "ok") return;
   assert.equal(plan.statements[0]!.startsWith(commentLine), false);
-  assert.ok(plan.statements.some((s) => s.startsWith(`insert into "order_search"`)));
+  assert.ok(plan.statements.some((s) => s.startsWith(`insert into main."order_search"`)), plan.statements.join("\n"));
 });
 
 test("a search table with no trigger at all leaves a comment", () => {
@@ -139,7 +139,7 @@ test("a search table with no trigger at all leaves a comment", () => {
 
 test("a removed search table is dropped, and its shadow tables are never named", () => {
   const plan = diff(introspect(open(v1)), introspect(open([orders])));
-  assert.deepEqual(plan, { kind: "ok", statements: [`drop table "order_search"`] });
+  assert.deepEqual(plan, { kind: "ok", statements: [`drop table main."order_search"`] });
   const s = introspect(open(v1));
   assert.deepEqual([...s.tables.keys()], ["orders"]);
   assert.deepEqual([...s.virtuals.keys()], ["order_search"]);

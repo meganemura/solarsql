@@ -26,8 +26,8 @@ test("a singleton rename repair is structured, shell-safe, and composes with an 
     const plan = diff(introspect(current), introspect(targetWithAdd), [rename]);
     assert.equal(plan.kind, "ok", plan.kind === "blocked" ? plan.reason : "");
     if (plan.kind === "ok") {
-      assert.ok(plan.statements.includes('alter table "order.lines" rename column "old.value" to "new.value"'));
-      assert.ok(plan.statements.includes('alter table "order.lines" add column added text'));
+      assert.ok(plan.statements.includes('alter table main."order.lines" rename column "old.value" to "new.value"'), plan.statements.join("\n"));
+      assert.ok(plan.statements.includes('alter table main."order.lines" add column added text'), plan.statements.join("\n"));
     }
   } finally {
     current.close();
@@ -380,9 +380,9 @@ test("a rename, an exact column drop, and a safe add share one populated migrati
     assert.equal(plan.kind, "ok", plan.kind === "blocked" ? plan.reason : "");
     if (plan.kind !== "ok") return;
     assert.deepEqual(plan.statements, [
-      'alter table "items" rename column "old_value" to "new_value"',
-      'alter table "items" drop column "obsolete"',
-      "alter table \"items\" add column added text",
+      'alter table main."items" rename column "old_value" to "new_value"',
+      'alter table main."items" drop column "obsolete"',
+      "alter table main.\"items\" add column added text",
     ]);
     for (const statement of plan.statements) current.exec(statement);
     assert.deepEqual({ ...current.prepare("select rowid as identity, id, new_value, added from items").get() }, { identity: 42, id: 42, new_value: "kept", added: null });

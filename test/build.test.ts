@@ -243,7 +243,7 @@ describe("solarsql build", () => {
       writeFileSync(schema, readFileSync(schema, "utf8").replace("updated_at text\n", "updated_at text,\n    placed_at integer not null default 0\n"));
       const first = await build(join(dir, "example/solarsql.config.ts"));
       assert.equal(first.migration.pending, true);
-      assert.deepEqual(first.migration.statements, [`alter table "orders" add column placed_at integer not null default 0`]);
+      assert.deepEqual(first.migration.statements, [`alter table main."orders" add column placed_at integer not null default 0`]);
 
       const written = await migration(join(dir, "example/solarsql.config.ts"), "placed_at");
       // The example already holds five files, so the next one is the sixth.

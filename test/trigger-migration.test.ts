@@ -18,7 +18,7 @@ test("the migration writes BEGIN and END uppercase, and leaves the body and its 
   assert.equal(plan.kind, "ok");
   if (plan.kind !== "ok") return;
   const [created] = plan.statements;
-  assert.equal(created, `CREATE TRIGGER notes_guard before insert on notes
+  assert.equal(created, `CREATE TRIGGER main.notes_guard before insert on notes
   when new.body = 'begin'
   BEGIN
     select raise(abort, 'end');
@@ -42,8 +42,8 @@ test("a trigger whose body changed under the same name is dropped, then created 
   assert.equal(plan.kind, "ok");
   if (plan.kind !== "ok") return;
   assert.deepEqual(plan.statements, [
-    'drop trigger "notes_touch"',
-    `CREATE TRIGGER notes_touch after update on notes BEGIN update notes set body = upper(new.body) where id = new.id; END`,
+    'drop trigger main."notes_touch"',
+    `CREATE TRIGGER main.notes_touch after update on notes BEGIN update notes set body = upper(new.body) where id = new.id; END`,
   ]);
 });
 
@@ -57,7 +57,7 @@ test("a trigger named begin uppercases the body BEGIN, not the name", () => {
   const plan = diff(introspect(open([tableWithBeginCol])), introspect(open([tableWithBeginCol, trigger])));
   assert.equal(plan.kind, "ok");
   if (plan.kind !== "ok") return;
-  assert.equal(plan.statements[0], `CREATE TRIGGER begin after insert on t BEGIN select 1; END`);
+  assert.equal(plan.statements[0], `CREATE TRIGGER main.begin after insert on t BEGIN select 1; END`);
 });
 
 test("a WHEN clause reading new.begin keeps the column and uppercases the body BEGIN", () => {
@@ -65,7 +65,7 @@ test("a WHEN clause reading new.begin keeps the column and uppercases the body B
   const plan = diff(introspect(open([tableWithBeginCol])), introspect(open([tableWithBeginCol, trigger])));
   assert.equal(plan.kind, "ok");
   if (plan.kind !== "ok") return;
-  assert.equal(plan.statements[0], `CREATE TRIGGER trg after insert on t when new.begin > 0 BEGIN select 1; END`);
+  assert.equal(plan.statements[0], `CREATE TRIGGER main.trg after insert on t when new.begin > 0 BEGIN select 1; END`);
 });
 
 test("UPDATE OF begin keeps the column name and uppercases the body BEGIN", () => {
@@ -73,7 +73,7 @@ test("UPDATE OF begin keeps the column name and uppercases the body BEGIN", () =
   const plan = diff(introspect(open([tableWithBeginCol])), introspect(open([tableWithBeginCol, trigger])));
   assert.equal(plan.kind, "ok");
   if (plan.kind !== "ok") return;
-  assert.equal(plan.statements[0], `CREATE TRIGGER trg after update of begin on t BEGIN select 1; END`);
+  assert.equal(plan.statements[0], `CREATE TRIGGER main.trg after update of begin on t BEGIN select 1; END`);
 });
 
 test("a quoted trigger name begin keeps its quotes and uppercases the body BEGIN", () => {
@@ -81,7 +81,7 @@ test("a quoted trigger name begin keeps its quotes and uppercases the body BEGIN
   const plan = diff(introspect(open([tableWithBeginCol])), introspect(open([tableWithBeginCol, trigger])));
   assert.equal(plan.kind, "ok");
   if (plan.kind !== "ok") return;
-  assert.equal(plan.statements[0], `CREATE TRIGGER "begin" after insert on t BEGIN select 1; END`);
+  assert.equal(plan.statements[0], `CREATE TRIGGER main."begin" after insert on t BEGIN select 1; END`);
 });
 
 test("a begin column inside the body stays lowercase while the opener is uppercase", () => {
@@ -89,5 +89,18 @@ test("a begin column inside the body stays lowercase while the opener is upperca
   const plan = diff(introspect(open([tableWithBeginCol])), introspect(open([tableWithBeginCol, trigger])));
   assert.equal(plan.kind, "ok");
   if (plan.kind !== "ok") return;
-  assert.equal(plan.statements[0], `CREATE TRIGGER trg after insert on t BEGIN select begin from t; END`);
+  assert.equal(plan.statements[0], `CREATE TRIGGER main.trg after insert on t BEGIN select begin from t; END`);
+});
+
+test("SQLite stores the closing END last and the migration preserves earlier END tokens", () => {
+  const trigger = "create trigger tr after insert on t begin select case when 1 then 'end' else 'begin' end /* end */; end /* tail */";
+  const db = open(["create table t(a int)"]), declared = open(["create table t(a int)", trigger]);
+  try {
+    assert.equal(introspect(declared).triggers.get("tr")!.sql, "CREATE TRIGGER tr after insert on t begin select case when 1 then 'end' else 'begin' end /* end */; end");
+    const plan = diff(introspect(db), introspect(declared));
+    if (plan.kind !== "ok") throw new Error(plan.reason);
+    assert.deepEqual(plan.statements, ["CREATE TRIGGER main.tr after insert on t BEGIN select case when 1 then 'end' else 'begin' end /* end */; END"]);
+    for (const sql of plan.statements) db.exec(sql);
+    db.exec("insert into t values(1)");
+  } finally { db.close(); declared.close(); }
 });

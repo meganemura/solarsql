@@ -6,9 +6,75 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
-import { aliasMap, columnRef, created, definitions, leadingComment, namedParams, normalize, paramSites, quoteIdent, renamedColumn, selectItems, significant, splitStatements, sqliteName, tokenize, unconditionalMatchAliases } from "../src/build/scan.ts";
+import { aliasMap, columnRef, created, definitions, indexTarget, leadingComment, namedParams, normalize, paramSites, quoteIdent, redeclaredByFile, renamedColumn, searchFill, selectItems, significant, splitStatements, sqliteName, tokenize, triggerBodyBegin, triggerInsertTarget, triggerTarget, unconditionalMatchAliases } from "../src/build/scan.ts";
 
 const ident = gs.fromRegex("[a-z_][a-z0-9_]{0,6}");
+
+test("main-qualified history matches unqualified parsing and SQLite object names", () => {
+  hegel.test(tc => {
+    const schema = [..."main"].map(c => tc.draw(gs.booleans()) ? c.toUpperCase() : c).join("");
+    const quote = tc.draw(gs.sampledFrom(["bare", "double", "backtick", "bracket", "single"]));
+    const quotedSchema = quote === "bare" ? schema : quote === "double" ? `"${schema}"` : quote === "backtick" ? `\`${schema}\`` : quote === "bracket" ? `[${schema}]` : `'${schema}'`;
+    const gap = tc.draw(gs.sampledFrom(["", " ", "\n", "/* qualifier */"]));
+    const prefix = `${quotedSchema}${gap}.${gap}`;
+    const name = tc.draw(gs.sampledFrom(["t", "main", "index", "trigger", "table", "begin", "a.b"]));
+    const object = quoteIdent(name);
+    const db = new DatabaseSync(":memory:");
+    try {
+      db.exec("create table base(a int,b text); create virtual table search using fts5(b)");
+      const declarations = [
+        { kind: "table", sql: `create table ${prefix}${object}(a int,b text,check(a>0))` },
+        { kind: "index", sql: `create index ${prefix}${object} on base(a)` },
+        { kind: "trigger", sql: `create trigger ${prefix}${object} after insert on ${prefix}base begin insert into search(b) values(new.b); end` },
+        { kind: "view", sql: `create view ${prefix}${object} as select * from base` },
+        { kind: "virtual", sql: `create virtual table ${prefix}${object} using fts5(b)` },
+      ];
+      for (const declaration of declarations) {
+        db.exec("begin");
+        db.exec(declaration.sql);
+        const row = db.prepare("select name from main.sqlite_schema where name=?").get(name)!;
+        assert.deepEqual(created(declaration.sql), { kind: declaration.kind, name: row.name });
+        db.exec("rollback");
+      }
+      const tableSql = declarations[0]!.sql;
+      assert.deepEqual(definitions(tableSql), { columns: new Map([["a", "a int"], ["b", "b text"]]), constraints: ["check(a>0)"] });
+      assert.deepEqual(indexTarget(declarations[1]!.sql), { name, table: "base" });
+      assert.deepEqual(triggerTarget(declarations[2]!.sql), { name, event: "insert", columns: [], table: "base" });
+      assert.equal(triggerBodyBegin(tokenize(declarations[2]!.sql))?.start, declarations[2]!.sql.indexOf("begin insert"));
+      assert.deepEqual(triggerInsertTarget(declarations[2]!.sql), { base: "base", search: "search" });
+      assert.deepEqual(searchFill(declarations[2]!.sql), { base: "base", search: "search", columns: ["b"], sources: ["b"] });
+      db.exec(`create table ${prefix}${object}(a int)`);
+      db.exec(`alter table ${prefix}${object} rename column a to b`);
+      assert.equal(db.prepare("select name from pragma_table_info(?, 'main')").get(name)!.name, "b");
+      assert.deepEqual(renamedColumn(`alter table ${prefix}${object} rename column a to b`), renamedColumn(`alter table ${object} rename column a to b`));
+      assert.equal(renamedColumn(`alter table ${prefix}${object} rename to renamed`), null);
+      const baseline = 'create table "_solarsql_new_base"(a int,check(a>0)); create index i on base(a); create trigger tr after insert on base begin select 1; end;';
+      const qualified = `create table ${prefix}"_solarsql_new_base"(a int,check(a>0)); create index ${prefix}i on base(a); create trigger ${prefix}tr after insert on base begin select 1; end;`;
+      assert.deepEqual(redeclaredByFile(qualified, "base"), redeclaredByFile(baseline, "base"));
+    } finally { db.close(); }
+  });
+});
+
+test("history parsers keep TEMP and attached declarations separate from main", () => {
+  for (const schema of ["temp", "TEMP", '"temp"', "[temp]", "`temp`", "'temp'", "aux", '"aux"']) {
+    const prefix = `${schema}.`;
+    assert.equal(created(`create table ${prefix}t(a int)`), null);
+    assert.equal(definitions(`create table ${prefix}t(a int)`), null);
+    assert.equal(renamedColumn(`alter table ${prefix}t rename column a to b`), null);
+    assert.equal(indexTarget(`create index ${prefix}i on t(a)`), null);
+    assert.equal(triggerTarget(`create trigger ${prefix}tr after insert on t begin select 1; end`), null);
+    assert.equal(triggerBodyBegin(tokenize(`create trigger ${prefix}tr after insert on t begin select 1; end`)), undefined);
+    assert.equal(triggerTarget(`create trigger tr after insert on ${prefix}t begin select 1; end`), null);
+    assert.equal(searchFill(`create trigger ${prefix}tr after insert on t begin insert into search(a) values(new.a); end`), null);
+    assert.deepEqual(redeclaredByFile(`create table ${prefix}"_solarsql_new_t"(a int,check(a>0)); create index ${prefix}i on t(a); create trigger ${prefix}tr after insert on t begin select 1; end;`, "t"), { constraints: [], indexes: [], triggers: [] });
+  }
+  for (const keyword of ["temp", "temporary"]) {
+    assert.equal(created(`create ${keyword} table t(a int)`), null);
+    assert.equal(definitions(`create ${keyword} table t(a int)`), null);
+    assert.equal(created(`create ${keyword} view v as select 1`), null);
+    assert.equal(triggerTarget(`create ${keyword} trigger tr after insert on t begin select 1; end`), null);
+  }
+});
 const fragment = gs.composite((tc): string => {
   const kind = tc.draw(gs.integers({ minValue: 0, maxValue: 6 }));
   switch (kind) {

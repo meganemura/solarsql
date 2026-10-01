@@ -173,7 +173,7 @@ test("a removed parent and its cascading child, both dropped in the same migrati
   try {
     const plan = diff(introspect(current), introspect(target), [], [{ kind: "table", table: "parents" }, { kind: "table", table: "children" }]);
     assert.equal(plan.kind, "ok", plan.kind === "blocked" ? plan.reason : "");
-    if (plan.kind === "ok") assert.deepEqual(new Set(plan.statements), new Set(['drop table "children"', 'drop table "parents"']));
+    if (plan.kind === "ok") assert.deepEqual(new Set(plan.statements), new Set(['drop table main."children"', 'drop table main."parents"']));
   } finally {
     current.close();
     target.close();
@@ -193,7 +193,7 @@ test("a removed parent referenced only by a default (NO ACTION) foreign key need
   try {
     const plan = diff(introspect(current), introspect(target), [], [{ kind: "table", table: "parents" }]);
     assert.equal(plan.kind, "ok", plan.kind === "blocked" ? plan.reason : "");
-    if (plan.kind === "ok") assert.deepEqual(plan.statements, ['drop table "parents"']);
+    if (plan.kind === "ok") assert.deepEqual(plan.statements, ['drop table main."parents"']);
   } finally {
     current.close();
     target.close();
@@ -279,7 +279,7 @@ test("virtual search removal remains automatic with or without an empty intent",
     try {
       for (const plan of [diff(introspect(current), introspect(target)), diff(introspect(current), introspect(target), [], [])]) {
         assert.equal(plan.kind, "ok");
-        if (plan.kind === "ok") assert.deepEqual(plan.statements, Array.from({ length: count }, (_, index) => `drop table "item_search_${index}"`));
+        if (plan.kind === "ok") assert.deepEqual(plan.statements, Array.from({ length: count }, (_, index) => `drop table main."item_search_${index}"`));
       }
     } finally {
       current.close();

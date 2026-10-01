@@ -10,7 +10,7 @@
 // again, and its shadow tables are the engine's own.
 import { DatabaseSync } from "node:sqlite";
 import { withDeniedFunctions, withWorkerdLimits } from "./facts.ts";
-import { created, definitions, isKeyword, normalize, parseRebuildRecords, quoteIdent, redeclaredByFile, REBUILD_HEADER, renamedColumn, revivedDeclaration, searchFill, splitStatements, tokenize, triggerBodyBegin, triggerInsertTarget, type RebuildRecord, type Token, unknownDeclaration } from "./scan.ts";
+import { created, definitions, isKeyword, normalize, parseRebuildRecords, quoteIdent, redeclaredByFile, REBUILD_HEADER, renamedColumn, revivedDeclaration, searchFill, significant, splitStatements, tokenize, triggerBodyBegin, triggerInsertTarget, type RebuildRecord, type Token, unknownDeclaration } from "./scan.ts";
 import { BuildError } from "./build-error.ts";
 
 export type Column = { name: string; type: string; notnull: boolean; dflt: string | null; pk: number; def: string; generated: boolean };
@@ -278,7 +278,9 @@ export function introspect(db: DatabaseSync): Schema {
       const defs = definitions(row.sql);
       // hidden 2 and 3 are generated columns; they take part in the shape
       // and are left out of a rebuild's copy.
-      const columns = (db.prepare(`select name, type, "notnull" as nn, dflt_value, pk, hidden from pragma_table_xinfo(?) where hidden in (0, 2, 3)`).all(row.name) as {
+      // Read the same main table named by sqlite_schema, even when a TEMP
+      // table shadows its unqualified name.
+      const columns = (db.prepare(`select name, type, "notnull" as nn, dflt_value, pk, hidden from pragma_table_xinfo(?, 'main') where hidden in (0, 2, 3)`).all(row.name) as {
         name: string;
         type: string;
         nn: number;
@@ -286,7 +288,7 @@ export function introspect(db: DatabaseSync): Schema {
         pk: number;
         hidden: number;
       }[]).map((c) => ({ name: c.name, type: c.type, notnull: c.nn === 1, dflt: c.dflt_value, pk: c.pk, def: defs?.columns.get(c.name) ?? "", generated: c.hidden !== 0 }));
-      const foreignKeys = (db.prepare(`select "table", "from", "to", on_update, on_delete from pragma_foreign_key_list(?) order by id, seq`).all(row.name) as {
+      const foreignKeys = (db.prepare(`select "table", "from", "to", on_update, on_delete from pragma_foreign_key_list(?, 'main') order by id, seq`).all(row.name) as {
         table: string;
         from: string;
         to: string;
@@ -316,7 +318,7 @@ export function introspect(db: DatabaseSync): Schema {
         // loosened from `&&` to `||` against a neighboring term.
         rowidAlias: table!.wr === 0 && columns.filter(c => c.pk > 0).length === 1
           && columns.some(c => c.pk > 0 && c.type.toUpperCase() === "INTEGER")
-          && !db.prepare(`select 1 from pragma_index_list(?) where origin = 'pk'`).get(row.name)
+          && !db.prepare(`select 1 from pragma_index_list(?, 'main') where origin = 'pk'`).get(row.name)
           ? columns.find(c => c.pk > 0)!.name : null,
       });
     } else if (row.type === "index") {
@@ -397,23 +399,16 @@ function same(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-// The declared CREATE TABLE under another name. Its only caller passes
-// target.sql, always a Table's own sqlite_schema text (never a virtual
-// table's "CREATE VIRTUAL TABLE" or a value a caller wrote by hand): SQLite
-// stores that text with its own header canonicalized -- exactly one space
-// between CREATE, TABLE, and the name, upper case, and IF NOT EXISTS
-// dropped even when the source declared it (measured) -- while it keeps
-// everything from the name onward exactly as declared. So the header
-// portion of this pattern (^, the whitespace counts inside "create table"
-// and the optional "if not exists" group, and IF NOT EXISTS itself) never
-// sees a different input to match against; only the name alternation
-// (double-quoted, single-quoted, backtick, bracketed, or bare) reads text a
-// caller actually controls. Single quotes are SQLite's fourth identifier
-// quote form; without them, a name holding a space or "(" left the trailing
-// quote and the rest of the name in the CREATE body, and the rebuild failed
-// at execution with a syntax error rather than at build time.
-function renamedCreate(sql: string, newName: string): string {
-  return sql.replace(/^(\s*create\s+table\s+(?:if\s+not\s+exists\s+)?)("(?:[^"]|"")*"|'(?:[^']|'')*'|`[^`]*`|\[[^\]]*\]|[^\s(]+)/i, `$1${quoteIdent(newName)}`);
+// sqlite_schema supplies the CREATE header. Token spans preserve comments
+// immediately after a name, which a bare-name regular expression consumed.
+function renamedCreate(sql: string, newName?: string): string {
+  // sqlite_schema drops IF NOT EXISTS and any comment before the name, so the
+  // name is the first significant token after the object keyword.
+  const tokens = significant(tokenize(sql));
+  const name = tokens[tokens.findIndex(t => ["table", "index", "trigger", "view"].some(kind => isKeyword(t, kind))) + 1]!;
+  // TEMP objects take precedence over unqualified names. Qualify the object
+  // name; SQLite resolves an index's ON table within the index's schema.
+  return sql.slice(0, name.start) + "main." + (newName === undefined ? name.text : quoteIdent(newName)) + sql.slice(name.end);
 }
 
 function tableStatements(current: Table, target: Table, renames: readonly Rename[], drops: readonly DropIntent[], keptIndexes: readonly string[]): Plan & { rebuilt?: boolean } {
@@ -433,7 +428,7 @@ function tableStatements(current: Table, target: Table, renames: readonly Rename
     if (!from || currentColumns.has(r.to) || !target.columns.some((c) => c.name === r.to)) {
       return { kind: "blocked", reason: `table ${current.name}: rename ${r.from} -> ${r.to} does not match the schemas` };
     }
-    statements.push(`alter table ${quoteIdent(current.name)} rename column ${quoteIdent(r.from)} to ${quoteIdent(r.to)}`);
+    statements.push(`alter table main.${quoteIdent(current.name)} rename column ${quoteIdent(r.from)} to ${quoteIdent(r.to)}`);
     currentColumns.delete(r.from);
     // The replaced entry's own fields are never read back: later code only
     // calls currentColumns.has() and .keys() (a chained rename's earlier
@@ -475,8 +470,8 @@ function tableStatements(current: Table, target: Table, renames: readonly Rename
   });
   const candidate = addsStored ? null : [...statements];
   if (candidate !== null) {
-    for (const n of removed) candidate.push(`alter table ${quoteIdent(current.name)} drop column ${quoteIdent(n)}`);
-    for (const n of added) candidate.push(`alter table ${quoteIdent(current.name)} add column ${target.columns.find((c) => c.name === n)!.def}`);
+    for (const n of removed) candidate.push(`alter table main.${quoteIdent(current.name)} drop column ${quoteIdent(n)}`);
+    for (const n of added) candidate.push(`alter table main.${quoteIdent(current.name)} add column ${target.columns.find((c) => c.name === n)!.def}`);
     // The scratch db is in-memory and unreferenced after this block; node:sqlite
     // reclaims it, so the close() in finally only frees it a bit sooner.
     const scratch = open([current.sql, ...keptIndexes]);
@@ -526,9 +521,9 @@ function tableStatements(current: Table, target: Table, renames: readonly Rename
     }
   }
   const name = quoteIdent(current.name);
-  const fresh = quoteIdent(`_solarsql_new_${current.name}`);
-  const copy = quoteIdent(`_solarsql_copy_${current.name}`);
-  const sequence = quoteIdent(`_solarsql_sequence_${current.name}`);
+  const fresh = `main.${quoteIdent(`_solarsql_new_${current.name}`)}`;
+  const copy = `main.${quoteIdent(`_solarsql_copy_${current.name}`)}`;
+  const sequence = `main.${quoteIdent(`_solarsql_sequence_${current.name}`)}`;
   const tableLiteral = `'${current.name.replaceAll("'", "''")}'`;
   const keepsSequence = [current, target].every(table => tokenize(table.sql).some(token => isKeyword(token, "autoincrement")));
   // Same caller contract as the cheap-ALTER return above: only compared
@@ -539,19 +534,15 @@ function tableStatements(current: Table, target: Table, renames: readonly Rename
     statements: [
       ...statements,
       renamedCreate(target.sql, `_solarsql_new_${current.name}`),
-      `create table ${copy} as select ${capture.join(", ")} from ${name}`,
-      ...(keepsSequence ? [`create table ${sequence} as select max(seq) as seq from sqlite_sequence where name = ${tableLiteral}`] : []),
-      `drop table ${name}`,
+      `create table ${copy} as select ${capture.join(", ")} from main.${name}`,
+      ...(keepsSequence ? [`create table ${sequence} as select max(seq) as seq from main.sqlite_sequence where name = ${tableLiteral}`] : []),
+      `drop table main.${name}`,
       `alter table ${fresh} rename to ${name}`,
-      `insert into ${name} (${destination.join(", ")}) select ${restore.join(", ")} from ${copy}`,
+      `insert into main.${name} (${destination.join(", ")}) select ${restore.join(", ")} from ${copy}`,
       // Deleted maxima are absent from copied rows. Keep their high-water
       // mark in SQL so even a 64-bit sequence never passes through JavaScript.
-      // The restore insert above always touches sqlite_sequence for name,
-      // even when it copies zero rows, so this insert's own `not exists`
-      // guard only matters if a future change removes that restore step.
       ...(keepsSequence ? [
-        `insert into sqlite_sequence (name, seq) select ${tableLiteral}, seq from ${sequence} where seq is not null and not exists (select 1 from sqlite_sequence where name = ${tableLiteral})`,
-        `update sqlite_sequence set seq = max(seq, coalesce((select seq from ${sequence}), seq)) where name = ${tableLiteral}`,
+        `update main.sqlite_sequence set seq = max(seq, coalesce((select seq from ${sequence}), seq)) where name = ${tableLiteral}`,
         `drop table ${sequence}`,
       ] : []),
       `drop table ${copy}`,
@@ -768,7 +759,7 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
         }
       }
     }
-    dropTables.push(`drop table ${quoteIdent(name)}`);
+    dropTables.push(`drop table main.${quoteIdent(name)}`);
   }
   // A search table has no ALTER. A changed or removed one is dropped, and
   // a changed or new one is created after the tables, before the triggers
@@ -787,7 +778,7 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
     const t = target.virtuals.get(name);
     return c !== undefined && t !== undefined && normalize(c.sql) === normalize(t.sql);
   };
-  for (const name of current.virtuals.keys()) if (!virtualSame(name)) dropTables.push(`drop table ${quoteIdent(name)}`);
+  for (const name of current.virtuals.keys()) if (!virtualSame(name)) dropTables.push(`drop table main.${quoteIdent(name)}`);
   const targetTriggerSqls = [...target.triggers.values()].map((trigger) => trigger.sql);
   const createVirtuals: string[] = [];
   for (const v of target.virtuals.values()) {
@@ -797,7 +788,7 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
     if (fill && target.tables.has(fill.base)) {
       createVirtuals.push(v.sql);
       createVirtuals.push(
-        `insert into ${quoteIdent(v.name)} (${fill.columns.map(quoteIdent).join(", ")}) select ${fill.sources.map(quoteIdent).join(", ")} from ${quoteIdent(fill.base)}`,
+        `insert into main.${quoteIdent(v.name)} (${fill.columns.map(quoteIdent).join(", ")}) select ${fill.sources.map(quoteIdent).join(", ")} from main.${quoteIdent(fill.base)}`,
       );
     } else {
       createVirtuals.push(
@@ -852,18 +843,18 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
     return c !== undefined && t !== undefined && normalize(c.sql) === normalize(t.sql);
   };
   const allViews = rebuilt.size > 0;
-  for (const name of current.views.keys()) if (allViews || !viewSame(name)) dropViews.push(`drop view ${quoteIdent(name)}`);
+  for (const name of current.views.keys()) if (allViews || !viewSame(name)) dropViews.push(`drop view main.${quoteIdent(name)}`);
   const gone = (table: string) => rebuilt.has(table) || !target.tables.has(table);
-  for (const [name, table] of dropTriggerOf) if (!gone(table)) dropFirst.push(`drop trigger ${quoteIdent(name)}`);
-  for (const [name, table] of dropIndexOf) if (!gone(table)) dropFirst.push(`drop index ${quoteIdent(name)}`);
+  for (const [name, table] of dropTriggerOf) if (!gone(table)) dropFirst.push(`drop trigger main.${quoteIdent(name)}`);
+  for (const [name, table] of dropIndexOf) if (!gone(table)) dropFirst.push(`drop index main.${quoteIdent(name)}`);
   for (const [name, index] of target.indexes) {
     const c = current.indexes.get(name);
-    if (rebuilt.has(index.table) || !c || normalize(c.sql) !== normalize(index.sql)) createLast.push(index.sql);
+    if (rebuilt.has(index.table) || !c || normalize(c.sql) !== normalize(index.sql)) createLast.push(renamedCreate(index.sql));
   }
-  for (const [name, view] of target.views) if (allViews || !viewSame(name)) createLast.push(view.sql);
+  for (const [name, view] of target.views) if (allViews || !viewSame(name)) createLast.push(allViews ? renamedCreate(view.sql) : view.sql);
   for (const [name, trigger] of target.triggers) {
     const c = current.triggers.get(name);
-    if (rebuilt.has(trigger.table) || !c || normalize(c.sql) !== normalize(trigger.sql)) createLast.push(triggerForD1(trigger.sql));
+    if (rebuilt.has(trigger.table) || !c || normalize(c.sql) !== normalize(trigger.sql)) createLast.push(triggerForD1(renamedCreate(trigger.sql)));
   }
   const statements = [...dropViews, ...dropFirst, ...dropTables, ...changeTables, ...createVirtuals, ...createLast];
   if (needsDefer) statements.unshift(`pragma defer_foreign_keys = on`);
@@ -891,6 +882,8 @@ function triggerForD1(sql: string): string {
   // `new.begin` / `old.begin` qualification. The closing END is still the
   // last bare `end` (CASE...END pairs sit earlier).
   const begin = triggerBodyBegin(tokens);
+  // sqlite_schema stores a trigger only up to its closing END, so the last
+  // token is that END and the bare test cannot choose a different token.
   const end = tokens.findLast((t) => bare(t, "end"));
   // Every caller passes a trigger's own SQL from introspect(), read back
   // from SQLite's own sqlite_schema. SQLite only stores that row once the

@@ -176,8 +176,9 @@ export function triggerBodyBegin(tokens: Token[]): Token | undefined {
     if (is("not")) take();
     if (is("exists")) take();
   }
-  if (at() === undefined) return undefined;
-  take();
+  const object = mainObject(meaningful, index, true);
+  if (!object) return undefined;
+  index = object.next;
   if (is("instead")) {
     take();
     if (is("of")) take();
@@ -203,8 +204,9 @@ export function triggerBodyBegin(tokens: Token[]): Token | undefined {
   }
   if (!is("on")) return undefined;
   take();
-  if (at() === undefined) return undefined;
-  take();
+  const table = mainObject(meaningful, index, true);
+  if (!table) return undefined;
+  index = table.next;
   if (is("for")) {
     take();
     if (is("each")) take();
@@ -308,13 +310,28 @@ export function normalize(text: string): string {
   return result;
 }
 
-// The name a CREATE statement creates, and what kind of object it is. A
-// CREATE VIRTUAL TABLE is "virtual".
-export function created(sql: string): { kind: "table" | "index" | "trigger" | "view" | "virtual"; name: string } | null {
-  const t = significant(tokenize(sql));
+// SQLite accepts quoted schema names and folds their ASCII case. Keep the
+// name's span so callers skip the qualifier without changing SQL literals.
+function mainObject(t: readonly Token[], start: number, allowStringName = false): { name: string; token: Token; next: number; start: number } | null {
+  let i = start;
+  if (t[i + 1]?.text === ".") {
+    const schema = t[i];
+    if (!schema || (schema.type !== "ident" && schema.type !== "string")) return null;
+    const name = schema.type === "string" ? schema.text.slice(1, -1).replace(/''/g, "'") : unquote(schema.text);
+    if (sqliteName(name) !== "main") return null;
+    i += 2;
+  }
+  const token = t[i];
+  if (!token || (token.type !== "ident" && !(allowStringName && token.type === "string"))) return null;
+  const name = token.type === "string" ? token.text.slice(1, -1).replace(/''/g, "'") : unquote(token.text);
+  return { name, token, next: i + 1, start };
+}
+
+function createObject(t: readonly Token[], allowStringName = false): { kind: "table" | "index" | "trigger" | "view" | "virtual"; object: NonNullable<ReturnType<typeof mainObject>> } | null {
   if (!isKeyword(t[0], "create")) return null;
   let i = 1;
-  if (isKeyword(t[i], "unique") || isKeyword(t[i], "temp") || isKeyword(t[i], "temporary")) i++;
+  if (isKeyword(t[i], "temp") || isKeyword(t[i], "temporary")) return null;
+  if (isKeyword(t[i], "unique")) i++;
   let kind = t[i]?.text.toLowerCase();
   if (kind === "virtual" && isKeyword(t[i + 1], "table")) {
     i++;
@@ -322,9 +339,16 @@ export function created(sql: string): { kind: "table" | "index" | "trigger" | "v
   if (kind === "virtual") kind = "virtual";
   i++;
   if (isKeyword(t[i], "if") && isKeyword(t[i + 1], "not") && isKeyword(t[i + 2], "exists")) i += 3;
-  const name = t[i];
-  if (!name || name.type !== "ident") return null;
-  return { kind: kind as "table" | "index" | "trigger" | "view" | "virtual", name: unquote(name.text) };
+  const object = mainObject(t, i, allowStringName);
+  if (!object) return null;
+  return { kind: kind as "table" | "index" | "trigger" | "view" | "virtual", object };
+}
+
+// The main object a CREATE statement creates. A CREATE VIRTUAL TABLE is
+// "virtual"; TEMP and attached schemas do not declare main objects.
+export function created(sql: string): { kind: "table" | "index" | "trigger" | "view" | "virtual"; name: string } | null {
+  const c = createObject(significant(tokenize(sql)));
+  return c ? { kind: c.kind, name: c.object.name } : null;
 }
 
 // A column rename, distinguished from `ALTER TABLE ... RENAME TO
@@ -333,10 +357,9 @@ export function created(sql: string): { kind: "table" | "index" | "trigger" | "v
 export function renamedColumn(sql: string): { table: string; from: string; to: string } | null {
   const t = significant(tokenize(sql));
   if (!isKeyword(t[0], "alter") || !isKeyword(t[1], "table")) return null;
-  const tableToken = t[2];
-  if (!tableToken || tableToken.type !== "ident") return null;
-  if (!isKeyword(t[3], "rename")) return null;
-  let i = 4;
+  const table = mainObject(t, 2);
+  if (!table || !isKeyword(t[table.next], "rename")) return null;
+  let i = table.next + 1;
   if (isKeyword(t[i], "to")) return null;
   if (isKeyword(t[i], "column")) i++;
   const from = t[i];
@@ -344,29 +367,27 @@ export function renamedColumn(sql: string): { table: string; from: string; to: s
   if (!isKeyword(t[i + 1], "to")) return null;
   const to = t[i + 2];
   if (!to || to.type !== "ident") return null;
-  return { table: unquote(tableToken.text), from: unquote(from.text), to: unquote(to.text) };
+  return { table: table.name, from: unquote(from.text), to: unquote(to.text) };
 }
 
 // The name and the table of a CREATE INDEX statement, else null.
 export function indexTarget(sql: string): { name: string; table: string } | null {
   const t = significant(tokenize(sql));
-  const c = created(sql);
+  const c = createObject(t);
   if (!c || c.kind !== "index") return null;
-  let i = t.findIndex((tok) => tok.type === "ident" && unquote(tok.text) === c.name && tok.depth === 0) + 1;
-  if (i === 0 || !isKeyword(t[i], "on")) return null;
-  const table = t[i + 1];
-  if (!table || table.type !== "ident") return null;
-  return { name: c.name, table: unquote(table.text) };
+  const i = c.object.next;
+  if (!isKeyword(t[i], "on")) return null;
+  const table = mainObject(t, i + 1);
+  return table ? { name: c.object.name, table: table.name } : null;
 }
 
 // The name, the event, the columns of `update of c1, c2`, and the table of a
 // CREATE TRIGGER statement, else null.
 export function triggerTarget(sql: string): { name: string; event: "insert" | "update" | "delete"; columns: string[]; table: string } | null {
   const t = significant(tokenize(sql));
-  const c = created(sql);
+  const c = createObject(t);
   if (!c || c.kind !== "trigger") return null;
-  let i = t.findIndex((tok) => tok.type === "ident" && unquote(tok.text) === c.name && tok.depth === 0) + 1;
-  if (i === 0) return null;
+  let i = c.object.next;
   if (isKeyword(t[i], "before") || isKeyword(t[i], "after")) i++;
   else if (isKeyword(t[i], "instead") && isKeyword(t[i + 1], "of")) i += 2;
   const eventTok = t[i];
@@ -383,9 +404,9 @@ export function triggerTarget(sql: string): { name: string; event: "insert" | "u
     }
   }
   while (t[i] && !isKeyword(t[i], "on")) i++;
-  const table = t[i + 1];
-  if (!table || table.type !== "ident") return null;
-  return { name: c.name, event, columns, table: unquote(table.text) };
+  const table = mainObject(t, i + 1);
+  if (!table) return null;
+  return { name: c.object.name, event, columns, table: table.name };
 }
 
 // A trigger's ON <base> ... BEGIN INSERT INTO <search> prefix, read once and
@@ -396,19 +417,18 @@ export function triggerTarget(sql: string): { name: string; event: "insert" | "u
 // neither caller.
 function triggerInsertPrefix(triggerSql: string): { t: Token[]; base: string; search: string; afterSearchIdent: number } | null {
   const t = significant(tokenize(triggerSql));
-  const c = created(triggerSql);
+  const c = createObject(t);
   if (!c || c.kind !== "trigger") return null;
-  let i = t.findIndex((tok) => tok.type === "ident" && unquote(tok.text) === c.name && tok.depth === 0) + 1;
-  if (i === 0) return null;
+  let i = c.object.next;
   if (isKeyword(t[i], "before") || isKeyword(t[i], "after")) i++;
   else if (isKeyword(t[i], "instead")) return null;
   if (!isKeyword(t[i], "insert")) return null;
   i++;
   if (!isKeyword(t[i], "on")) return null;
-  const baseTok = t[i + 1];
-  if (!baseTok || baseTok.type !== "ident") return null;
-  const base = unquote(baseTok.text);
-  i += 2;
+  const baseObject = mainObject(t, i + 1);
+  if (!baseObject) return null;
+  const base = baseObject.name;
+  i = baseObject.next;
   if (isKeyword(t[i], "for") && isKeyword(t[i + 1], "each") && isKeyword(t[i + 2], "row")) i += 3;
   if (!isKeyword(t[i], "begin")) return null;
   i++;
@@ -1412,6 +1432,7 @@ const constraintKeywords = new Set(["constraint", "primary", "unique", "check", 
 // Column definitions by name (normalized, with the name unquoted) and the
 // table constraints (normalized).
 export function definitions(sql: string): { columns: Map<string, string>; constraints: string[] } | null {
+  if (createObject(significant(tokenize(sql)), true)?.kind !== "table") return null;
   const tb = tableBody(sql);
   if (!tb) return null;
   const all = tokenize(tb.body);
@@ -1714,7 +1735,16 @@ export function redeclaredByFile(fileSql: string, table: string): { constraints:
   const indexes: string[] = [];
   const triggers: string[] = [];
   const freshName = sqliteName(`_solarsql_new_${table}`);
-  for (const statement of splitStatements(fileSql)) {
+  for (let statement of splitStatements(fileSql)) {
+    // SQLite removes the object's schema qualifier in sqlite_schema.
+    // Compare generated main declarations in that same stored form.
+    const tokens = significant(tokenize(statement));
+    const header = createObject(tokens);
+    if (!header) continue;
+    const object = header.object;
+    if (tokens[object.start] !== object.token) {
+      statement = statement.slice(0, tokens[object.start]!.start) + statement.slice(object.token.start);
+    }
     const c = created(statement);
     if (c?.kind === "table" && sqliteName(c.name) === freshName) {
       constraints.push(...(definitions(statement)?.constraints ?? []));

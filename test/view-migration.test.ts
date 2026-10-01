@@ -19,8 +19,8 @@ test("a rebuild under a view drops the view first and creates it last", () => {
   const plan = diff(introspect(open(before)), introspect(open(after)));
   assert.equal(plan.kind, "ok");
   if (plan.kind !== "ok") return;
-  assert.match(plan.statements[1]!, /^drop view "open_orders"$/);
-  assert.match(plan.statements[plan.statements.length - 1]!, /^create view open_orders/i);
+  assert.match(plan.statements[1]!, /^drop view main\."open_orders"$/);
+  assert.match(plan.statements[plan.statements.length - 1]!, /^create view main\.open_orders/i);
   assert.ok(plan.statements.some((s) => s.includes("_solarsql_new_orders")), plan.statements.join("\n"));
 
   const db = applied([render(1, "before", before).sql, "insert into orders values ('a', 'open');"]);
@@ -37,8 +37,8 @@ test("a changed view is dropped and created; an unchanged one is left alone", ()
   assert.equal(plan.kind, "ok");
   if (plan.kind !== "ok") return;
   // The engine stores the CREATE text with its own casing of the keyword.
-  assert.deepEqual(plan.statements.map((s) => s.toLowerCase()), [`drop view "open_orders"`, changed[1]!.toLowerCase()]);
+  assert.deepEqual(plan.statements.map((s) => s.toLowerCase()), [`drop view main."open_orders"`, changed[1]!.toLowerCase()]);
   assert.deepEqual(diff(introspect(open(before)), introspect(open(before))), { kind: "ok", statements: [] });
   const removed = diff(introspect(open(before)), introspect(open([before[0]!])));
-  assert.deepEqual(removed, { kind: "ok", statements: [`drop view "open_orders"`] });
+  assert.deepEqual(removed, { kind: "ok", statements: [`drop view main."open_orders"`] });
 });
