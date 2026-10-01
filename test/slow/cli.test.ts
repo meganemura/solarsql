@@ -171,7 +171,7 @@ test("pending migration is a successful generation and a failed check", () => {
   const written = f.run("migration", "placed_at");
   assert.equal(written.status, 0, written.stderr);
   assert.match(written.stdout, /^wrote example[\\/]migrations[\\/]0006_placed_at\.sql$/m);
-  assert.match(written.stdout, /alter table "orders" add column placed_at integer not null default 0/);
+  assert.match(written.stdout, /alter table main\."orders" add column placed_at integer not null default 0/);
   assert.equal(lastLine(written.stdout), "next: npx tsc --noEmit && npm test");
   assert.equal(f.run("build", "--check").status, 0);
 });
@@ -286,7 +286,7 @@ test("a pending rename reports a strict intent and writes a data-preserving migr
   const written = f.run("migration", "rename_note", "--intent", intent);
   assert.equal(written.status, 0, written.stderr);
   assert.match(written.stdout, /wrote example[\\/]migrations[\\/]0006_rename_note\.sql/);
-  assert.match(written.stdout, /alter table "orders" rename column "old\.note" to "note"/);
+  assert.match(written.stdout, /alter table main\."orders" rename column "old\.note" to "note"/);
   assert.equal(lastLine(written.stdout), "next: npx tsc --noEmit && npm test");
   assert.match(readFileSync(join(f.dir, "example/migrations/0006_rename_note.sql"), "utf8"), /rename column "old\.note" to "note"/);
   assert.equal(f.run("build", "--check").status, 0);
