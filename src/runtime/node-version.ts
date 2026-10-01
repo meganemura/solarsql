@@ -10,6 +10,8 @@ export const NODE_RANGE = "^24.20.0 || >=26.7.0";
 export function nodeVersionError(version: string): string | null {
   const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
   if (!match) return `solarsql requires Node ${NODE_RANGE}. Node reports an unparseable version "${version}".`;
+  // The range uses only the major and minor. One patch digit establishes a
+  // version; later patch digits do not change acceptance or diagnostic text.
   const major = Number(match[1]);
   const minor = Number(match[2]);
   const accepted = (major === 24 && minor >= 20) || (major >= 26 && !(major === 26 && minor < 7));
