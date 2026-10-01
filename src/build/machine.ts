@@ -30,6 +30,9 @@ export function isCliWorker(): boolean { return humanWorker; }
 
 // The token is removed before project imports. This separates worker control
 // messages from application IPC without relying on a mutable process.send.
+// The three methods share humanWorker, so their presence checks agree.
+// The directOff guard also covers an absent directSend or directOn.
+// Outside a CLI worker, protocolToken is undefined, so the token guard also returns.
 export async function announceMigrationLock(path: string): Promise<void> {
   if (!directSend || !directOn || !directOff || !protocolToken) return;
   const nonce = randomUUID();
