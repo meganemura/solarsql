@@ -4,6 +4,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: Build facts, migration introspection, the rehearsal, and runtime `migrate()` read catalogs with PRAGMA statements, so objects named after pragma table functions cannot hide tables or row loss.
 - Fixed: Rehearsal reads main table facts and rows explicitly, so same-named TEMP objects cannot hide schema changes or alter reported counts.
 - Fixed: A FROM-clause subquery that reads a column an earlier table does not have now gets SQLite's own `no such column` error, when the table name has no schema qualifier and no CTE of the same name hides it. Elsewhere the correlation refusal now calls the reference a reference to the earlier FROM item, not a column of it.
 - Fixed: `constraintFailure` resolves an unnamed CHECK failure whose expression spans lines, so `failureClass` reports it as a resolved constraint.

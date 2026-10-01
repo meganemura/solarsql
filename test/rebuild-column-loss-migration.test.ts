@@ -9,6 +9,26 @@ import { REBUILD_HEADER, splitStatements } from "../src/build/scan.ts";
 import { BuildError } from "../src/build/typegen.ts";
 import { migrate, MigrationHistoryError } from "../src/node.ts";
 
+test('migrate reads the real columns past a pragma_table_xinfo shadow and refuses a rebuild that loses one', () => {
+  const error = /rebuilds table "c" without knowledge of column "value"/;
+  for (const ddl of [
+    'create table pragma_table_xinfo(name, hidden)',
+    "create view PrAgMa_TaBlE_XiNfO as select 'id' as name, 0 as hidden",
+    'create virtual table pragma_table_xinfo using fts5(name, hidden)',
+  ]) {
+    const raw = new DatabaseSync(':memory:');
+    try {
+      const first = { name: '0001.sql', sql: 'create table c(id integer primary key, value text) strict; insert into c values(1,\'keep\');' + ddl };
+      migrate(raw, [first]);
+      const record = [{ table: 'c', columns: [{ name: 'id', def: 'integer primary key' }], constraints: [], indexes: [], triggers: [] }];
+      const rebuild = { name: '0002.sql', sql: `${REBUILD_HEADER}${JSON.stringify(record)}\ndelete from main.c;` };
+      assert.throws(() => migrate(raw, [first, rebuild]), error);
+      assert.deepEqual(raw.prepare('select * from main.c').all().map(r => ({ ...r })), [{ id: 1, value: 'keep' }]);
+      assert.deepEqual(raw.prepare('select name from solarsql_migrations order by name').all().map(r => r.name), ['0001.sql']);
+    } finally { raw.close(); }
+  }
+});
+
 test("a column's attribution to the file that introduced it survives an unrelated later file's own change to the same table", () => {
   const base = "create table t (id text primary key not null, a text not null, b text not null) strict";
   const addC = "alter table t add column c text";

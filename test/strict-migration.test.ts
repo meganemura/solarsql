@@ -13,6 +13,38 @@ import { splitStatements } from "../src/build/scan.ts";
 const before = [`create table t (id text primary key not null, n integer not null)`];
 const after = [`create table t (id text primary key not null, n integer not null) strict`];
 
+test('introspect preserves table shape with forged pragma rows and same-named TEMP tables', () => {
+  const db = open([
+    'create table parent(id integer primary key) strict',
+    'create table c(id integer primary key, value text not null, parent_id integer references parent(id), computed text as (value) stored) strict',
+    'create table d(id integer primary key desc, value text) strict',
+  ]);
+  try {
+    const expected = introspect(db);
+    for (const name of ['table_list', 'table_xinfo', 'foreign_key_list', 'index_list']) {
+      db.exec(`create table "PrAgMa_${name}"(schema, name, type, wr, strict); insert into "PrAgMa_${name}" values('main','c','shadow',1,0)`);
+    }
+    db.exec('create temp table c(wrong); create temp table parent(wrong)');
+    const actual = introspect(db);
+    for (const [name, table] of expected.tables) assert.deepEqual(actual.tables.get(name), table);
+    assert.equal(actual.tables.get('c')!.rowidAlias, 'id');
+    assert.equal(actual.tables.get('d')!.rowidAlias, null);
+  } finally { db.close(); }
+});
+
+test('introspect reads table and foreign-key names containing double quotes and brackets', () => {
+  const db = open([
+    'create table "p"" ]"(id integer primary key) strict',
+    'create table "c"" ]"(id integer primary key, parent_id integer references "p"" ]"(id)) strict',
+  ]);
+  try {
+    const table = introspect(db).tables.get('c" ]')!;
+    assert.deepEqual(table.columns.map(c => c.name), ['id', 'parent_id']);
+    assert.deepEqual(table.foreignKeys, [{ table: 'p" ]', from: 'parent_id', to: 'id', onUpdate: 'NO ACTION', onDelete: 'NO ACTION' }]);
+    assert.equal(table.rowidAlias, 'id');
+  } finally { db.close(); }
+});
+
 test("strict is part of the table shape and needs a rebuild", () => {
   const plan = diff(introspect(open(before)), introspect(open(after)));
   assert.equal(plan.kind, "ok");

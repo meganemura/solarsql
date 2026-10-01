@@ -329,17 +329,16 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
   const applied: string[] = [];
   for (const file of ordered.slice(history.length)) {
     for (const { table, columns, constraints, indexes, triggers } of parseRebuildRecords(file.sql)) {
-      // pragma_table_xinfo, unlike pragma_table_info, includes a generated
+      // The table_xinfo pragma, unlike table_info, includes a generated
       // column -- the same shape introspect() (src/build/migration.ts)
       // already reads, so a generated column a sibling migration added is
       // caught here too, the same as any other column.
-      // Schema-qualified to main (the second argument), the same reason
-      // violationKeys() below qualifies its own table_info and
-      // foreign_key_list calls: an unqualified pragma_table_xinfo(?) resolves
-      // against a same-named TEMP table first when one exists (measured
-      // directly), reading that TEMP table's own, possibly narrower, column
-      // list in place of the main table this check means to protect.
-      const actualColumns = storage.sql.exec(`select name from pragma_table_xinfo(?, 'main') where hidden in (0, 2, 3)`, table).toArray().map((r) => String(r.name));
+      // A PRAGMA statement on main, not the pragma_table_xinfo table function:
+      // a same-named TEMP table would answer an unqualified read, and a main
+      // table, view, or virtual table named pragma_table_xinfo would take the
+      // function's name. A Durable Object accepts this statement (measured).
+      const actualColumns = storage.sql.exec(`pragma main.table_xinfo(${quoteIdent(table)})`).toArray()
+        .filter((r) => [0, 2, 3].includes(Number(r.hidden))).map((r) => String(r.name));
       if (actualColumns.length === 0) continue;
       const recorded = new Map(columns.map((c) => [c.name, c.def]));
       const unknown = actualColumns.find((n) => !recorded.has(n));

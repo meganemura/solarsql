@@ -181,9 +181,9 @@ function counts(db: DatabaseSync): Record<string, number> {
 // table's own hidden column, is left out -- the same selection migrate() in
 // src/durable.ts already reads.
 function columnsOf(db: DatabaseSync, table: string): RehearsalColumn[] {
-  // A same-named TEMP table takes precedence unless the pragma names main.
-  return db.prepare("select name, type, \"notnull\", pk from main.pragma_table_xinfo(?, 'main') where hidden in (0, 2, 3) order by cid")
-    .all(table)
+  // A same-named object can shadow a pragma table function; a PRAGMA statement reads the engine catalog.
+  return db.prepare(`pragma main.table_xinfo(${quoteIdent(table)})`)
+    .all().filter(r => [0, 2, 3].includes(Number(r.hidden))).sort((a, b) => Number(a.cid) - Number(b.cid))
     .map(r => ({ name: String(r.name), type: String(r.type), notnull: (r.notnull ? 1 : 0) as 0 | 1, pk: Number(r.pk) }));
 }
 
@@ -280,8 +280,8 @@ function sqlString(value: string): string {
 // INTO copy meaningfully, and a shadow table is that virtual table's own
 // implementation detail, not a table an agent wrote.
 function tableTypes(db: DatabaseSync): Map<string, string> {
-  // A TEMP object named pragma_table_list can shadow the unqualified source.
-  return new Map(db.prepare("select name, type from main.pragma_table_list where schema = 'main'").all().map(r => [sqliteName(String(r.name)), String(r.type)]));
+  // A same-named object can shadow a pragma table function; a PRAGMA statement reads the engine catalog.
+  return new Map(db.prepare("pragma main.table_list").all().filter(r => r.schema === 'main').map(r => [sqliteName(String(r.name)), String(r.type)]));
 }
 
 type ColumnPair = { after: string; before: string };

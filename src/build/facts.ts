@@ -268,13 +268,15 @@ export class Engine {
   // The tables and the virtual tables. The shadow tables a virtual table
   // keeps for itself are left out.
   tables(): TableFact[] {
+    // A same-named object can shadow a pragma table function; PRAGMA statements read the engine catalog.
+    const shadows = new Set(this.db.prepare(`pragma main.table_list`).all().filter(r => r.schema === 'main' && r.type === 'shadow').map(r => r.name));
     const rows = this.db
       .prepare(
-        `select s.name, s.sql from sqlite_schema s join pragma_table_list l on l.name = s.name and l.schema = 'main'
-         where s.type = 'table' and s.sql is not null and lower(s.name) not glob 'sqlite_*' and l.type <> 'shadow' order by s.name`,
+        `select name, sql from main.sqlite_schema
+         where type = 'table' and sql is not null and lower(name) not glob 'sqlite_*' order by name`,
       )
       .all() as { name: string; sql: string }[];
-    return rows.map((r) => this.table(r.name, r.sql));
+    return rows.filter(r => !shadows.has(r.name)).map((r) => this.table(r.name, r.sql));
   }
 
   table(name: string, sql?: string): TableFact {
@@ -283,21 +285,22 @@ export class Engine {
     const defs = definitions(ddl);
     // SQLite metadata describes the parsed table; trailing comments can name
     // STRICT or WITHOUT ROWID without enabling either attribute.
-    const attributes = this.db.prepare(`select type, wr, strict from pragma_table_list where schema = 'main' and name = ?`).get(name) as { type: string; wr: number; strict: number };
+    // PRAGMA statements avoid table-function shadowing and select the main schema explicitly.
+    const attributes = this.db.prepare(`pragma main.table_list`).all().find(r => r.schema === 'main' && r.name === name) as { type: string; wr: number; strict: number };
     const virtual = attributes.type === "virtual";
     // hidden: 0 is a plain column, 2 a virtual generated column, 3 a stored
     // one. 1 is a hidden column of a virtual table, which a query may read.
-    const columns = (this.db.prepare(`select name, type, "notnull" as nn, dflt_value, pk, hidden from pragma_table_xinfo(?) where hidden in (0, 2, 3) or (hidden = 1 and ?)`).all(name, virtual ? 1 : 0) as {
+    const columns = (this.db.prepare(`pragma main.table_xinfo(${quoteIdent(name)})`).all() as {
       name: string;
       type: string;
-      nn: number;
+      notnull: number;
       dflt_value: string | null;
       pk: number;
       hidden: number;
-    }[]).map((c) => ({
+    }[]).filter(c => [0, 2, 3].includes(c.hidden) || (c.hidden === 1 && virtual)).map((c) => ({
       name: c.name,
       type: c.type,
-      notnull: c.nn === 1,
+      notnull: c.notnull === 1,
       dflt: c.dflt_value,
       pk: c.pk,
       oneOf: oneOfLiterals(defs?.columns.get(c.name) ?? "", c.name),
@@ -305,7 +308,7 @@ export class Engine {
       hidden: c.hidden === 1,
       collation: declaredCollation(defs?.columns.get(c.name) ?? ""),
     }));
-    const foreignKeys = (this.db.prepare(`select "table", "from", "to" from pragma_foreign_key_list(?) order by id, seq`).all(name) as { table: string; from: string; to: string | null }[]).map((f) => ({
+    const foreignKeys = (this.db.prepare(`pragma main.foreign_key_list(${quoteIdent(name)})`).all() as { id: number; seq: number; table: string; from: string; to: string | null }[]).sort((a, b) => a.id - b.id || a.seq - b.seq).map((f) => ({
       table: f.table,
       from: f.from,
       to: f.to,
@@ -321,10 +324,11 @@ export class Engine {
   // column a plain column reference (cid >= 0; an expression key reports
   // cid -2, measured on node:sqlite 3.53.4).
   private uniqueIndexes(table: string): UniqueIndexFact[] {
-    const indexes = this.db.prepare(`select name from pragma_index_list(?) where "unique" = 1 and origin in ('u', 'c') and partial = 0`).all(table) as { name: string }[];
+    // PRAGMA statements avoid a same-named object's table-function shadowing.
+    const indexes = this.db.prepare(`pragma main.index_list(${quoteIdent(table)})`).all().filter(r => r.unique === 1 && ['u', 'c'].includes(String(r.origin)) && r.partial === 0) as { name: string }[];
     const out: UniqueIndexFact[] = [];
     for (const { name: index } of indexes) {
-      const keys = this.db.prepare(`select cid, name, coll from pragma_index_xinfo(?) where key = 1 order by seqno`).all(index) as { cid: number; name: string | null; coll: string }[];
+      const keys = this.db.prepare(`pragma main.index_xinfo(${quoteIdent(index)})`).all().filter(r => r.key === 1).sort((a, b) => Number(a.seqno) - Number(b.seqno)) as { cid: number; name: string | null; coll: string }[];
       if (keys.some((k) => k.cid < 0 || k.name === null)) continue;
       out.push({ columns: keys.map((k) => ({ name: k.name!, collation: k.coll.toUpperCase() })) });
     }
@@ -334,7 +338,8 @@ export class Engine {
   // The first column of a table or a view that a statement may set. A
   // generated column cannot be set, so it is skipped.
   firstSettableColumn(name: string): string | null {
-    const row = this.db.prepare(`select name from pragma_table_xinfo(?) where hidden = 0 order by cid limit 1`).get(name) as { name: string } | undefined;
+    // PRAGMA statements avoid a same-named object's table-function shadowing.
+    const row = this.db.prepare(`pragma main.table_xinfo(${quoteIdent(name)})`).all().filter(r => r.hidden === 0).sort((a, b) => Number(a.cid) - Number(b.cid))[0] as { name: string } | undefined;
     return row?.name ?? null;
   }
 
@@ -387,20 +392,19 @@ export class Engine {
     // indexToTable above can never resolve them. Each access path is still
     // shape-specific to the tables that have it, so it resolves an alias on
     // its own when exactly one of the alias's candidates has that shape.
-    const tableListWr = this.db.prepare(`select wr from pragma_table_list where schema = 'main' and name = ?`);
-    const pkColumns = this.db.prepare(`select type from pragma_table_info(?) where pk > 0`);
-    const pkNamedIndex = this.db.prepare(`select 1 from pragma_index_list(?) where origin = 'pk'`);
-    const withoutRowid = (table: string): boolean => (tableListWr.get(table) as { wr: number } | undefined)?.wr === 1;
+    // PRAGMA statements avoid a same-named object's table-function shadowing.
+    const tableList = this.db.prepare(`pragma main.table_list`).all();
+    const withoutRowid = (table: string): boolean => tableList.some(r => r.schema === 'main' && r.name === table && r.wr === 1);
     // The same condition migration.ts uses for its own rowidAlias field: a
     // lone INTEGER primary-key column is not enough on its own, because
     // `integer primary key desc` matches it too while still getting its own
     // named sqlite_autoindex (and so already resolves through indexToTable).
-    // Only the absence of a pragma_index_list 'pk' entry rules that out.
+    // Only the absence of an index_list pragma 'pk' entry rules that out.
     const rowidAlias = (table: string): boolean => {
       if (withoutRowid(table)) return false;
-      const pk = pkColumns.all(table) as { type: string }[];
+      const pk = this.db.prepare(`pragma main.table_info(${quoteIdent(table)})`).all().filter(r => Number(r.pk) > 0) as { type: string }[];
       if (pk.length !== 1 || pk[0]!.type.toUpperCase() !== "INTEGER") return false;
-      return !pkNamedIndex.get(table);
+      return !this.db.prepare(`pragma main.index_list(${quoteIdent(table)})`).all().some(r => r.origin === 'pk');
     };
 
     // For every SCAN or SEARCH line, the alias it names and, when the line

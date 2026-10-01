@@ -8,6 +8,76 @@ import { analyzeSchema } from "../src/build/analyze.ts";
 import { Typer } from "../src/build/typegen.ts";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
+import { quoteIdent } from "../src/build/scan.ts";
+
+for (const kind of ['table', 'view'] as const) {
+  test(`Engine.tables reads real table facts with a pragma_table_list ${kind}`, () => {
+    const shadow = kind === 'table'
+      ? 'create table pragma_table_list(name text, type text, schema text) strict'
+      : "create view pragma_table_list as select 'fake' as name, 'table' as type, 'main' as schema";
+    const engine = new Engine(['create table c(id integer primary key, value text) strict', shadow]);
+    try {
+      const facts = engine.tables();
+      assert.deepEqual(facts.map(t => t.name), kind === 'table' ? ['c', 'pragma_table_list'] : ['c']);
+      assert.equal(facts[0]!.strict, true);
+      assert.equal(facts[0]!.columns[0]!.pk, 1);
+    } finally { engine.close(); }
+  });
+}
+
+test('table facts, settable columns and primary-key plans survive pragma function shadows and TEMP tables', () => {
+  const engine = new Engine([
+    'create table parent(id integer primary key) strict',
+    'create table c(id integer primary key, value text unique, parent_id integer references parent(id), computed text as (value) stored) strict',
+    'create table w(id text primary key) strict, without rowid',
+  ]);
+  try {
+    const before = engine.tables();
+    const plans = ['select * from main.c where id = 1', "select * from main.w where id = 'x'", 'with c as (select * from main.w) select * from c where id = \'x\''];
+    const scans = plans.map(sql => engine.fullScans(sql));
+    for (const name of ['table_list', 'table_xinfo', 'table_info', 'foreign_key_list', 'index_list', 'index_xinfo']) {
+      engine.db.exec(`create table ${quoteIdent('PrAgMa_' + name)}(name, type, schema, wr, strict)`);
+    }
+    engine.db.exec('create temp table c(wrong); create temp table parent(wrong); create temp table w(wrong)');
+    assert.deepEqual(engine.tables().filter(t => ['c', 'parent', 'w'].includes(t.name)), before);
+    assert.equal(engine.firstSettableColumn('c'), 'id');
+    assert.deepEqual(plans.map(sql => engine.fullScans(sql)), scans);
+  } finally { engine.close(); }
+});
+
+test('PRAGMA statements preserve table-function column names, values and order for quoted identifiers', () => {
+  hegel.test(tc => {
+    const name = 't" ]' + tc.draw(gs.text({ maxSize: 20 })).replaceAll('\0', '');
+    const index = 'i" ]' + name;
+    const engine = new Engine([
+      'create table parent(id integer primary key) strict',
+      `create table ${quoteIdent(name)}(id integer primary key, value text not null default 'x', parent_id integer references parent(id), computed text as (value) stored) strict`,
+      `create unique index ${quoteIdent(index)} on ${quoteIdent(name)}(value collate nocase)`,
+    ]);
+    try {
+      for (const [pragma, argument, order] of [
+        ['table_xinfo', name, 'cid'], ['table_info', name, 'cid'],
+        ['foreign_key_list', name, 'id, seq'], ['index_list', name, 'seq'], ['index_xinfo', index, 'seqno'],
+      ]) {
+        const before = engine.db.prepare(`select * from pragma_${pragma}(?, 'main') order by ${order}`).all(argument!);
+        const after = engine.db.prepare(`pragma main.${pragma}(${quoteIdent(argument!)})`).all();
+        after.sort((a, b) => {
+          for (const key of order!.split(', ')) {
+            const difference = Number(a[key]) - Number(b[key]);
+            if (difference) return difference;
+          }
+          return 0;
+        });
+        assert.deepEqual(after, before);
+      }
+      const sortNames = (rows: Record<string, unknown>[]) => rows.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      assert.deepEqual(sortNames(engine.db.prepare("pragma main.table_list").all()), sortNames(engine.db.prepare("select * from pragma_table_list where schema='main'").all()));
+      assert.deepEqual(engine.table(name).columns.map(c => c.name), ['id', 'value', 'parent_id', 'computed']);
+      assert.equal(engine.firstSettableColumn(name), 'id');
+      assert.deepEqual(engine.table(name).uniqueIndexes, [{ columns: [{ name: 'value', collation: 'NOCASE' }] }]);
+    } finally { engine.close(); }
+  }, { testCases: 50 });
+});
 
 const ddl = [
   `create table customers (id text primary key not null, name text not null)`,

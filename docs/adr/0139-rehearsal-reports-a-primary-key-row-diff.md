@@ -16,7 +16,7 @@ What was measured to work instead: a primary-key diff in SQL against a before-co
 
 The diff runs last: after every check and assertion, before commit. The authorizer that has denied ATTACH and DETACH for the whole rehearsal (ADR 0057) is replaced, only for this stage, with one that allows `SQLITE_ATTACH` when its first argument equals the before-copy's own file path exactly, and `SQLITE_DETACH` only for a fixed reserved schema name (`solarsql_rehearse_before`); every other ATTACH or DETACH, and the same PRAGMA denials ADR 0057 already has, stay denied. No proposed SQL runs after this point. The narrower authorizer can still see, during the row diff, a statement the caller did not write: a function the caller registered on the db, called from a generated column's expression, can issue nested statements while the diff reads that column, and each of them passes through this authorizer. So it denies every ATTACH other than the before-copy's own path, and every DETACH other than the reserved schema name, rather than relying on the diff to be the only source of either (measured with node:sqlite). Only a direct `rehearseSnapshot()` caller can register such a function; `rehearse()` opens its own copy with none registered.
 
-For each table present, by name under SQLite's identifier case rule, both before and after, and not a virtual table or one of a virtual table's own shadow tables (`pragma_table_list`'s own `type`) on either side:
+For each table present, by name under SQLite's identifier case rule, both before and after, and not a virtual table or one of a virtual table's own shadow tables (the `type` column of `pragma main.table_list`) on either side:
 
 These identifier matches fold ASCII letters, as SQLite does, and preserve case differences in non-ASCII letters such as `Ä` and `ä`.
 
@@ -53,6 +53,7 @@ The new stage, `ROWS_LOST_OR_CHANGED`, runs last, after `result.rows` is compute
 
 ## Consequences
 
+- Build facts, migration introspection, the rehearsal, and runtime `migrate()` read the main catalog with PRAGMA statements, so an object named after a pragma table function, which shadows that function, cannot hide tables or row loss.
 - `ok: true` no longer hides a lost or changed row: a compared table's own `deleted > 0` or `updated > 0`, or a `compared: false` table's shrunk row count, fails the rehearsal unless `checks.json` declares it under `expected.deleted` or `expected.updated`.
 - A virtual table (e.g. FTS5) and its own shadow tables never appear in `rows`; a table with no primary key, or a rebuild that changes the primary key, appears with `compared: false` and a reason instead of counts.
 - `rehearseSnapshot()` is no longer free of filesystem access (it now takes its own VACUUM INTO copy); every filesystem call it makes stays synchronous, so a caller driving it from a property test still needs no async scheduling.

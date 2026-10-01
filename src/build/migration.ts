@@ -253,7 +253,8 @@ export function introspect(db: DatabaseSync): Schema {
   const virtuals = new Map<string, Virtual>();
   // pragma table_list tells a virtual table and its shadow tables apart
   // from a plain table; sqlite_schema calls all three "table".
-  const attributes = new Map((db.prepare(`select name, type, wr, strict from pragma_table_list where schema = 'main'`).all() as { name: string; type: string; wr: number; strict: number }[]).map((r) => [r.name, r]));
+  // A same-named object can shadow a pragma table function; PRAGMA statements read the engine catalog.
+  const attributes = new Map((db.prepare(`pragma main.table_list`).all() as { schema: string; name: string; type: string; wr: number; strict: number }[]).filter(r => r.schema === 'main').map((r) => [r.name, r]));
   const rows = db
     .prepare(`select type, name, tbl_name, sql from sqlite_schema where sql is not null and lower(name) not glob 'sqlite_*' order by name`)
     .all() as { type: string; name: string; tbl_name: string; sql: string }[];
@@ -280,21 +281,23 @@ export function introspect(db: DatabaseSync): Schema {
       // and are left out of a rebuild's copy.
       // Read the same main table named by sqlite_schema, even when a TEMP
       // table shadows its unqualified name.
-      const columns = (db.prepare(`select name, type, "notnull" as nn, dflt_value, pk, hidden from pragma_table_xinfo(?, 'main') where hidden in (0, 2, 3)`).all(row.name) as {
+      const columns = (db.prepare(`pragma main.table_xinfo(${quoteIdent(row.name)})`).all() as {
         name: string;
         type: string;
-        nn: number;
+        notnull: number;
         dflt_value: string | null;
         pk: number;
         hidden: number;
-      }[]).map((c) => ({ name: c.name, type: c.type, notnull: c.nn === 1, dflt: c.dflt_value, pk: c.pk, def: defs?.columns.get(c.name) ?? "", generated: c.hidden !== 0 }));
-      const foreignKeys = (db.prepare(`select "table", "from", "to", on_update, on_delete from pragma_foreign_key_list(?, 'main') order by id, seq`).all(row.name) as {
+      }[]).filter(c => [0, 2, 3].includes(c.hidden)).map((c) => ({ name: c.name, type: c.type, notnull: c.notnull === 1, dflt: c.dflt_value, pk: c.pk, def: defs?.columns.get(c.name) ?? "", generated: c.hidden !== 0 }));
+      const foreignKeys = (db.prepare(`pragma main.foreign_key_list(${quoteIdent(row.name)})`).all() as {
+        id: number;
+        seq: number;
         table: string;
         from: string;
         to: string;
         on_update: string;
         on_delete: string;
-      }[]).map((f) => ({ table: f.table, from: f.from, to: f.to, onUpdate: f.on_update, onDelete: f.on_delete }));
+      }[]).sort((a, b) => a.id - b.id || a.seq - b.seq).map((f) => ({ table: f.table, from: f.from, to: f.to, onUpdate: f.on_update, onDelete: f.on_delete }));
       tables.set(row.name, {
         name: row.name,
         sql: row.sql,
@@ -318,7 +321,7 @@ export function introspect(db: DatabaseSync): Schema {
         // loosened from `&&` to `||` against a neighboring term.
         rowidAlias: table!.wr === 0 && columns.filter(c => c.pk > 0).length === 1
           && columns.some(c => c.pk > 0 && c.type.toUpperCase() === "INTEGER")
-          && !db.prepare(`select 1 from pragma_index_list(?, 'main') where origin = 'pk'`).get(row.name)
+          && !db.prepare(`pragma main.index_list(${quoteIdent(row.name)})`).all().some(r => r.origin === 'pk')
           ? columns.find(c => c.pk > 0)!.name : null,
       });
     } else if (row.type === "index") {

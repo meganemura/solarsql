@@ -33,6 +33,24 @@ async function expectBuildError(dir: string, pattern: RegExp): Promise<void> {
 }
 
 describe("solarsql build", () => {
+  for (const kind of ['table', 'view'] as const) {
+    for (const invalid of ['STRICT', 'primary key'] as const) {
+      test(`build checks ${invalid} with a pragma_table_list ${kind} in module DDL`, async () => {
+        const dir = copy();
+        try {
+          const file = join(dir, 'example/modules/customers/module.ts');
+          const shadow = kind === 'table'
+            ? 'export const catalogShadow = table("create table pragma_table_list(id text primary key not null) strict");'
+            : 'export const catalogShadow = view("create view pragma_table_list as select id from customers");';
+          let source = readFileSync(file, 'utf8');
+          source = invalid === 'STRICT' ? source.replace(') strict\n', ')\n') : source.replace('id text primary key not null', 'id text not null');
+          if (kind === 'view') source = 'import { view } from "../../../src/index.ts";\n' + source;
+          writeFileSync(file, source + '\n' + shadow + '\n');
+          await expectBuildError(dir, invalid === 'STRICT' ? /table customers is not STRICT/ : /table customers has no primary key/);
+        } finally { rmSync(dir, { recursive: true, force: true }); }
+      });
+    }
+  }
   test("the committed example is current: no generated file changes, no migration pending", async () => {
     const dir = copy();
     try {

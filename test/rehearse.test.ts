@@ -15,6 +15,38 @@ import { diff, introspect, open } from '../src/build/migration.ts';
 import { quoteIdent } from '../src/build/scan.ts';
 
 const cleanupFault = vi.hoisted(() => ({ failDiffCleanup: false, failedPath: undefined as string | undefined }));
+
+for (const [kind, ddl, existing] of [
+  ['table', 'create table main.pragma_table_list(name, type, schema)', false],
+  ['view', "create view main.PrAgMa_TaBlE_LiSt as select 'fake' as name, 'table' as type, 'main' as schema where 0", true],
+  ['virtual table', 'create virtual table main.pragma_table_list using fts5(name, type, schema)', false],
+] as const) {
+  test(`rehearsal reports two deleted rows with a ${kind} named pragma_table_list`, () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec('create table c(id integer primary key); insert into c values (1),(2)');
+      if (existing) db.exec(ddl);
+      const result = rehearseSnapshot(db, `${existing ? '' : ddl + ';'} delete from main.c`);
+      assert.equal(result.ok, false);
+      const rows = result.rows.c;
+      assert.ok(rows?.compared);
+      assert.equal(rows.deleted, 2);
+      assert.ok(result.diagnostics.some(d => d.message.includes('deleted c (2)')));
+    } finally { db.close(); }
+  });
+}
+
+test('rehearsal reports deleted rows for a table name containing a double quote and bracket with a pragma_table_xinfo shadow', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table "c"" ]"(id integer primary key); insert into "c"" ]" values(1),(2); create table pragma_table_xinfo(name)');
+    const result = rehearseSnapshot(db, 'delete from main."c"" ]"');
+    assert.equal(result.ok, false);
+    const rows = result.rows['c" ]'];
+    assert.ok(rows?.compared);
+    assert.equal(rows.deleted, 2);
+  } finally { db.close(); }
+});
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {

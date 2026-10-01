@@ -14,6 +14,37 @@ const ddl = [
   "create view v as select * from t",
   "create trigger tr after insert on t begin select 1; end",
 ];
+
+test('Durable Object SQL storage reads main.table_xinfo with a pragma_table_xinfo shadow', async () => {
+  const script = `
+import { DurableObject } from "cloudflare:workers";
+export class Store extends DurableObject {
+  async fetch() {
+    const s = this.ctx.storage.sql;
+    s.exec('create table t(id integer primary key, value text, computed text as (value) stored)');
+    s.exec('create table "t"" ]"(id integer primary key, value text)');
+    const before = s.exec("select * from pragma_table_xinfo(?, 'main')", 't').toArray();
+    s.exec('create table pragma_table_xinfo(name)');
+    return Response.json({before,
+      after: s.exec('pragma main.table_xinfo("t")').toArray(),
+      quoted: s.exec('pragma main.table_xinfo("t"" ]")').toArray()});
+  }
+}
+export default {fetch(request,env){return env.STORE.get(env.STORE.idFromName('pragma')).fetch(request);}};
+`;
+  const mf = new Miniflare(convertV4MiniflareOptions({
+    modules: [{ type: 'ESModule', path: 'pragma-xinfo-worker.js', contents: script }],
+    compatibilityDate: '2026-08-28',
+    durableObjects: { STORE: { className: 'Store', useSQLite: true } },
+  }));
+  try {
+    const response = await mf.dispatchFetch('http://localhost/');
+    assert.equal(response.status, 200, await response.clone().text());
+    const result = await response.json() as { before: unknown; after: unknown; quoted: { name: string }[] };
+    assert.deepEqual(result.after, result.before);
+    assert.deepEqual(result.quoted.map(c => c.name), ['id', 'value']);
+  } finally { await mf.dispose(); }
+});
 const seed = [...ddl, "insert into main.t values(100,'deleted')", "delete from main.t", "insert into main.t values(1,'main')"];
 function rebuild() {
   const db = open(ddl), declared = open([ddl[0]! + " strict", ...ddl.slice(1)]);
