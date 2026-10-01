@@ -30,6 +30,105 @@ vi.mock('node:fs', async (importOriginal) => {
   };
 });
 
+test('a TEMP table does not hide a dropped main column or its row count', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table c(a integer primary key, b text); insert into c values(1, 'kept')");
+    const result = rehearseSnapshot(db, 'create temp table c(a integer primary key, b text); alter table main.c drop column b');
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.diagnostics, [{ code: 'SCHEMA_SHAPE_CHANGED', message: 'Schema shape changed unexpectedly: dropped c.b' }]);
+    assert.deepEqual(result.before, { c: 1 });
+    assert.deepEqual(result.after, { c: 1 });
+    assert.deepEqual(result.columns.after.c!.map(c => c.name), ['a']);
+  } finally { db.close(); }
+});
+
+test('a TEMP table does not hide an added main column', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table c(a integer primary key, b text); insert into c values(1, 'kept')");
+    const result = rehearseSnapshot(db, 'create temp table c(a integer primary key, b text); alter table main.c add column extra integer');
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.columns.after.c, [
+      { name: 'a', type: 'INTEGER', notnull: 0, pk: 1 },
+      { name: 'b', type: 'TEXT', notnull: 0, pk: 0 },
+      { name: 'extra', type: 'INTEGER', notnull: 0, pk: 0 },
+    ]);
+    assert.deepEqual(result.rows.c, { compared: true, inserted: 0, deleted: 0, updated: 0, remainingUpdated: 0 });
+  } finally { db.close(); }
+});
+
+test('a TEMP table does not hide a retyped main column', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('create table c(a integer primary key, b integer); insert into c values(1, 7)');
+    const result = rehearseSnapshot(db, `
+      create temp table c(a integer primary key, b integer);
+      create table main.replacement(a integer primary key, b text);
+      insert into main.replacement select a, b from main.c;
+      drop table main.c;
+      alter table main.replacement rename to c;
+    `);
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.diagnostics, [{ code: 'SCHEMA_SHAPE_CHANGED', message: 'Schema shape changed unexpectedly: retyped c.b' }]);
+    assert.equal(result.columns.after.c![1]!.type, 'TEXT');
+    assert.deepEqual(result.after, { c: 1 });
+  } finally { db.close(); }
+});
+
+test('creating a TEMP table preserves the reported main schema and rows for arbitrary values', async () => {
+  const { test: property } = await import('@hegeldev/hegel');
+  const gs = await import('@hegeldev/hegel/generators');
+  property(tc => {
+    const values = tc.draw(gs.arrays(gs.integers(), { minSize: 1, maxSize: 12 }));
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec('create table c(a integer primary key, b integer)');
+      values.forEach((value, index) => db.prepare('insert into main.c values(?, ?)').run(index, value));
+      const result = rehearseSnapshot(db, 'create temp table c(unrelated text); insert into temp.c values(\'temporary\')');
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.deepEqual(result.diagnostics, []);
+      assert.deepEqual(result.columns.after, result.columns.before);
+      assert.deepEqual(result.before, { c: values.length });
+      assert.deepEqual(result.after, { c: values.length });
+      assert.deepEqual(result.rows.c, { compared: true, inserted: 0, deleted: 0, updated: 0, remainingUpdated: 0 });
+      assert.deepEqual(db.prepare('select b from main.c order by a').all().map(row => row.b), values);
+    } finally { db.close(); }
+  });
+});
+
+test('the row diff reports main updates and deletions while a TEMP table keeps the old rows', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table c(a integer primary key, b text); insert into c values(1, 'first'), (2, 'second')");
+    const result = rehearseSnapshot(db, `
+      create temp table c as select * from main.c;
+      update main.c set b = 'changed' where a = 1;
+      delete from main.c where a = 2;
+    `, { expected: { updated: [{ table: 'c' }], deleted: [{ table: 'c' }] } });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.before, { c: 2 });
+    assert.deepEqual(result.after, { c: 1 });
+    assert.deepEqual(result.rows.c, { compared: true, inserted: 0, deleted: 1, updated: 1, remainingUpdated: 1 });
+  } finally { db.close(); }
+});
+
+test('TEMP objects named after metadata sources preserve main table facts', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table c(a integer primary key, b text); insert into c values(1, 'kept')");
+    const result = rehearseSnapshot(db, `
+      create temp table pragma_table_xinfo(name);
+      create temp table pragma_table_list(name, type, schema);
+    `);
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.before, { c: 1 });
+    assert.deepEqual(result.after, { c: 1 });
+    assert.deepEqual(result.columns.after, result.columns.before);
+    assert.deepEqual(result.rows.c, { compared: true, inserted: 0, deleted: 0, updated: 0, remainingUpdated: 0 });
+  } finally { db.close(); }
+});
+
 test('a nullable column transition preserves arbitrary stored values', async () => {
   const { test: property } = await import('@hegeldev/hegel');
   const gs = await import('@hegeldev/hegel/generators');

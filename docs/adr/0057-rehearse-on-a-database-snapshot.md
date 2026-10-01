@@ -12,6 +12,8 @@ A file copy can omit committed data held in a WAL file.
 Use SQLite backup from a read-only connection to create a disposable snapshot.
 Apply proposed SQL in one transaction, then check integrity, foreign keys, old query structure, and caller-supplied data assertions.
 Report row counts and completed checks as JSON. Deny database attachments and transaction control inside the proposed SQL.
+Read persistent table facts and rows explicitly from `main`, because same-named TEMP objects take precedence over unqualified names.
+Read the row diff's before-copy through its attached schema name.
 Remove the snapshot after success or failure.
 
 ## Limits

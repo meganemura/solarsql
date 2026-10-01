@@ -169,9 +169,11 @@ function encodeCaseParams(params: Record<string, RehearsalCaseValue>): Record<st
   }));
 }
 
+// Same-named TEMP objects take precedence over unqualified names.
+// Read the main catalog and rows to measure the persistent migration.
 function counts(db: DatabaseSync): Record<string, number> {
-  const names = db.prepare("select name from sqlite_schema where type = 'table' and lower(name) not glob 'sqlite_*' order by name").all();
-  return Object.fromEntries(names.map(r => [String(r.name), Number(db.prepare(`select count(*) as n from ${quoteIdent(String(r.name))}`).get()!.n)]));
+  const names = db.prepare("select name from main.sqlite_schema where type = 'table' and lower(name) not glob 'sqlite_*' order by name").all();
+  return Object.fromEntries(names.map(r => [String(r.name), Number(db.prepare(`select count(*) as n from main.${quoteIdent(String(r.name))}`).get()!.n)]));
 }
 
 // hidden 0 is an ordinary column; 2 and 3 are generated columns (VIRTUAL and
@@ -179,7 +181,8 @@ function counts(db: DatabaseSync): Record<string, number> {
 // table's own hidden column, is left out -- the same selection migrate() in
 // src/durable.ts already reads.
 function columnsOf(db: DatabaseSync, table: string): RehearsalColumn[] {
-  return db.prepare('select name, type, "notnull", pk from pragma_table_xinfo(?) where hidden in (0, 2, 3) order by cid')
+  // A same-named TEMP table takes precedence unless the pragma names main.
+  return db.prepare("select name, type, \"notnull\", pk from main.pragma_table_xinfo(?, 'main') where hidden in (0, 2, 3) order by cid")
     .all(table)
     .map(r => ({ name: String(r.name), type: String(r.type), notnull: (r.notnull ? 1 : 0) as 0 | 1, pk: Number(r.pk) }));
 }
@@ -247,9 +250,10 @@ function unmatchedSchemaShape(findings: SchemaShapeFinding[], expected: Rehearsa
 // at least one row whose own value already differs from 'ok' (measured:
 // two independent CHECK violations produced two rows, both non-'ok' text).
 function healthy(db: DatabaseSync): void {
-  const integrity = db.prepare('pragma integrity_check').all();
+  // Explicit main checks keep integrity evidence on the persistent schema.
+  const integrity = db.prepare('pragma main.integrity_check').all();
   if (integrity.length !== 1 || Object.values(integrity[0]!)[0] !== 'ok') throw new Error('SQLite integrity_check failed');
-  if (db.prepare('pragma foreign_key_check').all().length > 0) throw new Error('SQLite foreign_key_check failed');
+  if (db.prepare('pragma main.foreign_key_check').all().length > 0) throw new Error('SQLite foreign_key_check failed');
 }
 
 // A fixed schema name for the before-copy's own ATTACH, so the row-diff
@@ -276,7 +280,8 @@ function sqlString(value: string): string {
 // INTO copy meaningfully, and a shadow table is that virtual table's own
 // implementation detail, not a table an agent wrote.
 function tableTypes(db: DatabaseSync): Map<string, string> {
-  return new Map(db.prepare("select name, type from pragma_table_list where schema = 'main'").all().map(r => [sqliteName(String(r.name)), String(r.type)]));
+  // A TEMP object named pragma_table_list can shadow the unqualified source.
+  return new Map(db.prepare("select name, type from main.pragma_table_list where schema = 'main'").all().map(r => [sqliteName(String(r.name)), String(r.type)]));
 }
 
 type ColumnPair = { after: string; before: string };
