@@ -4,6 +4,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: A FROM-clause subquery that reads a column an earlier table does not have now gets SQLite's own `no such column` error, when the table name has no schema qualifier and no CTE of the same name hides it. Elsewhere the correlation refusal now calls the reference a reference to the earlier FROM item, not a column of it.
 - Fixed: `constraintFailure` resolves an unnamed CHECK failure whose expression spans lines, so `failureClass` reports it as a resolved constraint.
 - Fixed: Generated migrations qualify existing objects and rebuild declarations with `main` so same-named TEMP objects retain their rows and schema.
 - Changed: The schema scanners read `main`-qualified CREATE statements and ALTER TABLE ... RENAME COLUMN as main objects, and no longer read CREATE TEMP or `temp`-qualified statements as main declarations.

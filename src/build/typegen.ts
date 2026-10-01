@@ -411,10 +411,13 @@ export class Typer {
     if (missing === undefined) return null;
     let sources: ReturnType<typeof querySources>;
     try { sources = querySources(sql); } catch { return null; }
+    // null when the WITH list cannot be read: then no name is trusted as a table.
+    let cteNames: Set<string> | null;
+    try { cteNames = new Set(queryScope(sql, true).ctes.map((cte) => sqliteName(cte.name))); } catch { cteNames = null; }
     for (let i = 0; i < sources.length; i++) {
       const source = sources[i]!;
       if (!source.query) continue;
-      const earlier = new Map(sources.slice(0, i).map((s) => [sqliteName(s.alias), s.alias]));
+      const earlier = new Map(sources.slice(0, i).map((s) => [sqliteName(s.alias), s]));
       if (earlier.size === 0) continue;
       const localAliases = new Set([...aliasMap(source.query).keys()].map(sqliteName));
       const tokens = significant(tokenize(source.query));
@@ -422,11 +425,22 @@ export class Typer {
         if (tokens[j]!.type !== "ident" || tokens[j + 1]!.text !== "." || tokens[j + 2]!.type !== "ident") continue;
         const alias = sqliteName(unquote(tokens[j]!.text));
         if (localAliases.has(alias)) continue;
-        const original = earlier.get(alias);
-        if (original === undefined) continue;
+        const item = earlier.get(alias);
+        if (item === undefined) continue;
+        const original = item.alias;
         const column = unquote(tokens[j + 2]!.text);
         if (sqliteName(missing) !== `${alias}.${sqliteName(column)}`) continue;
-        return `the FROM-clause subquery aliased ${quoteIdent(source.alias)} reads ${original}.${column}, a column of the earlier FROM item ${quoteIdent(original)}. SQLite runs a FROM-clause subquery as its own closed scope: it does not see another item of the same FROM list. Move the condition into a JOIN's own ON clause, or write it as a scalar or EXISTS subquery in the SELECT list or WHERE clause, either of which SQLite does correlate to the enclosing query.`;
+        // A known table without that column makes the reference a misspelling,
+        // not a scope error. SQLite's own message names that column; the scope
+        // remedy would send the agent the wrong way.
+        // A CTE of the same name hides the table, and its columns are not the
+        // table's facts, so a CTE name keeps the refusal.
+        const name = item.query === null && item.functionSql === null && item.schema === null ? item.name : null;
+        const table = name !== null && cteNames !== null && !cteNames.has(sqliteName(name))
+          ? [...this.tables.values()].find((t) => sqliteName(t.name) === sqliteName(name))
+          : undefined;
+        if (table && !table.columns.some((c) => sqliteName(c.name) === sqliteName(column)) && !implicitRowIdentifier(table, column)) return null;
+        return `the FROM-clause subquery aliased ${quoteIdent(source.alias)} reads ${original}.${column}, a reference to the earlier FROM item ${quoteIdent(original)}. SQLite runs a FROM-clause subquery as its own closed scope: it does not see another item of the same FROM list. Move the condition into a JOIN's own ON clause, or write it as a scalar or EXISTS subquery in the SELECT list or WHERE clause, either of which SQLite does correlate to the enclosing query.`;
       }
     }
     return null;

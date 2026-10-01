@@ -518,6 +518,27 @@ describe("Typer.analyze", () => {
     );
   });
 
+  // A column the earlier table does not have is a misspelling, not a scope
+  // error, so SQLite's own message stands. The table name matches without
+  // ASCII case distinctions, as SQLite resolves it.
+  test("a FROM-clause subquery reading a column the earlier FROM item does not have keeps SQLite's own error", () => {
+    for (const from of ["orders o", "ORDERS o"]) {
+      assert.throws(
+        () => t.analyze(`select o.id, x.id from ${from}, (select o.nonexistent as id from order_lines l) x`, "orders"),
+        (e: unknown) => e instanceof BuildError && /no such column: o\.nonexistent/.test(e.message) && !/FROM-clause subquery/.test(e.message),
+      );
+    }
+  });
+
+  // A CTE named like a table hides that table, so the table's facts do not
+  // describe it, and a real column of the CTE is still a scope error.
+  test("a FROM-clause subquery reading a column of an earlier CTE named like a table is refused, naming the rule", () => {
+    assert.throws(
+      () => t.analyze("with orders as (select 1 as foo) select o.foo, x.id from orders o, (select o.foo as id from order_lines l) x", "orders"),
+      (e: unknown) => e instanceof BuildError && /FROM-clause subquery/.test(e.message) && /reference to the earlier FROM item/.test(e.message) && !/no such column/.test(e.message),
+    );
+  });
+
   // A second symptom of the same rule, now resolved: json_each(o.tags) (an
   // earlier FROM source's own column) prepares (sourceRows, typegen.ts),
   // and a json_each reading another json_each's own `.value` now types its
