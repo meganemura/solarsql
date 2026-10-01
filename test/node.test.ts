@@ -13,6 +13,82 @@ import { customerCommands, type CustomersId } from "../example/modules/customers
 import { orderCommands, orderQueries, type OrderLinesId, type OrdersId } from "../example/modules/orders/public.ts";
 import { reportQueries } from "../example/modules/reports/public.ts";
 
+test('unbound named parameters read as NULL when no bindings are supplied', async () => {
+  const { storageOf } = await import('../src/node.ts');
+  const raw = new DatabaseSync(':memory:');
+  try {
+    assert.deepEqual(storageOf(raw).sql.exec('select :id as a, @id as b, $id as c').toArray(), [{ a: null, b: null, c: null }]);
+  } finally { raw.close(); }
+});
+
+test('calls that bind no named slot (no bindings, or positional bindings only) match direct SQLite binding', async () => {
+  const { storageOf } = await import('../src/node.ts');
+  const { test: property } = await import('@hegeldev/hegel');
+  const gs = await import('@hegeldev/hegel/generators');
+  const raw = new DatabaseSync(':memory:');
+  try {
+    property(tc => {
+      const value = tc.draw(gs.sampledFrom([null, tc.draw(gs.integers()), tc.draw(gs.text()), Uint8Array.from(tc.draw(gs.binary()))]));
+      for (const [sql, bindings] of [
+        ['select 1 as n', []],
+        ['select ? as n', []],
+        ['select :id as n, @id as m, $id as p', []],
+        ['select ? as n', [value]],
+        ['select ?2 as n', [null, value]],
+        ['select ? as n', [7n]],
+      ] as const) {
+        const expected = raw.prepare(sql).all(...bindings).map(row => ({ ...row }));
+        assert.deepEqual(storageOf(raw).sql.exec(sql, ...bindings).toArray(), expected);
+      }
+      assert.throws(() => storageOf(raw).sql.exec('select 1', value), /column index out of range/);
+    });
+    for (const value of [undefined, true, {}, Object.assign(() => {}, { kind: 'command' })]) {
+      let expected: Error | undefined;
+      let rows: Record<string, unknown>[] | undefined;
+      try { rows = raw.prepare('select ? as n').all(value as never).map(row => ({ ...row })); }
+      catch (error) { expected = error as Error; }
+      if (expected) {
+        assert.throws(() => storageOf(raw).sql.exec('select ? as n', value), { name: expected.name, message: expected.message });
+      } else {
+        assert.deepEqual(storageOf(raw).sql.exec('select ? as n', value).toArray(), rows);
+      }
+    }
+  } finally { raw.close(); }
+});
+
+test('a transaction cleanup failure retains both errors and its diagnostic', async () => {
+  const { storageOf } = await import('../src/node.ts');
+  const raw = new DatabaseSync(':memory:');
+  const original = new Error('closure failed');
+  try {
+    assert.throws(() => storageOf(raw).transactionSync(() => {
+      raw.exec('release savepoint solarsql_transaction');
+      throw original;
+    }), (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.equal(error.message, 'The Node transaction failed and its savepoint cleanup also failed');
+      assert.equal(error.cause, original);
+      assert.equal(error.errors.length, 2);
+      assert.equal(error.errors[0], original);
+      assert.match(error.errors[1].message, /no such savepoint/);
+      return true;
+    });
+  } finally { raw.close(); }
+});
+
+test('the version floor accepts 24.20.0 and 26.7.0, rejects 24.19.0, 25.6.1 and 26.6.0, and node() builds on the running Node', async () => {
+  const { nodeVersionError } = await import('../src/runtime/node-version.ts');
+  assert.equal(nodeVersionError(process.versions.node), null);
+  for (const version of ['24.20.0', '26.7.0', '24.19.0', '25.6.1', '26.6.0']) {
+    assert.equal(nodeVersionError(version) === null, ['24.20.0', '26.7.0'].includes(version));
+  }
+  const raw = new DatabaseSync(':memory:');
+  try {
+    assert.ok(node(raw));
+    assert.ok(node(raw, { observe: () => {} }));
+  } finally { raw.close(); }
+});
+
 describe("the example on node:sqlite", () => {
   const raw = new DatabaseSync(":memory:");
   const events: Observed[] = [];
@@ -1445,4 +1521,20 @@ test("a file that only repoints which of a parent table's two UNIQUE columns a c
       return true;
     });
   } finally { raw.close(); }
+});
+
+// The adapter checks the running Node version when it is built. The test
+// replaces process.versions.node for one call and restores it afterwards.
+test("node() refuses to build an adapter on a Node version below the floor", () => {
+  const previous = Object.getOwnPropertyDescriptor(process.versions, "node")!;
+  const db = new DatabaseSync(":memory:");
+  Object.defineProperty(process.versions, "node", { ...previous, value: "24.19.0" });
+  try {
+    assert.throws(() => node(db), /24\.19\.0/);
+  } finally {
+    Object.defineProperty(process.versions, "node", previous);
+    db.close();
+  }
+  const fresh = new DatabaseSync(":memory:");
+  try { assert.doesNotThrow(() => node(fresh)); } finally { fresh.close(); }
 });

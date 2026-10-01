@@ -21,6 +21,39 @@ const library = join(root, "src/index.ts");
 const schema = 'create table legacy(n integer, label); create table items(n integer not null, label text) strict;';
 const catalog = { legacy: 'select n, label from legacy', items: '-- Original SQL\nselect n, label from items where n = :n;' };
 
+test('busy waits reserve the deadline margin and stay within the wait budget', async () => {
+  const { busyTimeoutMs } = await import('../src/build/lock-timeout.ts');
+  const { test: property } = await import('@hegeldev/hegel');
+  const gs = await import('@hegeldev/hegel/generators');
+  property(tc => {
+    const wait = tc.draw(gs.integers({ minValue: 0, maxValue: 5000 }));
+    assert.equal(busyTimeoutMs(wait + 1000), wait);
+    assert.equal(busyTimeoutMs(tc.draw(gs.integers({ minValue: 0, maxValue: 1000 }))), 0);
+    assert.equal(busyTimeoutMs(tc.draw(gs.integers({ minValue: 6000, maxValue: 1_000_000 }))), 5000);
+  });
+});
+
+test('lock errors require a numeric SQLite busy or locked primary code', async () => {
+  const { isLockError } = await import('../src/build/lock-timeout.ts');
+  const { test: property } = await import('@hegeldev/hegel');
+  const gs = await import('@hegeldev/hegel/generators');
+  for (const value of [null, undefined, {}, 5, '5', { errcode: '5' }, { errcode: 5n }, { errcode: null }, { errcode: { valueOf: () => 5 } }]) {
+    assert.equal(isLockError(value), false);
+  }
+  property(tc => {
+    const extension = tc.draw(gs.integers({ minValue: 0, maxValue: 0x7fffff }));
+    const primary = tc.draw(gs.integers({ minValue: 0, maxValue: 255 }));
+    assert.equal(isLockError({ errcode: extension * 256 + primary }), [5, 6].includes(primary));
+    assert.equal(isLockError({ errcode: extension * 256 + 5 }), true);
+    assert.equal(isLockError({ errcode: extension * 256 + 6 }), true);
+  });
+});
+
+test('the lock diagnostic names the path, elapsed budget, and retry action', async () => {
+  const { lockMessage } = await import('../src/build/lock-timeout.ts');
+  assert.equal(lockMessage('/tmp/a database.sqlite', 4000), '/tmp/a database.sqlite is locked: another connection held it for longer than 4000ms. Retry.');
+});
+
 test('schema-only generation preserves SQL and coexists with a direct SQLite driver', () => {
   const dir = fixtureDir('solarsql-analyze-');
   onTestFinished(() => rmSync(dir, {recursive:true,force:true}));
