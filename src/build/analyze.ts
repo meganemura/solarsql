@@ -28,6 +28,8 @@ export function analyzeDatabase(database: string, catalog: unknown, library = "s
   const path = realpathSync(database);
   const timeout = busyTimeoutMs(effectiveTimeoutMs);
   let engine: Engine;
+  // Opening a read-only DatabaseSync does no file I/O, so the first lock
+  // appears at the first schema read and reaches the schema-read catch.
   try {
     engine = new Engine([], new DatabaseSync(path, { readOnly: true, timeout }));
   } catch (e) {
@@ -59,6 +61,8 @@ function analyzeCatalog(engine: Engine, catalog: unknown, library: string) {
       const statement = catalogStatement(sql, "read");
       // A catalog entry is always role "read" (catalogStatement above), so
       // it can never be the DELETE ... RETURNING shape ADR 0135 marks.
+      // Query types come from the SQL and the schema; the module label
+      // reaches the output only through emitGenerated.
       return { name, key: sql, analysis: typer.analyze(statement, "schema"), origins: engine.columns(statement), accesses: engine.accesses(statement), returning: false as const };
     } catch (e) {
       if (e instanceof BuildError) e.locations.push(`queries.${name}`);
