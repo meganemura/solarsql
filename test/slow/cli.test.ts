@@ -39,6 +39,8 @@ function fixture() {
       return result;
     },
     runAfterRenameStarts(target: string, ...args: string[]) {
+      // Allow worker startup before the deadline. The rename hook holds the
+      // worker indefinitely, so expiry still tests an interrupted replacement.
       const preload = join(dir, "stop-after-atomic-write.mjs");
       // Normalize backslashes before the endsWith check, so a Windows path
       // (which renameSync receives with "\\" separators) still matches a
@@ -560,7 +562,9 @@ test('a machine report received before the child closes is not discarded as a ti
   // the deadline before it really exits. A parent that only clears its
   // timer on close would race the deadline and report a false timeout for
   // a build that had already finished and reported success.
-  const timed = f.runWithExitDelay(1500, 'inspect', '--timeout-ms', '500');
+  // Ten seconds allows startup; the eleven-second exit delay still crosses
+  // the deadline and exposes a timer that is cleared only on close.
+  const timed = f.runWithExitDelay(11000, 'inspect', '--timeout-ms', "10000");
   assert.equal(timed.status, 0, timed.stderr);
   const report = JSON.parse(timed.stdout);
   assert.equal(report.ok, true, JSON.stringify(report));
@@ -572,19 +576,21 @@ test('a human worker exit code received before the child closes is not discarded
   // open past the deadline before it really exits. A parent that only
   // clears its timer on close would race the deadline and report a false
   // timeout for a build that had already finished successfully.
-  const timed = f.runWithExitDelay(1500, 'build', '--timeout-ms', '500');
+  // Ten seconds allows startup; the eleven-second exit delay still crosses
+  // the deadline and exposes a timer that is cleared only on close.
+  const timed = f.runWithExitDelay(11000, 'build', '--timeout-ms', "10000");
   assert.equal(timed.status, 0, timed.stderr);
-  assert.doesNotMatch(timed.stderr, /exceeded its 500ms time budget/);
+  assert.doesNotMatch(timed.stderr, /exceeded its 10000ms time budget/);
 });
 
 test('human build timeout retains a complete generated destination when atomic replacement has started', () => {
   const f = fixture();
   const before = readFileSync(f.generated, "utf8");
   f.edit("update orders set note = :note where id = :id", "update orders set note = :note where id = :id and status = 'draft'");
-  const timed = f.runAfterRenameStarts("solarsql.generated.ts", "build", "--timeout-ms", "500");
+  const timed = f.runAfterRenameStarts("solarsql.generated.ts", "build", "--timeout-ms", "10000");
   assert.equal(timed.status, 1, timed.stderr);
   assert.match(timed.stderr, /atomic replacement started/);
-  assert.match(timed.stderr, /exceeded its 500ms time budget/);
+  assert.match(timed.stderr, /exceeded its 10000ms time budget/);
   assert.equal(readFileSync(f.generated, "utf8"), before);
   const temporary = readdirSync(join(f.dir, "example/modules/orders"))
     .filter(name => /^\.solarsql\.generated\.ts\.\d+\.[0-9a-f]+\.tmp$/.test(name));
@@ -609,7 +615,7 @@ test('migration timeout keeps the first retained lock after project code forges 
     'Object.defineProperty(process, "send", { value: () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0) });',
     "",
   ].join("\n") + readFileSync(configPath, "utf8"));
-  const timed = f.runAfterRenameStarts("migrations/index.ts", "migration", "atomic_timeout", "--timeout-ms", "500");
+  const timed = f.runAfterRenameStarts("migrations/index.ts", "migration", "atomic_timeout", "--timeout-ms", "10000");
   const lock = join(f.dir, "example/migrations/.solarsql-generation.lock");
   assert.equal(timed.status, 1, timed.stderr);
   assert.match(timed.stderr, /atomic replacement started/);
@@ -632,7 +638,7 @@ test('build timeout names the held migration lock, the same way a migration time
   // deterministically takes the lock the way build's own migrations-index
   // staleness check makes it take this lock (ADR 0060).
   writeFileSync(indexPath, readFileSync(indexPath, "utf8") + "\n// force stale for this test\n");
-  const timed = f.runAfterRenameStarts("migrations/index.ts", "build", "--timeout-ms", "500");
+  const timed = f.runAfterRenameStarts("migrations/index.ts", "build", "--timeout-ms", "10000");
   const lock = join(f.dir, "example/migrations/.solarsql-generation.lock");
   assert.equal(timed.status, 1, timed.stderr);
   assert.match(timed.stderr, /atomic replacement started/);
@@ -817,53 +823,120 @@ test('query and rehearse wait out a held lock and name the file when the wait ru
   const locker = join(f.dir, 'locker.mjs');
   writeFileSync(locker, `
     import { DatabaseSync } from 'node:sqlite';
-    const [, , path, ms] = process.argv;
+    const [, , path] = process.argv;
     const db = new DatabaseSync(path);
     db.exec('pragma locking_mode=exclusive');
     db.exec('begin exclusive');
     process.stdout.write('ready\\n');
-    setTimeout(() => { try { db.exec('rollback'); db.close(); } catch {} process.exit(0); }, Number(ms));
+    process.on('message', () => { db.exec('rollback'); db.close(); process.exit(0); });
   `);
 
   // Starts the locker, waits for its "ready" line (the exclusive
-  // transaction is open by then), then returns a function that reads it
-  // back. Killed in onTestFinished regardless of how long its own hold was.
-  function holdLock(ms: number): Promise<() => void> {
+  // transaction is open by then). Release uses IPC instead of a hold time,
+  // so worker startup cannot consume the interval that should test contention.
+  function holdLock(): Promise<() => Promise<void>> {
     return new Promise((resolvePromise, reject) => {
-      const child = spawn(process.execPath, [locker, dbPath, String(ms)], { stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(process.execPath, [locker, dbPath], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       onTestFinished(() => { child.kill('SIGKILL'); });
       let out = '';
       child.stdout!.on('data', (chunk) => {
         out += String(chunk);
-        if (out.includes('ready\n')) resolvePromise(() => child.kill('SIGKILL'));
+        if (out.includes('ready\n')) resolvePromise(() => new Promise<void>((resolveRelease, rejectRelease) => {
+          child.once('close', (code) => code === 0 ? resolveRelease() : rejectRelease(new Error(`locker exited with ${code}`)));
+          child.send('release');
+        }));
       });
       child.on('error', reject);
     });
   }
 
-  // (1) A lock released well inside the busy-timeout wait (--timeout-ms
-  // 2000 gives a 1,000ms wait; ADR 0140) lets both commands succeed.
-  {
-    const release = await holdLock(300);
-    const byId = spawnSync(process.execPath, [join(root, 'src/build/cli.ts'), 'query', 'customers.customerQueries.byId', '--database', dbPath, '--params', '{"id":"c1"}', '--timeout-ms', '2000', config], { cwd: f.dir, encoding: 'utf8', timeout: 10_000 });
-    assert.equal(byId.status, 0, byId.stderr);
-    assert.deepEqual(JSON.parse(byId.stdout), [{ id: 'c1', name: 'Ada', email: 'ada@example.com' }]);
-    release();
-  }
-  {
-    const release = await holdLock(300);
-    const rehearsed = spawnSync(process.execPath, [join(root, 'src/build/cli.ts'), 'rehearse', dbPath, change, '--timeout-ms', '2000'], { encoding: 'utf8', timeout: 10_000 });
-    assert.equal(rehearsed.status, 0, rehearsed.stdout + rehearsed.stderr);
-    assert.equal(JSON.parse(rehearsed.stdout).ok, true);
-    release();
+  // Probe with no busy wait to prove contention before the test releases it.
+  // The command then opens its own handle with the configured busy wait.
+  const observe = join(f.dir, 'observe-lock.mjs');
+  const sqliteWrapper = join(f.dir, 'observe-sqlite.mjs');
+  writeFileSync(sqliteWrapper, `
+    import sqlite from 'node:sqlite';
+    import { realpathSync } from 'node:fs';
+    export const { backup, constants, StatementSync } = sqlite;
+    const Original = sqlite.DatabaseSync;
+    export const DatabaseSync = new Proxy(Original, {
+      construct(target, args) {
+        if (args[1]?.readOnly && typeof args[0] === 'string' && realpathSync(args[0]) === realpathSync(${JSON.stringify(dbPath)})) {
+          let probe;
+          try {
+            probe = Reflect.construct(target, [args[0], { ...args[1], timeout: 0 }]);
+            probe.prepare('pragma schema_version').get();
+            throw new Error('the test database was not locked');
+          } catch (error) {
+            if (![5, 6].includes(error.errcode & 255)) throw error;
+          } finally {
+            probe?.close();
+          }
+          console.error('database lock observed');
+        }
+        return Reflect.construct(target, args);
+      }
+    });
+  `);
+  // node:sqlite's named exports do not follow syncBuiltinESMExports.
+  // Route imports through a wrapper that retains the real native database.
+  writeFileSync(observe, `
+    import { registerHooks } from 'node:module';
+    const wrapper = ${JSON.stringify(pathToFileURL(sqliteWrapper).href)};
+    registerHooks({
+      resolve(specifier, context, nextResolve) {
+        if (specifier === 'node:sqlite' && context.parentURL !== wrapper) {
+          return { url: wrapper, shortCircuit: true };
+        }
+        return nextResolve(specifier, context);
+      }
+    });
+  `);
+  async function runLocked(args: string[], release?: () => Promise<void>) {
+    const child = spawn(process.execPath, ['--import', pathToFileURL(observe).href, join(root, 'src/build/cli.ts'), ...args, '--timeout-ms', '30000'], { cwd: f.dir });
+    onTestFinished(() => { child.kill('SIGKILL'); });
+    let stdout = '';
+    let stderr = '';
+    let observed = false;
+    let released: Promise<void> | undefined;
+    child.stdout!.on('data', chunk => { stdout += String(chunk); });
+    child.stderr!.on('data', chunk => {
+      stderr += String(chunk);
+      if (!observed && stderr.includes('database lock observed')) {
+        observed = true;
+        released = release?.();
+      }
+    });
+    const status = await new Promise<number | null>((resolveClose, reject) => {
+      child.once('error', reject);
+      child.once('close', resolveClose);
+    });
+    await released;
+    assert.ok(observed, stderr);
+    return { status, stdout, stderr: stderr.replace(/^database lock observed\r?\n/gm, '') };
   }
 
-  // (2) and (3): a lock held past the wait (--timeout-ms 2000, a 1,000ms
-  // wait) reports the path and "locked", not a time-budget message.
+  // The 30-second deadline leaves startup room around the capped five-second
+  // busy wait (ADR 0140). Success releases only after observed contention.
   {
-    const release = await holdLock(4_000);
-    const byId = spawnSync(process.execPath, [join(root, 'src/build/cli.ts'), 'query', 'customers.customerQueries.byId', '--database', dbPath, '--params', '{"id":"c1"}', '--timeout-ms', '2000', config], { cwd: f.dir, encoding: 'utf8', timeout: 10_000 });
-    release();
+    const release = await holdLock();
+    const byId = await runLocked(['query', 'customers.customerQueries.byId', '--database', dbPath, '--params', '{"id":"c1"}', config], release);
+    assert.equal(byId.status, 0, byId.stderr);
+    assert.deepEqual(JSON.parse(byId.stdout), [{ id: 'c1', name: 'Ada', email: 'ada@example.com' }]);
+  }
+  {
+    const release = await holdLock();
+    const rehearsed = await runLocked(['rehearse', dbPath, change], release);
+    assert.equal(rehearsed.status, 0, rehearsed.stdout + rehearsed.stderr);
+    assert.equal(JSON.parse(rehearsed.stdout).ok, true);
+  }
+
+  // Failure keeps the lock until the command closes, so the busy wait
+  // expires regardless of worker startup or machine load.
+  {
+    const release = await holdLock();
+    const byId = await runLocked(['query', 'customers.customerQueries.byId', '--database', dbPath, '--params', '{"id":"c1"}', config]);
+    await release();
     assert.equal(byId.status, 2, byId.stdout);
     assert.equal(byId.stderr.trim().split('\n').length, 1, byId.stderr);
     assert.match(byId.stderr, /locked/);
@@ -871,9 +944,9 @@ test('query and rehearse wait out a held lock and name the file when the wait ru
     assert.doesNotMatch(byId.stderr, /time budget/);
   }
   {
-    const release = await holdLock(4_000);
-    const rehearsed = spawnSync(process.execPath, [join(root, 'src/build/cli.ts'), 'rehearse', dbPath, change, '--timeout-ms', '2000'], { encoding: 'utf8', timeout: 10_000 });
-    release();
+    const release = await holdLock();
+    const rehearsed = await runLocked(['rehearse', dbPath, change]);
+    await release();
     const report = JSON.parse(rehearsed.stdout);
     assert.equal(report.ok, false);
     assert.equal(report.diagnostics[0].code, 'SNAPSHOT_FAILED');
