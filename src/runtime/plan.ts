@@ -160,7 +160,10 @@ export function constraintFailure(error: unknown): ConstraintFailure | null {
     if (refs.some(ref => ref[0] !== table)) return null;
     return { kind: "unique", table, columns: refs.map((ref) => ref[1]!) };
   }
-  if ((match = /^CHECK constraint failed: (.+)$/.exec(m))) return { kind: "check", constraint: match[1]! };
+  // An unnamed CHECK reports its own expression text, and a line break inside
+  // the declared expression survives into that text, so the match spans lines.
+  // With dot-all, the greedy group already runs to the end of the text.
+  if ((match = /^CHECK constraint failed: (.+)/s.exec(m))) return { kind: "check", constraint: match[1]! };
   if ((match = /^NOT NULL constraint failed: ([^.]+)\.([^.]+)$/.exec(m))) return { kind: "not_null", table: match[1]!, column: match[2]! };
   if (/^FOREIGN KEY constraint failed$/.test(m)) return { kind: "foreign_key" };
   if ((match = /^cannot store (\w+) value in (\w+) column ([^.]+)\.([^.]+)$/.exec(m))) {

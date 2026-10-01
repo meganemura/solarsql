@@ -8,6 +8,7 @@ import { test } from "vitest";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { validateParams, errorDetails, engineMeta, d1StatementRows, outcomeOf, constraintFailure } from "../src/runtime/plan.ts";
+import { failureClass } from "../src/runtime/failure.ts";
 
 // Runs one or more setup statements, then one statement expected to raise a
 // constraint or CHECK violation, and returns the engine's own message text.
@@ -78,12 +79,14 @@ test("the CHECK pattern only matches at the very start of the message: a hand-wr
   assert.equal(constraintFailure(new Error(message)), null);
 });
 
-test("an unnamed CHECK whose expression carries a line break in the DDL currently declines: the engine's own newline in the text breaks the single-line pattern", () => {
+test("an unnamed CHECK whose expression carries a line break in the DDL reports that expression, and the failure is a resolved constraint", () => {
   // Checked directly against node:sqlite: a line break placed inside the
   // expression, not at either edge, survives into the raised message.
   const message = engineFailureMessage(`create table t (a int check (a >\n 0))`, `insert into t (a) values (-1)`);
   assert.equal(message, "CHECK constraint failed: a >\n 0");
-  assert.equal(constraintFailure(new Error(message)), null);
+  assert.deepEqual(constraintFailure(new Error(message)), { kind: "check", constraint: "a >\n 0" });
+  assert.deepEqual(failureClass(new Error(message)), { kind: "permanent", reason: "resolved_constraint" });
+  assert.deepEqual(failureClass(new Error(`D1_ERROR: ${message}: SQLITE_CONSTRAINT`)), { kind: "permanent", reason: "resolved_constraint" });
 });
 
 test("a NOT NULL failure on multi-character table and column names splits them apart", () => {

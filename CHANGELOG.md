@@ -4,6 +4,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: `constraintFailure` resolves an unnamed CHECK failure whose expression spans lines, so `failureClass` reports it as a resolved constraint.
 - Fixed: Generated migrations qualify existing objects and rebuild declarations with `main` so same-named TEMP objects retain their rows and schema.
 - Changed: The schema scanners read `main`-qualified CREATE statements and ALTER TABLE ... RENAME COLUMN as main objects, and no longer read CREATE TEMP or `temp`-qualified statements as main declarations.
 - Added: `npm run archstrict` checks module boundaries with archstrict 0.1.0. Scan, the schema diff, the typer, the compiler orchestrator, the CLI, and the adapters are separate modules. `BuildError` lives in `build-error.ts`, so the schema diff does not import the typer. Every module is strict.
