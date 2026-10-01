@@ -159,6 +159,87 @@ export function isKeyword(token: Token | undefined, word: string): boolean {
   return token !== undefined && token.type === "ident" && token.text.toLowerCase() === word;
 }
 
+// A trigger name, UPDATE OF column, or WHEN expression can spell `begin`.
+// Walk the fixed CREATE TRIGGER header so callers share one body boundary.
+export function triggerBodyBegin(tokens: Token[]): Token | undefined {
+  const meaningful = significant(tokens);
+  let index = 0;
+  const at = () => meaningful[index];
+  const take = () => meaningful[index++];
+  const is = (word: string) => isKeyword(at(), word);
+  if (!is("create")) return undefined;
+  take();
+  if (!is("trigger")) return undefined;
+  take();
+  if (is("if")) {
+    take();
+    if (is("not")) take();
+    if (is("exists")) take();
+  }
+  if (at() === undefined) return undefined;
+  take();
+  if (is("instead")) {
+    take();
+    if (is("of")) take();
+  } else if (is("before") || is("after")) {
+    take();
+  }
+  if (is("delete") || is("insert")) {
+    take();
+  } else if (is("update")) {
+    take();
+    if (is("of")) {
+      take();
+      while (at() !== undefined) {
+        take();
+        const token = at();
+        if (token?.type === "punct" && token.text === ",") {
+          take();
+          continue;
+        }
+        break;
+      }
+    }
+  }
+  if (!is("on")) return undefined;
+  take();
+  if (at() === undefined) return undefined;
+  take();
+  if (is("for")) {
+    take();
+    if (is("each")) take();
+    if (is("row")) take();
+  }
+  if (is("when")) {
+    take();
+    let depth = 0;
+    while (at() !== undefined) {
+      const token = at()!;
+      if (token.type === "punct" && token.text === "(") {
+        depth++;
+        take();
+        continue;
+      }
+      if (token.type === "punct" && token.text === ")") {
+        depth--;
+        take();
+        continue;
+      }
+      if (depth === 0 && isKeyword(token, "begin")) {
+        const previous = meaningful[index - 1];
+        if (previous?.type === "punct" && previous.text === ".") {
+          take();
+          continue;
+        }
+        return token;
+      }
+      take();
+    }
+    return undefined;
+  }
+  return meaningful.find((token, candidate) => candidate >= index && isKeyword(token, "begin"));
+}
+
 // SQLite folds identifier case in the ASCII range only, so "Ä" and "ä" name
 // different tables or columns. JavaScript's toLowerCase() would merge them,
 // so every comparison of SQLite identifiers uses this fold instead.

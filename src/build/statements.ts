@@ -1,6 +1,6 @@
 // Responsibility: constrain catalog roles and reject transaction-ending schema conflicts.
 // Boundary: SQLite validates the grammar; this scanner recognizes only these fixed shapes.
-import { isKeyword, significant, splitStatements, tokenize } from "./scan.ts";
+import { isKeyword, significant, splitStatements, tokenize, triggerBodyBegin } from "./scan.ts";
 import { BuildError } from "./build-error.ts";
 
 // These clauses end the transaction that the adapter needs for a command's
@@ -14,13 +14,17 @@ export function refuseTransactionEndingSchemaConflict(sql: string, kind: "table"
       sql,
     );
   }
-  if (kind === "trigger" && tokens.some((_, i) => hasKeywordsAt(i, "raise") && tokens[i + 1]?.text === "(" && hasKeywordsAt(i + 2, "rollback") && tokens[i + 3]?.text === ",")) {
+  if (kind === "table") return;
+  if (tokens.some((_, i) => hasKeywordsAt(i, "raise") && tokens[i + 1]?.text === "(" && hasKeywordsAt(i + 2, "rollback") && tokens[i + 3]?.text === ",")) {
     throw new BuildError(
       "A trigger cannot use RAISE(ROLLBACK, ...): the adapter owns the transaction. Use RAISE(ABORT, ...), RAISE(FAIL, ...), or RAISE(IGNORE) instead.",
       sql,
     );
   }
-  if (kind === "trigger" && tokens.some((_, i) => hasKeywordsAt(i, "or", "rollback"))) {
+  const bodyBegin = triggerBodyBegin(tokens);
+  // A missing body yields only the final token, which cannot form OR ROLLBACK.
+  const body = tokens.slice(tokens.indexOf(bodyBegin as (typeof tokens)[number]));
+  if (body.some((_, i) => isKeyword(body[i], "or") && isKeyword(body[i + 1], "rollback"))) {
     throw new BuildError(
       "A trigger body cannot use OR ROLLBACK: the adapter owns the transaction. Leave the default (ABORT) to get a failure value, or use OR IGNORE or OR REPLACE when that outcome is intentional.",
       sql,

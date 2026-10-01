@@ -85,6 +85,16 @@ test("schema refuses RAISE(ROLLBACK, ...) in a trigger body", () => schemaProjec
 export const guard = trigger("create trigger items_guard before insert on items when new.value < 0 begin select raise(rollback, 'negative'); end");`,
   /trigger cannot use RAISE\(ROLLBACK/,
 ));
+test("schema leaves invalid WHEN columns to SQLite after the rollback check", () => schemaProject(
+  `export const items = table("create table items(id text primary key not null, value integer not null, rollback integer not null) strict");
+export const guard = trigger("create trigger items_guard after insert on items when new.value = 1 or rollback = 2 begin select 1; end");`,
+  /no such column: rollback/,
+));
+test("schema permits OR ROLLBACK words in a valid trigger WHEN subquery", () => schemaProject(
+  `export const items = table("create table items(id text primary key not null, value integer not null, rollback integer not null) strict");
+export const guard = trigger("create trigger items_guard after insert on items when exists(select 1 from items where value = 1 or rollback = 2) begin select 1; end");`,
+  false,
+));
 for (const statement of [
   "insert or rollback into log(k) values (new.id)",
   "update or rollback log set k = new.id",

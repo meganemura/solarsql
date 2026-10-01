@@ -51,6 +51,25 @@ test("trigger rollback checks require the complete SQLite forms", () => {
   assert.doesNotThrow(() => refuseTransactionEndingSchemaConflict("select 1 or rollback", "table"));
 });
 
+test("trigger rollback checks start at the trigger body", () => {
+  assert.doesNotThrow(() => refuseTransactionEndingSchemaConflict(
+    "create trigger g after insert on t when new.id = 1 or rollback = 2 begin select 1; end",
+    "trigger",
+  ));
+  assert.doesNotThrow(() => refuseTransactionEndingSchemaConflict(
+    "create trigger g after insert on t when new.id = 1 or rollback",
+    "trigger",
+  ));
+});
+
+test("SQLite fires a trigger with OR ROLLBACK words in a WHEN subquery", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec("create table t(a integer, rollback integer); create trigger tr after insert on t when exists(select 1 from t where a = 1 or rollback = 2) begin select 1; end");
+    assert.doesNotThrow(() => db.exec("insert into t values(1, 2)"));
+  } finally { db.close(); }
+});
+
 test("catalog statements reject every non-comment token after their terminator", () => {
   for (const sql of ["select 1; select 2", "select 1;; select 2", "select 1; - 2"]) {
     assert.throws(() => catalogStatement(sql, "read"), /exactly one SQL statement/, sql);
