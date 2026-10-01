@@ -19,6 +19,7 @@ export type InitEmptyResult = { written: string[]; notes: string[] };
 // The module name is the table name and the directory name, as typed.
 const namePattern = /^[a-z][a-z0-9_]*$/;
 
+// resolve() treats "." and "" as the current directory, so either default has the same result.
 export async function init(module: string, dir = "."): Promise<InitResult> {
   if (!namePattern.test(module)) throw new BuildError(`module name must match [a-z][a-z0-9_]*: ${module}`);
   const root = resolve(dir);
@@ -34,8 +35,11 @@ export async function init(module: string, dir = "."): Promise<InitResult> {
   const tsconfigExists = existsSync(tsconfig);
   if (!tsconfigExists) files.push([tsconfig, tsconfigTemplate]);
   for (const [path] of files) {
-    // relative() returns backslashes on Windows; the message is printed and,
-    // in test/init.test.ts, matched as a project-relative POSIX path.
+    // The message is printed and, in test/init.test.ts, matched as a
+    // project-relative POSIX path. relative() returns the fixed file names
+    // below root and a module name limited to [a-z0-9_], so on POSIX it holds
+    // no backslash and the join changes nothing; on Windows it turns the
+    // separators into "/".
     if (existsSync(path)) throw new BuildError(`${(relative(root, path) || path).split("\\").join("/")} exists. init is for a project without one; add a module by hand, as the README shows.`);
   }
   // The first migration is the first file of its directory. A directory that
@@ -53,6 +57,9 @@ export async function init(module: string, dir = "."): Promise<InitResult> {
     const note = tsconfigNote(tsconfig);
     if (note) notes.push(note);
   }
+  // relative() returns the fixed file names below root and a module name
+  // limited to [a-z0-9_], so on POSIX it holds no backslash and the join
+  // changes nothing; on Windows it turns the separators into "/".
   return { written: written.map((p) => relative(root, p).split("\\").join("/")), migration: first.filename, notice: notice(root), notes };
 }
 
@@ -61,6 +68,7 @@ export async function init(module: string, dir = "."): Promise<InitResult> {
 // migration file (there is nothing yet to migrate); the first `build` after
 // a module is added writes the first migration, the same as a hand-added
 // module (schema.md, "Adding a module by hand").
+// resolve() treats "." and "" as the current directory, so either default has the same result.
 export async function initEmpty(dir = "."): Promise<InitEmptyResult> {
   const root = resolve(dir);
   const config = join(root, "solarsql.config.ts");
@@ -77,10 +85,15 @@ export async function initEmpty(dir = "."): Promise<InitEmptyResult> {
   writeGeneratedFile(indexPath, emitMigrationsIndex([]));
   const written = [...files.map(([p]) => p), indexPath];
   const notes: string[] = [];
+  // When initEmpty writes the tsconfig, its template enables .ts imports.
+  // Reading that new file returns no note, so checking it or skipping it returns the same notes.
   if (tsconfigExists) {
     const note = tsconfigNote(tsconfig);
     if (note) notes.push(note);
   }
+  // relative() returns the fixed file names below root and a module name
+  // limited to [a-z0-9_], so on POSIX it holds no backslash and the join
+  // changes nothing; on Windows it turns the separators into "/".
   return { written: written.map((p) => relative(root, p).split("\\").join("/")), notes };
 }
 
@@ -94,6 +107,8 @@ export default config({
 
 // tsconfig.json can carry "//" and "/* */" comments, the dialect tsc itself
 // reads; stripped before JSON.parse so a comment does not fail this check.
+// The greedy dot stops at a line terminator or the end of the text.
+// The end-of-line anchor therefore keeps the same comment match when present or absent.
 function stripJsonComments(text: string): string {
   return text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
 }
