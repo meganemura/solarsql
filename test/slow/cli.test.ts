@@ -39,8 +39,9 @@ function fixture() {
       return result;
     },
     runAfterRenameStarts(target: string, ...args: string[]) {
-      // Allow worker startup before the deadline. The rename hook holds the
-      // worker indefinitely, so expiry still tests an interrupted replacement.
+      // The deadline starts when the worker starts, so the budget covers only
+      // the work before the rename. The rename hook holds the worker
+      // indefinitely, so expiry still tests an interrupted replacement.
       const preload = join(dir, "stop-after-atomic-write.mjs");
       // Normalize backslashes before the endsWith check, so a Windows path
       // (which renameSync receives with "\\" separators) still matches a
@@ -107,7 +108,9 @@ function fixture() {
       writeFileSync(preload, [
         "const originalExit = process.exit.bind(process);",
         "process.exit = (code) => {",
-        '  const delay = Number(process.env.SOLARSQL_TEST_EXIT_DELAY_MS ?? "0");',
+        // Only the forked worker has an IPC channel. The spawned parent CLI
+        // loads this preload too, and must exit without the delay.
+        '  const delay = typeof process.send === "function" ? Number(process.env.SOLARSQL_TEST_EXIT_DELAY_MS ?? "0") : 0;',
         "  if (delay > 0) {",
         "    const until = Date.now() + delay;",
         "    while (Date.now() < until) { /* deliberately block the event loop, to model real work finishing just before the process actually closes */ }",
@@ -590,9 +593,10 @@ test('a machine report received before the child closes is not discarded as a ti
   // the deadline before it really exits. A parent that only clears its
   // timer on close would race the deadline and report a false timeout for
   // a build that had already finished and reported success.
-  // Ten seconds allows startup; the eleven-second exit delay still crosses
-  // the deadline and exposes a timer that is cleared only on close.
-  const timed = f.runWithExitDelay(11000, 'inspect', '--timeout-ms', "10000");
+  // The deadline starts when the worker starts, so four seconds covers the
+  // work; the worker's five-second exit delay still crosses the deadline and
+  // exposes a timer that is cleared only on close.
+  const timed = f.runWithExitDelay(5000, 'inspect', '--timeout-ms', "4000");
   assert.equal(timed.status, 0, timed.stderr);
   const report = JSON.parse(timed.stdout);
   assert.equal(report.ok, true, JSON.stringify(report));
@@ -604,21 +608,22 @@ test('a human worker exit code received before the child closes is not discarded
   // open past the deadline before it really exits. A parent that only
   // clears its timer on close would race the deadline and report a false
   // timeout for a build that had already finished successfully.
-  // Ten seconds allows startup; the eleven-second exit delay still crosses
-  // the deadline and exposes a timer that is cleared only on close.
-  const timed = f.runWithExitDelay(11000, 'build', '--timeout-ms', "10000");
+  // The deadline starts when the worker starts, so four seconds covers the
+  // work; the worker's five-second exit delay still crosses the deadline and
+  // exposes a timer that is cleared only on close.
+  const timed = f.runWithExitDelay(5000, 'build', '--timeout-ms', "4000");
   assert.equal(timed.status, 0, timed.stderr);
-  assert.doesNotMatch(timed.stderr, /exceeded its 10000ms time budget/);
+  assert.doesNotMatch(timed.stderr, /exceeded its 4000ms time budget/);
 });
 
 test('human build timeout retains a complete generated destination when atomic replacement has started', () => {
   const f = fixture();
   const before = readFileSync(f.generated, "utf8");
   f.edit("update orders set note = :note where id = :id", "update orders set note = :note where id = :id and status = 'draft'");
-  const timed = f.runAfterRenameStarts("solarsql.generated.ts", "build", "--timeout-ms", "10000");
+  const timed = f.runAfterRenameStarts("solarsql.generated.ts", "build", "--timeout-ms", "4000");
   assert.equal(timed.status, 1, timed.stderr);
   assert.match(timed.stderr, /atomic replacement started/);
-  assert.match(timed.stderr, /exceeded its 10000ms time budget/);
+  assert.match(timed.stderr, /exceeded its 4000ms time budget/);
   assert.equal(readFileSync(f.generated, "utf8"), before);
   const temporary = readdirSync(join(f.dir, "example/modules/orders"))
     .filter(name => /^\.solarsql\.generated\.ts\.\d+\.[0-9a-f]+\.tmp$/.test(name));
@@ -643,7 +648,7 @@ test('migration timeout keeps the first retained lock after project code forges 
     'Object.defineProperty(process, "send", { value: () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0) });',
     "",
   ].join("\n") + readFileSync(configPath, "utf8"));
-  const timed = f.runAfterRenameStarts("migrations/index.ts", "migration", "atomic_timeout", "--timeout-ms", "10000");
+  const timed = f.runAfterRenameStarts("migrations/index.ts", "migration", "atomic_timeout", "--timeout-ms", "4000");
   const lock = join(f.dir, "example/migrations/.solarsql-generation.lock");
   assert.equal(timed.status, 1, timed.stderr);
   assert.match(timed.stderr, /atomic replacement started/);
@@ -666,7 +671,7 @@ test('build timeout names the held migration lock, the same way a migration time
   // deterministically takes the lock the way build's own migrations-index
   // staleness check makes it take this lock (ADR 0060).
   writeFileSync(indexPath, readFileSync(indexPath, "utf8") + "\n// force stale for this test\n");
-  const timed = f.runAfterRenameStarts("migrations/index.ts", "build", "--timeout-ms", "10000");
+  const timed = f.runAfterRenameStarts("migrations/index.ts", "build", "--timeout-ms", "4000");
   const lock = join(f.dir, "example/migrations/.solarsql-generation.lock");
   assert.equal(timed.status, 1, timed.stderr);
   assert.match(timed.stderr, /atomic replacement started/);

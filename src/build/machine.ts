@@ -53,7 +53,7 @@ export async function announceMigrationLock(path: string): Promise<void> {
 }
 
 // Node's startup and the CLI's own module load are not the command's work,
-// and on a loaded machine they alone can outlast a short budget. Sent once,
+// and on a loaded machine they can outlast a short budget. Sent once,
 // before the worker runs the command and imports any project code: the
 // parent starts the command's deadline when it arrives.
 export async function announceWorkerStarted(): Promise<void> {
