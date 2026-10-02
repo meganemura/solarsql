@@ -109,7 +109,7 @@ A successful case does not prove that the returned values are equal before and a
 
 `node spike/11-backup-lifecycle.ts` measures the `backup()` path the snapshot step no longer uses; run it from a source checkout to see the WAL-row and implicit-row-identity checks it still shares with the current `vacuum into` step. It stops after 20 seconds (ADR 0063, ADR 0121).
 
-The rehearsal CLI has a 30,000ms default time budget, including startup and snapshot creation.
+The rehearsal CLI has a 30,000ms default time budget, including snapshot creation. The budget starts when the worker starts; the worker's own startup has a separate 30,000ms bound, which `--timeout-ms` does not extend.
 Use `--timeout-ms 120000` when the workload needs a larger finite budget.
 A deadline produces exit 1 and `REHEARSAL_TIMEOUT` after the parent removes its snapshots.
 Inspect the workload before increasing the budget. The source database remains unchanged.

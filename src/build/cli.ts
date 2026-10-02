@@ -15,7 +15,7 @@ import { init, initEmpty } from "./init.ts";
 import { nodeVersionError } from "../runtime/node-version.ts";
 import { readMigrationIntent, type MigrationIntent } from "./migration-intent.ts";
 import type { DropIntent, Rename, RenameRepair } from "./migration.ts";
-import { announceWorkerDone, isCliWorker, isReportWorker, printReport, runHuman, runMachine, runRehearsalProcess } from "./machine.ts";
+import { announceWorkerDone, announceWorkerStarted, isCliWorker, isReportWorker, printReport, runHuman, runMachine, runRehearsalProcess } from "./machine.ts";
 import { protectInputs, writeGeneratedFile } from "./output.ts";
 import { parseQueryTarget, runQuery } from "./query.ts";
 import { shellArgument } from "./shell.ts";
@@ -411,7 +411,12 @@ try {
         return 2;
       }
     })()
-    : await main(args));
+    : await (async () => {
+      // A no-op outside a worker. In a worker, the parent's deadline starts here,
+      // before main() imports any project code.
+      await announceWorkerStarted();
+      return main(args);
+    })());
   if (isCliWorker()) await announceWorkerDone(code);
   process.exit(code);
 } catch (e) {

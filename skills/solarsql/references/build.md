@@ -44,6 +44,7 @@ A successful build does not establish that the change is ready to deploy.
 
 The CLI runs `build`, `build --check`, `migration`, and `query` in a direct worker with a 30,000 millisecond deadline.
 Use `--timeout-ms <positive integer>` to set a different finite deadline.
+The deadline starts when the worker starts, before it imports the project; the worker's own startup has a separate 30,000 millisecond bound, which `--timeout-ms` does not extend.
 The parent validates every command option before the worker imports the project.
 On expiry, it stops the direct worker and reports the expired budget with a recovery action.
 The command does not make claims about application-owned child processes.
@@ -188,8 +189,9 @@ Each read operation's entry also carries `plan`: EXPLAIN QUERY PLAN's own accoun
 `inspect` and `build --json` emit one JSON document on stdout.
 Application import logs go to stderr. A premature import exit produces `BUILD_WORKER_FAILED`; inspect stderr to locate the cause.
 Inspection writes no build artifacts. Configuration and module imports still execute application JavaScript; inspection is not a sandbox.
-Both commands give the report worker a 30,000 millisecond deadline. Use `--timeout-ms <positive integer>` to set a different finite deadline; the parent validates it before it imports the configuration.
+Both commands give the report worker a 30,000 millisecond deadline, which starts when the worker starts, as for `build`. Use `--timeout-ms <positive integer>` to set a different finite deadline; the parent validates it before it imports the configuration.
 `BUILD_TIMEOUT` has the expired `timeoutMs` and tells the caller to use a larger budget after it inspects the import and build work.
+`WORKER_STARTUP_TIMEOUT` means the worker did not start within its fixed 30,000 millisecond startup bound; its action points at preloads in `NODE_OPTIONS` and the machine's load, because a larger budget does not help.
 A missing generated file requires a build first. A stale file or pending migration produces exit 1 and diagnostics with a recovery action.
 `build --json` provides machine-readable generation results; combine it with `--check` for verification.
 `BUILD_FAILED` preserves the error message, SQL when available, catalog locations when available, and a machine-readable `action` string when the error names one (for example, a colliding migration sequence).

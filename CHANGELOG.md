@@ -4,6 +4,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Changed: A CLI deadline (`--timeout-ms`) starts when the worker starts, not when the parent forks it, so Node's startup on a loaded machine no longer uses up a short budget. The worker's startup has its own 30,000 ms bound.
 - Fixed: The human CLI returns 1, and says why, when its worker closes with exit code 0 without announcing success, for example after a signal Node cannot name or an exit listener that rewrites the exit code.
 - Fixed: A generated file that drops a view records the view's triggers, and `applied()` and `migrate()` refuse it when a sibling migration added one of them since, or removed one that the file would create again.
 - Fixed: The `json_group_array` fan-out proof refuses a join whose equality compares the joined table with its own column written without a table name (`join b on b.id = onlyb`), instead of typing a result whose elements can repeat.

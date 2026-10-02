@@ -38,6 +38,8 @@ afterEach(() => {
   vi.resetModules();
 });
 
+// How far the parent's fake clock moves once a fixture child is ready.
+let readyAdvanceMs = 1000;
 const parentFixture = fileURLToPath(new URL("./fixtures/machine-parent.ts", import.meta.url));
 const realSetTimeout = globalThis.setTimeout;
 const realClearTimeout = globalThis.clearTimeout;
@@ -66,6 +68,7 @@ function timeoutTest(name: string, body: () => Promise<void>) {
 }
 
 afterEach(() => {
+  readyAdvanceMs = 1000;
   vi.useRealTimers();
   vi.restoreAllMocks();
   for (const child of parentChildren.splice(0)) {
@@ -100,7 +103,7 @@ async function parentChannel(error?: Error) {
       // A real timer keeps a thrown deadline error on the uncaught-error path.
       realSetTimeout(() => {
         try {
-          if (vi.isFakeTimers()) vi.advanceTimersByTime(1000);
+          if (vi.isFakeTimers()) vi.advanceTimersByTime(readyAdvanceMs);
         } finally {
           if (!this.killed && this.connected) this.send("fixture-release");
         }
@@ -302,6 +305,41 @@ test.skipIf(unnamedSignal === undefined)("human worker returns failure when a si
   assert.match(errors[0]!, /never announced that it finished/);
 });
 
+timeoutTest("a human worker that never announces its start meets the startup bound", async () => {
+  const { machine, errors } = await parentChannel();
+  // The clock moves past the startup bound once the child is ready.
+  readyAdvanceMs = machine.WORKER_STARTUP_MS;
+  assert.equal(await bounded(machine.runHuman(parentFixture, ["query", JSON.stringify({ mode: "silent-start", delay: 3000 })], 1000)), 1);
+  assert.equal(parentChildren.at(-1)!.signalCode, "SIGKILL");
+  assert.match(errors[0]!, /The worker did not start within 30000ms.*--timeout-ms does not extend this bound/);
+});
+
+timeoutTest("the human deadline does not run before the worker announces its start", async () => {
+  const { machine, errors } = await parentChannel();
+  // The clock moves 1000 ms, twice the 500 ms budget, while the child is
+  // ready but has not announced its start; a deadline armed at fork would
+  // kill it here.
+  assert.equal(await bounded(machine.runHuman(parentFixture, ["query", JSON.stringify({ mode: "late-start" })], 500)), 0);
+  assert.deepEqual(errors, []);
+});
+
+timeoutTest("machine startup bound reports its own code, bound, and action", async () => {
+  const { machine } = await parentChannel();
+  const report = reportOutput();
+  readyAdvanceMs = machine.WORKER_STARTUP_MS;
+  assert.equal(await bounded(machine.runMachine(parentFixture, ["inspect", JSON.stringify({ mode: "silent-start", delay: 3000 })], { timeoutMs: 1000 })), 1);
+  assert.deepEqual(report(), failedReport("The worker did not start within 30000ms.", "WORKER_STARTUP_TIMEOUT", "Inspect preloads in NODE_OPTIONS and the machine's load. --timeout-ms does not extend the worker's startup bound.", 30000));
+});
+
+timeoutTest("machine without a budget has no startup bound either", async () => {
+  const { machine } = await parentChannel();
+  const report = reportOutput();
+  readyAdvanceMs = machine.WORKER_STARTUP_MS;
+  assert.equal(await bounded(machine.runMachine(parentFixture, ["inspect", JSON.stringify({ mode: "silent-start", delay: 0 })])), 1);
+  assert.equal(parentChildren.at(-1)!.signalCode, null);
+  assert.deepEqual(report(), failedReport("The process ended without one valid report (exit 0, signal null)."));
+});
+
 test("human worker returns failure after signal termination", async () => {
   const { machine, errors } = await parentChannel();
   assert.equal(await bounded(machine.runHuman(parentFixture, ["query", JSON.stringify({ mode: "signal" })], 5000)), 1);
@@ -495,6 +533,25 @@ test("worker done sends the exit code and settles from the send callback", async
     assert.equal(result.state, error ? "rejected" : "resolved");
     if (error) assert.equal(result.error, error);
   }
+});
+
+test("worker start goes to the CLI or report channel with its token, and settles from the send callback", async () => {
+  for (const [report, cli, token] of [["other", "ipc", "cli-token"], ["ipc", "other", "report-token"]] as const) {
+    const channel = await load(report, cli);
+    for (const error of [null, new Error("start failed")]) {
+      const result = await settled(channel.machine.announceWorkerStarted());
+      const entry = channel.messages.at(-1)!;
+      assert.deepEqual(entry.message, { protocol: "solarsql.direct-worker.v1", token, type: "worker-started" });
+      assert.equal(result.state, "pending");
+      entry.callback(error);
+      await flush();
+      assert.equal(result.state, error ? "rejected" : "resolved");
+      if (error) assert.equal(result.error, error);
+    }
+  }
+  const outside = await load("other", "other");
+  assert.equal((await settled(outside.machine.announceWorkerStarted())).state, "resolved");
+  assert.deepEqual(outside.messages, []);
 });
 
 test("report worker sends the report with its captured token and propagates send errors", async () => {

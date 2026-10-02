@@ -1,6 +1,8 @@
 // Responsibility: supply one report to a parent's validation test.
 // Boundary: this fixture does not execute CLI commands or application imports.
-import { printReport } from "../../src/build/machine.ts";
+import { announceWorkerStarted, printReport } from "../../src/build/machine.ts";
+
+await announceWorkerStarted();
 
 const report = JSON.parse(process.argv[2]!);
 await printReport(report);

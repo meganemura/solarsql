@@ -25,7 +25,10 @@ const protocol = "solarsql.direct-worker.v1";
 const token = process.env.SOLARSQL_CLI_PROTOCOL_TOKEN;
 const reportToken = process.env.SOLARSQL_REPORT_PROTOCOL_TOKEN;
 // Capture the token before machine.ts consumes the worker environment.
-const { announceMigrationLock, announceWorkerDone, printReport } = await import("../../src/build/machine.ts");
+const { announceMigrationLock, announceWorkerDone, announceWorkerStarted, printReport } = await import("../../src/build/machine.ts");
+// A real worker announces its start before the command runs; the parent's
+// deadline starts there.
+if (options.mode !== "silent-start" && options.mode !== "late-start") await announceWorkerStarted();
 
 if (options.mode === "report-case") {
   const report = { version: 1, ok: options.ok ?? true, diagnostics: [] };
@@ -58,6 +61,12 @@ if (options.mode === "report-case") {
   process.kill(process.pid, "SIGKILL");
 } else if (options.mode === "signal-number") {
   process.kill(process.pid, options.code!);
+} else if (options.mode === "late-start") {
+  // The parent's clock moves while this child is ready but not yet started.
+  await pause(0);
+  await announceWorkerStarted();
+  await announceWorkerDone(0);
+  process.exitCode = 0;
 } else if (options.mode === "rewritten-exit") {
   await announceWorkerDone(1);
   process.on("exit", () => { process.exitCode = 0; });

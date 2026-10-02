@@ -52,6 +52,22 @@ export async function announceMigrationLock(path: string): Promise<void> {
   });
 }
 
+// Node's startup and the CLI's own module load are not the command's work,
+// and on a loaded machine they alone can outlast a short budget. Sent once,
+// before the worker runs the command and imports any project code: the
+// parent starts the command's deadline when it arrives.
+export async function announceWorkerStarted(): Promise<void> {
+  const sender = directSend && protocolToken ? { send: directSend, token: protocolToken } : send ? { send, token: reportProtocolToken } : undefined;
+  if (!sender) return;
+  await new Promise<void>((resolve, reject) => {
+    sender.send({ protocol, token: sender.token, type: "worker-started" }, error => error ? reject(error) : resolve());
+  });
+}
+
+// A worker that never announces its start, for example behind a preload
+// that never settles, still ends at this fixed bound.
+export const WORKER_STARTUP_MS = 30_000;
+
 // Sent once, just before the human-worker child calls process.exit. If the
 // parent receives it before its own deadline fires, the child's real work
 // is already done and the deadline should not kill it out from under a
@@ -115,10 +131,23 @@ export async function runHuman(cli: string, args: string[], timeoutMs: number): 
   let timedOut = false;
   let migrationLock: string | undefined;
   let announcedCode: number | undefined;
-  const timer = setTimeout(() => {
-    timedOut = true;
+  let startupTimedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const startup = setTimeout(() => {
+    startupTimedOut = true;
     child.kill("SIGKILL");
-  }, timeoutMs);
+  }, WORKER_STARTUP_MS);
+  const announceStart = (message: unknown) => {
+    const value = message as { protocol?: unknown; token?: unknown; type?: unknown };
+    if (value?.protocol !== protocol || value.token !== protocolToken || value.type !== "worker-started") return;
+    child.off("message", announceStart);
+    clearTimeout(startup);
+    timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeoutMs);
+  };
+  child.on("message", announceStart);
   child.on("error", error => { failure = error; });
   const announceLock = (message: unknown) => {
     const value = message as { protocol?: unknown; token?: unknown; type?: unknown; nonce?: unknown; path?: unknown };
@@ -140,7 +169,12 @@ export async function runHuman(cli: string, args: string[], timeoutMs: number): 
   const [code, signal] = await new Promise<[number | null, NodeJS.Signals | null]>(resolve => {
     child.once("close", (code, signal) => resolve([code, signal]));
   });
+  clearTimeout(startup);
   clearTimeout(timer);
+  if (startupTimedOut) {
+    console.error(`error: The worker did not start within ${WORKER_STARTUP_MS}ms. Inspect preloads in NODE_OPTIONS and the machine's load before you run the command again; --timeout-ms does not extend this bound.`);
+    return 1;
+  }
   if (timedOut) {
     const lock = (args[0] === "migration" || args[0] === "build") && migrationLock && existsSync(migrationLock)
       ? ` The migration lock remains at ${migrationLock}. Inspect it and remove it only after this worker has stopped.`
@@ -178,11 +212,25 @@ async function collectReport(cli: string, args: string[], options: ProcessOption
   const reports: unknown[] = [];
   let failure: Error | undefined;
   let timedOut = false;
-  const timer = options.timeoutMs === undefined ? undefined : setTimeout(() => {
-    timedOut = true;
-    // A blocked native call cannot cooperate with a JavaScript cancellation.
+  let startupTimedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // With no budget there is no deadline, and no startup bound either.
+  const startup = options.timeoutMs === undefined ? undefined : setTimeout(() => {
+    startupTimedOut = true;
     child.kill("SIGKILL");
-  }, options.timeoutMs);
+  }, WORKER_STARTUP_MS);
+  const announceStart = (message: unknown) => {
+    const value = message as { protocol?: unknown; token?: unknown; type?: unknown };
+    if (value?.protocol !== protocol || value.token !== reportToken || value.type !== "worker-started" || options.timeoutMs === undefined) return;
+    child.off("message", announceStart);
+    clearTimeout(startup);
+    timer = setTimeout(() => {
+      timedOut = true;
+      // A blocked native call cannot cooperate with a JavaScript cancellation.
+      child.kill("SIGKILL");
+    }, options.timeoutMs);
+  };
+  child.on("message", announceStart);
   // Only a message carrying this run's own protocol and token is a report;
   // an unrelated process.send() call from imported project code must not
   // be able to inflate reports.length and turn a successful build into a
@@ -199,7 +247,14 @@ async function collectReport(cli: string, args: string[], options: ProcessOption
   const [code, signal] = await new Promise<[number | null, NodeJS.Signals | null]>(resolve => {
     child.once("close", (code, signal) => resolve([code, signal]));
   });
+  clearTimeout(startup);
   clearTimeout(timer);
+  // The startup bound is fixed, so a larger --timeout-ms cannot help here:
+  // this report carries its own code, bound, and action.
+  if (startupTimedOut) {
+    return { code: 1, report: { version: 1, ok: false, diagnostics: [{ code: "WORKER_STARTUP_TIMEOUT", message: `The worker did not start within ${WORKER_STARTUP_MS}ms.`, timeoutMs: WORKER_STARTUP_MS,
+      action: "Inspect preloads in NODE_OPTIONS and the machine's load. --timeout-ms does not extend the worker's startup bound." }] } };
+  }
   const report = reports[0];
   // Node records an exit code only when it reports no signal, so a reported
   // signal leaves the exit code null and the exit-code comparison already

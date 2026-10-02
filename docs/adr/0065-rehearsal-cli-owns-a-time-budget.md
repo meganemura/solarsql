@@ -13,6 +13,7 @@ ADR 0063 records a reproduced backup wait and a bounded diagnostic experiment.
 Run the rehearsal CLI in a child process with a 30,000 millisecond default deadline.
 Accept `--timeout-ms` as an integer from 1 to 2147483647 to set a different finite budget.
 The deadline includes child startup, snapshot creation, and validation.
+Amended on 2026-10-02 by ADR 0092: the deadline now starts when the child announces that it started, so it covers snapshot creation and validation, and the child's startup has its own fixed 30,000 millisecond bound.
 The parent kills the child when the deadline expires and waits for its closure.
 It then removes the temporary root before emitting one JSON report with exit 1 and `REHEARSAL_TIMEOUT`.
 The diagnostic tells the caller to inspect the workload and use a larger budget when appropriate.

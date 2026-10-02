@@ -92,6 +92,16 @@ function fixture() {
         env: { ...process.env, SOLARSQL_TEST_LOCK_TARGET: ".solarsql-generation.lock", SOLARSQL_TEST_RELEASE_FLAG: releaseFlag },
       });
     },
+    runWithWorkerStartupDelay(delayMs: number, ...args: string[]) {
+      const preload = join(dir, "delay-worker-start.mjs");
+      writeFileSync(preload, workerStartupDelay(delayMs));
+      const result = spawnSync(process.execPath, ["--import", pathToFileURL(preload).href, join(dir, "src/build/cli.ts"), ...args, config], {
+        cwd: dir, encoding: "utf8", timeout: 30_000,
+      });
+      assert.ifError(result.error);
+      assert.equal(result.signal, null);
+      return result;
+    },
     runWithExitDelay(delayMs: number, ...args: string[]) {
       const preload = join(dir, "delay-exit.mjs");
       writeFileSync(preload, [
@@ -486,6 +496,12 @@ test('an unrelated IPC message from imported project code does not corrupt a mac
   }
 });
 
+// A preload that blocks only a forked worker (it has an IPC channel) before
+// the CLI module loads, the way a loaded machine slows Node's startup.
+function workerStartupDelay(ms: number): string {
+  return `if (typeof process.send === "function") { const until = Date.now() + ${ms}; while (Date.now() < until) { /* block */ } }\n`;
+}
+
 test('machine builds bound configuration imports before they run', () => {
   const f = fixture();
   const commands = [['inspect'], ['build', '--json']];
@@ -553,6 +569,18 @@ test('human build commands validate deadlines before imports and bound their dir
     assert.equal(invalid.status, 1);
     assert.doesNotMatch(invalid.stderr, /human invalid deadline imported/);
     assert.match(invalid.stderr, /requires an integer/);
+  }
+});
+
+test('a worker startup longer than the budget does not count against the deadline', () => {
+  const f = fixture();
+  writeFileSync(join(f.dir, config), "console.error('deadline import started'); await new Promise<void>(() => { setInterval(() => {}, 1000); });\n");
+  for (const args of [['inspect'], ['build', '--json'], ['build'], ['build', '--check'], ['migration', 'startup_test']]) {
+    // The worker spends 1500 ms starting, three times the 500 ms budget.
+    const timed = f.runWithWorkerStartupDelay(1500, ...args, '--timeout-ms', '500');
+    assert.equal(timed.status, 1, timed.stderr);
+    assert.match(timed.stderr, /deadline import started/, args.join(' '));
+    assert.match(timed.stderr + timed.stdout, /exceeded its 500ms time budget/, args.join(' '));
   }
 });
 
@@ -743,6 +771,16 @@ test('rehearsal deadlines stop native SQL and remove snapshots while preserving 
   assert.equal(failed.result.status, 1);
   assert.equal(failed.report.diagnostics[0].code, 'MIGRATION_FAILED');
   const timed = run('with recursive forever(n) as (values(1) union all select n+1 from forever) select sum(n) from forever', '--timeout-ms', '2000');
+  // A worker startup longer than the 2000 ms budget does not count against it.
+  const delay = join(dir, 'delay-worker-start.mjs');
+  writeFileSync(delay, workerStartupDelay(2500));
+  const slowStart = spawnSync(process.execPath, ['--import', pathToFileURL(observe).href, '--import', pathToFileURL(delay).href, join(root, 'src/build/cli.ts'), 'rehearse', source, change, checks, '--timeout-ms', '2000'], {
+    encoding: 'utf8', timeout: 20_000, env: { ...process.env, TMPDIR: temporary, TMP: temporary, TEMP: temporary },
+  });
+  assert.ifError(slowStart.error);
+  assert.match(slowStart.stderr, /validation started/);
+  assert.equal(slowStart.status, 1);
+  assert.equal(JSON.parse(slowStart.stdout).diagnostics[0].code, 'REHEARSAL_TIMEOUT');
   assert.match(timed.result.stderr, /validation started/);
   assert.equal(timed.result.status, 1);
   assert.equal(timed.report.ok, false);
