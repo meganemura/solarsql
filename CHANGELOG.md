@@ -4,6 +4,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: The `json_group_array` fan-out proof refuses a join whose equality compares the joined table with its own column written without a table name (`join b on b.id = onlyb`), instead of typing a result whose elements can repeat.
 - Fixed: Generated migrations create a view's triggers again when they drop and recreate the view, and drop a changed or removed trigger on a kept view.
 - Changed: `build`, `build --check`, and `migration` replay the migration files and the generated statements, and stop with an error that names the objects that differ when the result does not reach the declared schema.
 - Fixed: Rehearsal counts a primary-key value that changes inside its own collation (`upper()` on a `NOCASE` key, trailing spaces on an `RTRIM` key) as updated, so such a rewrite no longer passes unreported. A key whose stored type changes under `expected.retyped` (an integer to the text of the same number) now also counts in the strict `updated` count of `result.rows`, while `ok` is unchanged.

@@ -3,6 +3,7 @@
 // shapes it refuses.
 import { describe, test } from "vitest";
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
 import { Engine } from "../src/build/facts.ts";
@@ -2654,4 +2655,72 @@ test('numeric literal spellings retain their engine type and source', async () =
     assert.deepEqual(tokens.filter(t=>t.type==='param').map(t=>t.text),[':amount']);
     for(const token of tokens)assert.equal(sql.slice(token.start,token.end),token.text);
   }finally{engine.close();}
+});
+
+describe("join fan-out: a bare operand that names a column of the joined table itself", () => {
+  const ddl = [
+    `create table a (id integer primary key, n text not null) strict`,
+    `create table c (id integer primary key, a_id integer not null, cnum integer not null, x text not null) strict`,
+    `create table b (id integer primary key, a_id integer not null, onlyb integer not null) strict`,
+  ];
+  const t = new Typer(new Engine(ddl), new Map());
+  const db = new DatabaseSync(":memory:");
+  for (const statement of ddl) db.exec(statement);
+  // Both b rows satisfy b.id = b.onlyb, so a proof that wrongly accepts that
+  // equality yields a repeated element for a's one group.
+  db.exec("insert into a values (1, 'n'); insert into c values (1, 1, 1, 'v'); insert into b values (1, 1, 1), (2, 1, 2)");
+  const query = (join: string) => `select a.id, json_group_array(c.x) as xs from a join c on c.a_id = a.id ${join} group by a.id`;
+  const accepted = (sql: string) => { try { t.analyze(sql, "m"); return true; } catch (e) { if (e instanceof BuildError) return false; throw e; } };
+  const operands = ["onlyb", "onlyb + 0", "b.onlyb", "a.id", "cnum", "1"];
+  const joins = [
+    ...operands.map((operand) => `join b on b.id = ${operand}`),
+    ...operands.map((operand) => `join b on ${operand} = b.id`),
+    ...operands.map((operand) => `, b where b.id = ${operand}`),
+    `join b using (id)`,
+  ];
+
+  test("wherever the build accepts a join, SQLite returns no repeated element", () => {
+    for (const join of joins) {
+      const sql = query(join);
+      if (!accepted(sql)) continue;
+      for (const row of db.prepare(sql).all()) {
+        const xs = JSON.parse(String(row.xs)) as unknown[];
+        assert.equal(new Set(xs).size, xs.length, `${sql} -> ${String(row.xs)}`);
+      }
+    }
+  });
+
+  test("a bare column of the joined table is refused, and a bare column of another table still proves the key", () => {
+    for (const join of ["join b on b.id = onlyb", "join b on onlyb = b.id", "join b on b.id = onlyb + 0", ", b where b.id = onlyb"]) {
+      assert.equal(accepted(query(join)), false, join);
+    }
+    // A bare column on the left of a right-side target is withheld for another
+    // reason: its collation needs an alias to resolve, so that order stays out.
+    for (const join of ["join b on b.id = cnum", ", b where b.id = cnum", "join b on b.id = a.id"]) {
+      assert.equal(accepted(query(join)), true, join);
+    }
+  });
+});
+
+describe("join fan-out: a bare row id name resolves to the joined table when the others have none", () => {
+  const ddl = [
+    `create table a (id integer primary key, n text not null) strict, without rowid`,
+    `create table c (id integer primary key, a_id integer not null, x text not null) strict, without rowid`,
+    `create table b (id integer primary key, onlyb integer not null) strict`,
+  ];
+  const t = new Typer(new Engine(ddl), new Map());
+  const db = new DatabaseSync(":memory:");
+  for (const statement of ddl) db.exec(statement);
+  // rowid is b's own id here, so both b rows satisfy b.id = rowid.
+  db.exec("insert into a values (1, 'n'); insert into c values (1, 1, 'v'); insert into b values (1, 1), (2, 2)");
+  const query = (join: string) => `select a.id, json_group_array(c.x) as xs from a join c on c.a_id = a.id ${join} group by a.id`;
+  const accepted = (sql: string) => { try { t.analyze(sql, "m"); return true; } catch (e) { if (e instanceof BuildError) return false; throw e; } };
+
+  test("a bare rowid, oid, or _rowid_ is refused, and SQLite would repeat the element", () => {
+    for (const join of ["join b on b.id = rowid", "join b on b.id = oid", "join b on b.id = _rowid_", "join b on b.id = rowid + 0", ", b where b.id = rowid"]) {
+      const sql = query(join);
+      assert.equal(accepted(sql), false, join);
+      assert.deepEqual(db.prepare(sql).all().map((row) => JSON.parse(String(row.xs))), [["v", "v"]], join);
+    }
+  });
 });

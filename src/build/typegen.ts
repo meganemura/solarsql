@@ -901,6 +901,12 @@ export class Typer {
     const candidates = [pk, ...table.uniqueIndexes.map((u) => u.columns.map((c) => ({ name: sqliteName(c.name), collation: c.collation })))].filter((c) => c.length > 0);
     if (candidates.length === 0) return false;
     const declared = new Map(table.columns.map((c) => [sqliteName(c.name), c.collation]));
+    // SQLite resolves a bare name to the one FROM item that has it, so a bare
+    // name that is a column of this table, or one of its row id names when it
+    // has a row id, makes the equality compare this table with itself: a
+    // filter on its rows, not a key lookup.
+    const rowidNames = ["rowid", "oid", "_rowid_"];
+    const circular = (equality: OnEquality) => equality.bareNames.some((name) => declared.has(name) || (!table.withoutRowid && rowidNames.includes(name)));
     const matches = (equalities: Map<string, string>): boolean =>
       candidates.some((candidate) => candidate.every((c) => {
         if (!equalities.has(c.name)) return false;
@@ -920,6 +926,7 @@ export class Typer {
         // USING column's own resolved left-side collation with that silence.
         // An explicit COLLATE in the WHERE clause still overrides either way.
         if (whereEqualities !== null) for (const [column, equality] of whereEqualities) {
+          if (circular(equality)) continue;
           const collate = this.equalityCollation(equality, declared.get(column) ?? "BINARY", sources, environment);
           if (collate !== null && (!equalities.has(column) || equality.explicitCollation.kind !== "none")) equalities.set(column, collate);
         }
@@ -930,6 +937,7 @@ export class Typer {
     if (equalities === null) return false;
     const resolved = new Map<string, string>();
     for (const [column, equality] of equalities) {
+      if (circular(equality)) continue;
       const collate = this.equalityCollation(equality, declared.get(column) ?? "BINARY", sources, environment);
       if (collate !== null) resolved.set(column, collate);
     }

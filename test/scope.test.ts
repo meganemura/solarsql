@@ -439,17 +439,17 @@ test("onEqualities ignores empty operands and clauses", () => {
 });
 
 test("onEqualities preserves collated columns and operand order", () => {
-  for (const [clause, side, other] of [
-    ["b.id collate nocase = x.id", "left", { kind: "column", alias: "x", column: "id" }],
-    ["x.id = b.id collate nocase", "right", { kind: "column", alias: "x", column: "id" }],
-    ["b.id = other collate nocase", "left", { kind: "column", alias: null, column: "other" }],
+  for (const [clause, side, other, bareNames] of [
+    ["b.id collate nocase = x.id", "left", { kind: "column", alias: "x", column: "id" }, []],
+    ["x.id = b.id collate nocase", "right", { kind: "column", alias: "x", column: "id" }, []],
+    ["b.id = other collate nocase", "left", { kind: "column", alias: null, column: "other" }, ["other"]],
   ] as const) {
     assert.deepEqual(onEqualities(clause, "b")!.get("id"), {
-      explicitCollation: { kind: "known", name: "NOCASE" }, other, targetSide: side,
+      explicitCollation: { kind: "known", name: "NOCASE" }, other, targetSide: side, bareNames,
     });
   }
   assert.deepEqual(onEqualities("other = b.id", "b")!.get("id"), {
-    explicitCollation: { kind: "none" }, other: { kind: "column", alias: null, column: "other" }, targetSide: "right",
+    explicitCollation: { kind: "none" }, other: { kind: "column", alias: null, column: "other" }, targetSide: "right", bareNames: ["other"],
   });
 });
 
@@ -461,12 +461,14 @@ test("onEqualities keeps literal values separate from column references", () => 
 });
 
 test("onEqualities retains a nested conjunction before an outer equality", () => {
+  // A keyword such as AND stays in bareNames; it withholds a proof only if a
+  // column has that name.
   assert.deepEqual(onEqualities("(1 and 2) = b.id", "b")!.get("id"), {
-    explicitCollation: { kind: "none" }, other: null, targetSide: "right",
+    explicitCollation: { kind: "none" }, other: null, targetSide: "right", bareNames: ["and"],
   });
   assert.deepEqual(onEqualities("b.id = (1 and b.other)", "b"), new Map());
   assert.deepEqual(onEqualities("(x.id = 1) = b.id", "b")!.get("id"), {
-    explicitCollation: { kind: "none" }, other: null, targetSide: "right",
+    explicitCollation: { kind: "none" }, other: null, targetSide: "right", bareNames: [],
   });
 });
 
@@ -477,7 +479,7 @@ test("onEqualities distinguishes single quoted source names from quote character
     const sql = `select * from a as "'a'" join a as a on ${clause}`;
     assert.equal(engine.db.prepare(sql).all().length, 1);
     assert.deepEqual(onEqualities(clause, "'a'")!.get("id"), {
-      explicitCollation: { kind: "none" }, other: null, targetSide: "left",
+      explicitCollation: { kind: "none" }, other: null, targetSide: "left", bareNames: [],
     });
   } finally { engine.close(); }
 });

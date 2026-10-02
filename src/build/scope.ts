@@ -58,12 +58,17 @@ type EqualityOperand =
 // Null marks an expression that is neither a column nor a value.
 // A bare column has a null alias, so typegen cannot use table facts to resolve its collation.
 // The target side preserves operand order because SQLite checks the left column's declared collation before the right column's.
-export type OnEquality = { explicitCollation: ExplicitCollation; other: EqualityOperand | null; targetSide: "left" | "right" };
+// bareNames lists the unqualified identifiers in the other operand, so
+// typegen can tell from table facts whether one is a column of the target.
+// It keeps keywords too: one that matches a column name only withholds the
+// proof, the safe direction.
+export type OnEquality = { explicitCollation: ExplicitCollation; other: EqualityOperand | null; targetSide: "left" | "right"; bareNames: string[] };
 
 // Whether `tokens` names `alias` anywhere, qualified (`alias.col`). A join
 // fan-out proof (typegen.ts, ADR 0136) needs the equality's other side to
 // not reference the alias being proven, or the equality is circular, not a
-// join key.
+// join key. A bare name can be circular too; onEqualities returns those
+// names, and typegen checks them against the target's table facts.
 function referencesAlias(tokens: Token[], alias: string): boolean {
   for (let i = 0; i + 1 < tokens.length; i++) {
     if (tokens[i]!.type === "ident" && tokens[i + 1]!.text === "." && sqliteName(unquote(tokens[i]!.text)) === sqliteName(alias)) return true;
@@ -108,10 +113,16 @@ export function onEqualities(on: string, alias: string): Map<string, OnEquality>
       : target.other.length === 1 && ["param", "string", "number"].includes(target.other[0]!.type)
         ? { kind: "value" }
         : null;
+    // An identifier next to a dot is qualified, one before an opening
+    // parenthesis names a function, and COLLATE and the name after it name a
+    // collation.
+    const bareNames = target.other.filter((t, k, all) => t.type === "ident" && all[k - 1]?.text !== "." && all[k + 1]?.text !== "." && all[k + 1]?.text !== "(" && !isKeyword(t, "collate") && !isKeyword(all[k - 1], "collate"))
+      .map((t) => sqliteName(unquote(t.text)));
     out.set(sqliteName(target.ref.column), {
       explicitCollation: leftCollation.kind === "none" ? sideCollation(rightTokens) : leftCollation,
       other,
       targetSide: target.targetSide,
+      bareNames,
     });
   }
   return out;
