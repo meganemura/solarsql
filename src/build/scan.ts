@@ -1703,6 +1703,32 @@ export function parseRebuildRecords(sql: string): RebuildRecord[] {
   }
 }
 
+// DROP VIEW drops the view's triggers, so a generated file that drops a view
+// records the triggers that view had when the file was generated, the same
+// way a RebuildRecord records a rebuilt table's triggers. A replay then
+// refuses a file that would drop a trigger a sibling migration added since,
+// or restore one a sibling removed.
+export type ViewRecord = { view: string; triggers: string[] };
+
+export const VIEW_HEADER = "-- Drops views with these triggers: ";
+
+export function parseViewRecords(sql: string): ViewRecord[] {
+  const line = sql.split("\n").find((l) => l.startsWith(VIEW_HEADER));
+  if (!line) return [];
+  try {
+    const value: unknown = JSON.parse(line.slice(VIEW_HEADER.length));
+    if (!Array.isArray(value)) return [];
+    return value.filter((v): v is ViewRecord =>
+      v !== null && typeof v === "object" &&
+      typeof (v as { view?: unknown }).view === "string" &&
+      Array.isArray((v as { triggers?: unknown }).triggers) &&
+      (v as { triggers: unknown[] }).triggers.every((t) => typeof t === "string"),
+    );
+  } catch {
+    return [];
+  }
+}
+
 // A declaration present at replay but absent from what a rebuild's
 // generator recorded seeing: something added since generation, which the
 // rebuild's own statements do not know to recreate. The reverse -- recorded

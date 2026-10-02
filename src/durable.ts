@@ -8,7 +8,7 @@
 // runtime/plan.ts defines.
 import type { AdapterOptions, BatchRows, Command, CommandResult, Database, EngineMeta, Entry, GeneratedMap, ParamsArg, PlanShape, Query, Read, Row, SqlValue, StatementMeta } from "./index.ts";
 import { GUARD_CLEANUP, assertBindValues, assertFailure, assertStatement, assertToken, bindValues, constraintFailure, observed, outcomeOf, parseJson, validateParams, type At, type StatementRow } from "./runtime/plan.ts";
-import { created, definitions, isKeyword, normalize, parseRebuildRecords, quoteIdent, redeclaredByFile, revivedDeclaration, significant, splitStatements, tokenize, unknownDeclaration } from "./build/scan.ts";
+import { created, definitions, isKeyword, normalize, parseRebuildRecords, parseViewRecords, quoteIdent, redeclaredByFile, revivedDeclaration, significant, splitStatements, tokenize, unknownDeclaration } from "./build/scan.ts";
 
 // The cursor shape this adapter reads meta from. rowsRead/rowsWritten are
 // optional: a real Durable Object's SqlStorageCursor carries them (measured
@@ -459,6 +459,28 @@ export function migrate(storage: StorageLike, files: readonly MigrationFile[], o
           // and created() is a pure function of its argument, so the
           // fallback to the raw text never runs here either.
           `Migration ${file.name} rebuilds table ${quoteIdent(table)} and would restore trigger ${quoteIdent(created(revivedTrigger)?.name ?? revivedTrigger)}, which an earlier migration already removed: ${JSON.stringify(revivedTrigger)}. This file's target schema was generated before that removal and still declares it. Regenerate ${file.name} against the current schema.`,
+          file.name,
+        );
+      }
+    }
+    // DROP VIEW drops the view's triggers. The same two directions as the
+    // rebuild checks above, for each view this file drops and recorded.
+    for (const { view, triggers } of parseViewRecords(file.sql)) {
+      if (storage.sql.exec(`select 1 from sqlite_schema where type = 'view' and lower(name) = lower(?)`, view).toArray().length === 0) continue;
+      const actualTriggerSql = storage.sql.exec(`select sql from sqlite_schema where lower(tbl_name) = lower(?) and type = 'trigger' and sql is not null`, view).toArray().map((r) => normalize(String(r.sql)));
+      const badTrigger = unknownDeclaration(triggers, actualTriggerSql);
+      if (badTrigger !== undefined) {
+        throw new MigrationHistoryError(
+          "REBUILD_LOSES_COLUMN",
+          `Migration ${file.name} drops view ${quoteIdent(view)} without knowledge of trigger ${quoteIdent(created(badTrigger)?.name ?? badTrigger)} it already has: ${JSON.stringify(badTrigger)}. This database has already applied every earlier migration, so that trigger, and the behavior it maintains, would be lost if this migration ran. Regenerate ${file.name} against the current schema.`,
+          file.name,
+        );
+      }
+      const revivedTrigger = revivedDeclaration(triggers, actualTriggerSql, redeclaredByFile(file.sql, view).triggers, true);
+      if (revivedTrigger !== undefined) {
+        throw new MigrationHistoryError(
+          "REBUILD_REVIVES_DECLARATION",
+          `Migration ${file.name} drops view ${quoteIdent(view)} and would restore trigger ${quoteIdent(created(revivedTrigger)?.name ?? revivedTrigger)}, which an earlier migration already removed: ${JSON.stringify(revivedTrigger)}. This file's target schema was generated before that removal and still declares it. Regenerate ${file.name} against the current schema.`,
           file.name,
         );
       }

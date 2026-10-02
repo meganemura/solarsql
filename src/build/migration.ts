@@ -10,7 +10,7 @@
 // again, and its shadow tables are the engine's own.
 import { DatabaseSync } from "node:sqlite";
 import { withDeniedFunctions, withWorkerdLimits } from "./facts.ts";
-import { created, definitions, isKeyword, normalize, parseRebuildRecords, quoteIdent, redeclaredByFile, REBUILD_HEADER, renamedColumn, revivedDeclaration, searchFill, significant, splitStatements, sqliteName, tokenize, triggerBodyBegin, triggerInsertTarget, type RebuildRecord, type Token, unknownDeclaration } from "./scan.ts";
+import { created, definitions, isKeyword, normalize, parseRebuildRecords, parseViewRecords, quoteIdent, redeclaredByFile, REBUILD_HEADER, VIEW_HEADER, type ViewRecord, renamedColumn, revivedDeclaration, searchFill, significant, splitStatements, sqliteName, tokenize, triggerBodyBegin, triggerInsertTarget, type RebuildRecord, type Token, unknownDeclaration } from "./scan.ts";
 import { BuildError } from "./build-error.ts";
 
 export type Column = { name: string; type: string; notnull: boolean; dflt: string | null; pk: number; def: string; generated: boolean };
@@ -27,7 +27,7 @@ export type RenameRepair = { table: string; from: string[]; to: string[] };
 // keeps a dot in a quoted identifier as one name instead of a table/column
 // separator. The CLI writes the SQL spelling only for its diagnostic.
 export type DropIntent = { kind: "table"; table: string } | { kind: "column"; table: string; column: string };
-export type Plan = { kind: "ok"; statements: string[]; rebuilds?: RebuildRecord[] } | { kind: "blocked"; reason: string; drops?: DropIntent[]; renames?: Rename[]; renameCandidates?: RenameRepair[] };
+export type Plan = { kind: "ok"; statements: string[]; rebuilds?: RebuildRecord[]; views?: ViewRecord[] } | { kind: "blocked"; reason: string; drops?: DropIntent[]; renames?: Rename[]; renameCandidates?: RenameRepair[] };
 
 export function open(statements: readonly string[]): DatabaseSync {
   const db = new DatabaseSync(":memory:");
@@ -148,7 +148,7 @@ export function applied(files: readonly string[], names?: readonly string[]): Da
           action,
         );
       }
-      const actualTriggerSql = [...schema.triggers.values()].filter((t) => t.table === table).map((t) => normalize(t.sql));
+      const actualTriggerSql = [...schema.triggers.values()].filter((t) => sameSqliteName(t.table, table)).map((t) => normalize(t.sql));
       const badTrigger = unknownDeclaration(triggers, actualTriggerSql);
       if (badTrigger !== undefined) {
         throw new BuildError(
@@ -192,6 +192,31 @@ export function applied(files: readonly string[], names?: readonly string[]): Da
       if (revivedTrigger !== undefined) {
         throw new BuildError(
           `migration ${label} rebuilds table ${quoteIdent(table)} and would restore trigger ${quoteIdent(created(revivedTrigger)?.name ?? revivedTrigger)}, which an earlier migration already removed: ${JSON.stringify(revivedTrigger)}. ` +
+          `A database that replays ${label} would bring that trigger, and the behavior it maintains, back. ` +
+          action,
+          undefined,
+          action,
+        );
+      }
+    }
+    for (const { view, triggers } of parseViewRecords(file)) {
+      if (![...schema.views.keys()].some((name) => sameSqliteName(name, view))) continue;
+      const action = `Delete ${label} and run \`solarsql migration\` again against the merged schema.`;
+      const actualTriggerSql = [...schema.triggers.values()].filter((t) => sameSqliteName(t.table, view)).map((t) => normalize(t.sql));
+      const badTrigger = unknownDeclaration(triggers, actualTriggerSql);
+      if (badTrigger !== undefined) {
+        throw new BuildError(
+          `migration ${label} drops view ${quoteIdent(view)} without knowledge of trigger ${quoteIdent(created(badTrigger)?.name ?? badTrigger)} it already has: ${JSON.stringify(badTrigger)}. ` +
+          `A database that replays ${label} loses that trigger and the behavior it maintains. ` +
+          action,
+          undefined,
+          action,
+        );
+      }
+      const revivedTrigger = revivedDeclaration(triggers, actualTriggerSql, redeclaredByFile(file, view).triggers, true);
+      if (revivedTrigger !== undefined) {
+        throw new BuildError(
+          `migration ${label} drops view ${quoteIdent(view)} and would restore trigger ${quoteIdent(created(revivedTrigger)?.name ?? revivedTrigger)}, which an earlier migration already removed: ${JSON.stringify(revivedTrigger)}. ` +
           `A database that replays ${label} would bring that trigger, and the behavior it maintains, back. ` +
           action,
           undefined,
@@ -404,14 +429,14 @@ export function shapeDifferences(left: Schema, right: Schema): string[] {
 // through applied(), the way a database applies it, and compares shapes, so
 // it also sees an empty plan that leaves an object behind, which a second
 // diff of the same two schemas cannot see.
-export function replayDifferences(files: readonly string[], names: readonly string[], statements: readonly string[], rebuilds: readonly RebuildRecord[], target: Schema): string[] {
-  const generated = statements.length > 0 ? [render(files.length + 1, "replay", statements, rebuilds).sql] : [];
+export function replayDifferences(files: readonly string[], names: readonly string[], statements: readonly string[], rebuilds: readonly RebuildRecord[], target: Schema, views: readonly ViewRecord[] = []): string[] {
+  const generated = statements.length > 0 ? [render(files.length + 1, "replay", statements, rebuilds, 4, views).sql] : [];
   const db = applied([...files, ...generated], [...names, ...generated.map(() => "the generated migration")]);
   try { return shapeDifferences(introspect(db), target); } finally { db.close(); }
 }
 
-export function requireReplayReachesTarget(files: readonly string[], names: readonly string[], statements: readonly string[], rebuilds: readonly RebuildRecord[], target: Schema): void {
-  const differences = replayDifferences(files, names, statements, rebuilds, target);
+export function requireReplayReachesTarget(files: readonly string[], names: readonly string[], statements: readonly string[], rebuilds: readonly RebuildRecord[], target: Schema, views: readonly ViewRecord[] = []): void {
+  const differences = replayDifferences(files, names, statements, rebuilds, target, views);
   if (differences.length === 0) return;
   throw new BuildError(`The migration files plus the generated statements do not reach the declared schema; these objects differ after a replay: ${differences.join(", ")}. This is a gap in solarsql's migration diff. Write the next migration by hand so that a replay reaches the declared schema.`);
 }
@@ -870,7 +895,7 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
         columns: current_.columns.map((c) => ({ name: c.name, def: c.def })),
         constraints: [...current_.constraints],
         indexes: [...current.indexes.values()].filter((i) => i.table === name).map((i) => normalize(i.sql)),
-        triggers: [...current.triggers.values()].filter((t) => t.table === name).map((t) => normalize(t.sql)),
+        triggers: [...current.triggers.values()].filter((t) => sameSqliteName(t.table, name)).map((t) => normalize(t.sql)),
       });
     }
     changeTables.push(...plan.statements);
@@ -894,6 +919,7 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
   // An ON clause can spell its table in another case, so names match
   // under SQLite's identifier case rule.
   const droppedView = (name: string) => droppedViews.some(view => sameSqliteName(view, name));
+  const views: ViewRecord[] = droppedViews.map((view) => ({ view, triggers: [...current.triggers.values()].filter((t) => sameSqliteName(t.table, view)).map((t) => normalize(t.sql)) }));
   const currentView = (name: string) => [...current.views.keys()].some(view => sameSqliteName(view, name));
   const rebuiltTable = (name: string) => [...rebuilt].some(table => sameSqliteName(table, name));
   const targetTable = (name: string) => [...target.tables.keys()].some(table => sameSqliteName(table, name));
@@ -912,7 +938,7 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
   }
   const statements = [...dropViews, ...dropFirst, ...dropTables, ...changeTables, ...createVirtuals, ...createLast];
   if (needsDefer) statements.unshift(`pragma defer_foreign_keys = on`);
-  return { kind: "ok", statements, ...(rebuilds.length > 0 ? { rebuilds } : {}) };
+  return { kind: "ok", statements, ...(rebuilds.length > 0 ? { rebuilds } : {}), ...(views.length > 0 ? { views } : {}) };
 }
 
 // D1's HTTP API splits a request into statements on its own, and it keeps a
@@ -950,10 +976,11 @@ function triggerForD1(sql: string): string {
 
 // wrangler applies `migrations/<NNNN>_<name>.sql` in name order and records
 // each file in d1_migrations. The file holds statements separated by ';'.
-export function render(sequence: number, name: string, statements: readonly string[], rebuilds: readonly RebuildRecord[] = [], width = 4): { filename: string; sql: string } {
+export function render(sequence: number, name: string, statements: readonly string[], rebuilds: readonly RebuildRecord[] = [], width = 4, views: readonly ViewRecord[] = []): { filename: string; sql: string } {
   const filename = `${String(sequence).padStart(width, "0")}_${name}.sql`;
   const header = `-- Migration ${filename}. Generated by solarsql from the declared schema.\n`
-    + (rebuilds.length > 0 ? `${REBUILD_HEADER}${JSON.stringify(rebuilds)}\n` : "");
+    + (rebuilds.length > 0 ? `${REBUILD_HEADER}${JSON.stringify(rebuilds)}\n` : "")
+    + (views.length > 0 ? `${VIEW_HEADER}${JSON.stringify(views)}\n` : "");
   const sql = header + statements.map((s) => `${s.trim()};`).join("\n") + "\n";
   return { filename, sql };
 }

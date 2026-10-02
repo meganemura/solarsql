@@ -5,6 +5,8 @@ import { test } from "vitest";
 import assert from "node:assert/strict";
 import { applied, diff, introspect, open, render, requireReplayReachesTarget, shapeDifferences } from "../src/build/migration.ts";
 import { BuildError } from "../src/build/build-error.ts";
+import { DatabaseSync } from "node:sqlite";
+import { migrate as migrateNode } from "../src/node.ts";
 import { splitStatements } from "../src/build/scan.ts";
 
 const before = [
@@ -41,7 +43,9 @@ test("a changed view is dropped and created; an unchanged one is left alone", ()
   assert.deepEqual(plan.statements.map((s) => s.toLowerCase()), [`drop view main."open_orders"`, changed[1]!.toLowerCase()]);
   assert.deepEqual(diff(introspect(open(before)), introspect(open(before))), { kind: "ok", statements: [] });
   const removed = diff(introspect(open(before)), introspect(open([before[0]!])));
-  assert.deepEqual(removed, { kind: "ok", statements: [`drop view main."open_orders"`] });
+  // A dropped view is recorded even with no triggers, so a trigger a sibling
+  // migration adds to it later is still caught at replay.
+  assert.deepEqual(removed, { kind: "ok", statements: [`drop view main."open_orders"`], views: [{ view: "open_orders", triggers: [] }] });
 });
 
 // A trigger on a view goes with the view: DROP VIEW drops it, so a plan that
@@ -138,3 +142,51 @@ test("a rebuild keeps a table trigger whose ON spells the table in another case"
   const { db } = migrated([orders, trigger], [rebuiltOrders, trigger]);
   assert.deepEqual(db.prepare("select name from sqlite_schema where type = 'trigger'").all().map((r) => r.name), ["orders_log"]);
 });
+
+// A generated file records the triggers of each view it drops. A sibling
+// migration merged ahead of it can add or remove a trigger on that view;
+// a replay then refuses the file instead of dropping or reviving it.
+const logTable = `create table order_log (id text primary key not null) strict`;
+const logOpen = `create trigger open_orders_log instead of insert on open_orders begin insert into order_log values (new.id); end`;
+
+function generated(from: string[], to: string[]) {
+  const plan = diff(introspect(open(from)), introspect(open(to)));
+  assert.equal(plan.kind, "ok");
+  if (plan.kind !== "ok") throw new Error("blocked");
+  return render(3, "generated", plan.statements, plan.rebuilds ?? [], 4, plan.views ?? []).sql;
+}
+
+function replays(files: string[]): { applied: string | null; migrated: string | null; code: string | null } {
+  const names = files.map((_, i) => `000${i + 1}_file.sql`);
+  const caught = (run: () => void) => { try { run(); return null; } catch (e) { return e as Error & { code?: string }; } };
+  const fromApplied = caught(() => { applied(files, names); });
+  const fromMigrate = caught(() => { migrateNode(new DatabaseSync(":memory:"), files.map((sql, i) => ({ name: names[i]!, sql }))); });
+  return { applied: fromApplied?.message ?? null, migrated: fromMigrate?.message ?? null, code: fromMigrate?.code ?? null };
+}
+
+for (const [path, target] of [
+  ["a rebuild of the view's base table", (extra: string[]) => [rebuiltOrders, logTable, openOrders, ...extra]],
+  ["a changed view", (extra: string[]) => [orders, logTable, `create view open_orders as select id, status, 1 as one from orders`, ...extra]],
+] as const) {
+  test(`a file that drops a view through ${path} refuses a trigger a sibling added to that view`, () => {
+    const base = [orders, logTable, openOrders];
+    const file = generated(base, target([]));
+    const sibling = render(2, "sibling", [logOpen]).sql;
+    assert.deepEqual(replays([render(1, "base", base).sql, file]), { applied: null, migrated: null, code: null });
+    const refused = replays([render(1, "base", base).sql, sibling, file]);
+    assert.match(refused.applied ?? "", /drops view "open_orders" without knowledge of trigger "open_orders_log" it already has/);
+    assert.match(refused.migrated ?? "", /drops view "open_orders" without knowledge of trigger "open_orders_log" it already has/);
+    assert.equal(refused.code, "REBUILD_LOSES_COLUMN");
+  });
+
+  test(`a file that drops a view through ${path} refuses to restore a trigger a sibling removed`, () => {
+    const base = [orders, logTable, openOrders, logOpen];
+    const file = generated(base, target([logOpen]));
+    const sibling = render(2, "sibling", [`drop trigger open_orders_log`]).sql;
+    assert.deepEqual(replays([render(1, "base", base).sql, file]), { applied: null, migrated: null, code: null });
+    const refused = replays([render(1, "base", base).sql, sibling, file]);
+    assert.match(refused.applied ?? "", /drops view "open_orders" and would restore trigger "open_orders_log", which an earlier migration already removed/);
+    assert.match(refused.migrated ?? "", /drops view "open_orders" and would restore trigger "open_orders_log", which an earlier migration already removed/);
+    assert.equal(refused.code, "REBUILD_REVIVES_DECLARATION");
+  });
+}

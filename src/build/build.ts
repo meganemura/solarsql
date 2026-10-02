@@ -15,7 +15,7 @@ import { Engine, WORKERD_SQLITE_VERSION, type Access, type OutputColumn, type Pl
 import { applied, diff, introspect, open, requireReplayReachesTarget, type DropIntent, type Rename, type RenameRepair } from "./migration.ts";
 import type { MigrationIntent } from "./migration-intent.ts";
 import { migrationSequence, nextMigrationFile, withMigrationLock, writeNewMigration } from "./migration-files.ts";
-import { aliasCandidates, created, definitions, indexTarget, isKeyword, namedParams, quoteIdent, returningClause, significant, sqliteName, tokenize, triggerTarget, unquote, type RebuildRecord } from "./scan.ts";
+import { aliasCandidates, created, definitions, indexTarget, isKeyword, namedParams, quoteIdent, returningClause, significant, sqliteName, tokenize, triggerTarget, unquote, type RebuildRecord, type ViewRecord } from "./scan.ts";
 import { shellArgument } from "./shell.ts";
 import { writeGeneratedFile } from "./output.ts";
 import { BuildError, Typer, brandName, isSelect, type Analysis, type Brand } from "./typegen.ts";
@@ -174,7 +174,7 @@ export type BuildResult = {
   // Per module: the statements this build added to and removed from the
   // generated file, so the CLI can say what changed.
   modules: { name: string; generatedPath: string; entries: number; changed: boolean; added: string[]; removed: string[]; ms: number }[];
-  migration: { pending: boolean; statements: string[]; reason: string | null; drops?: DropIntent[]; renames?: Rename[]; renameCandidates?: RenameRepair[]; rebuilds?: RebuildRecord[] };
+  migration: { pending: boolean; statements: string[]; reason: string | null; drops?: DropIntent[]; renames?: Rename[]; renameCandidates?: RenameRepair[]; rebuilds?: RebuildRecord[]; views?: ViewRecord[] };
   // The bundle of the migration files a Durable Object imports. It is a
   // generated file too: the build rewrites it when a migration file changed,
   // and a check reports it stale. `path` is null when there are no files.
@@ -1266,8 +1266,8 @@ function migrationStatus(configDir: string, config: Config, modules: readonly Mo
     // would not reach the declared schema stops each of them, including an
     // empty plan that leaves an object behind; migration stops before its
     // migration file exists.
-    requireReplayReachesTarget(files.map((f) => f.sql), files.map((f) => f.name), plan.statements, plan.rebuilds ?? [], introspect(target));
-    return { pending: plan.statements.length > 0, statements: plan.statements, reason: null, ...(plan.rebuilds ? { rebuilds: plan.rebuilds } : {}) };
+    requireReplayReachesTarget(files.map((f) => f.sql), files.map((f) => f.name), plan.statements, plan.rebuilds ?? [], introspect(target), plan.views ?? []);
+    return { pending: plan.statements.length > 0, statements: plan.statements, reason: null, ...(plan.rebuilds ? { rebuilds: plan.rebuilds } : {}), ...(plan.views ? { views: plan.views } : {}) };
   } finally {
     current.close();
     target.close();
@@ -1297,7 +1297,7 @@ export async function migration(configPath: string, name: string, intent: Migrat
     if (status.reason) return { filename: null, path: null, statements: [], reason: status.reason, ...(status.drops ? { drops: status.drops } : {}), ...(status.renames ? { renames: status.renames } : {}), ...(status.renameCandidates ? { renameCandidates: status.renameCandidates } : {}) };
     let filename: string | null = null;
     if (status.pending) {
-      const file = nextMigrationFile(files.map(file => file.name), name, status.statements, status.rebuilds ?? []);
+      const file = nextMigrationFile(files.map(file => file.name), name, status.statements, status.rebuilds ?? [], status.views ?? []);
       writeNewMigration(dir, file);
       filename = file.filename;
     }

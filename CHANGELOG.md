@@ -4,6 +4,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: A generated file that drops a view records the view's triggers, and `applied()` and `migrate()` refuse it when a sibling migration added one of them since, or removed one that the file would create again.
 - Fixed: The `json_group_array` fan-out proof refuses a join whose equality compares the joined table with its own column written without a table name (`join b on b.id = onlyb`), instead of typing a result whose elements can repeat.
 - Fixed: Generated migrations create a view's triggers again when they drop and recreate the view, and drop a changed or removed trigger on a kept view.
 - Changed: `build`, `build --check`, and `migration` replay the migration files and the generated statements, and stop with an error that names the objects that differ when the result does not reach the declared schema.

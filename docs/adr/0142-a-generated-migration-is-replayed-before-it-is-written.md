@@ -26,4 +26,4 @@ A second diff after the replay was refused as the check: it compares the same ob
 
 - A gap in the diff now stops the build before a file exists, instead of shipping a file that loses or keeps a declaration.
 - The replay costs one more pass of `applied()` over the migration files for each status. Measured on the example's five files: about 2 ms; on 330 files over 30 tables, applied() takes about 250 ms a pass, so the replay about doubles the status time.
-- A trigger that a sibling migration adds on a view stays outside the rebuild record that `applied()` and `migrate()` check, so a later file can still drop it. That is a separate change.
+- A trigger that a sibling migration adds on a view is outside the rebuild record; ADR 0143 adds a separate view record that `applied()` and `migrate()` check.
