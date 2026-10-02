@@ -1,9 +1,10 @@
 // Responsibility: the three test sets and their shared limits.
 // Boundary: no test logic; each test file owns its fixtures and cleanup.
 //
-// Why three projects: `npm test` runs only the in-process set (node:sqlite),
-// and `npm run test:all` adds the child-process and workerd sets, the split
-// the scripts drew before the move to Vitest.
+// Why three projects: `npm test` runs the node:sqlite set, which needs no
+// workerd, though some of its tests start short-lived child processes;
+// `npm run test:all` adds the slow child-process set and the workerd set,
+// the split the scripts drew before the move to Vitest.
 // Why the long timeouts: node:test has no default timeout, and several
 // tests (a build of the example, a workerd start, a packed install) run
 // far past Vitest's 5-second default by design.
@@ -13,10 +14,11 @@
 // lists exports in declared order instead of sorted order, a missing
 // import's error has no `url`, and a module that failed to load stays
 // failed after the build writes the file it lacked.
-// Why `slow` runs last and one file at a time: its CLI tests hold child
-// processes to budgets of a few hundred milliseconds. Vitest runs every
-// project's files in one pool by default, and on a small CI runner the
-// workerd tests alongside pushed those children past their budgets.
+// Why `slow` runs last and one file at a time: its timeout tests let child
+// processes run out short budgets (500 ms to 5 s, counted from the worker's
+// start). Vitest runs every project's files in one pool by default, and on
+// a small CI runner the workerd tests alongside pushed those children past
+// their budgets.
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({

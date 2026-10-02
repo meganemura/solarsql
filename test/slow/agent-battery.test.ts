@@ -1,5 +1,5 @@
 // Responsibility: run the agent battery (spike/13-agent-battery) with the
-// stub agent, over all five scenarios, and pin the stub's own filesRead and
+// stub agent, over all seven scenarios, and pin the stub's own filesRead and
 // failedCommands per scenario, since the stub's fix -- and what it reads
 // and runs to make it -- is scripted, not model output.
 // Boundary: this spawns the stub as a child process and the CLI it calls
