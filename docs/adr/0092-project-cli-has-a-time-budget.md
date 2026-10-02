@@ -21,6 +21,8 @@ The worker retains the normal stdout, stderr, exit codes, and successful writes.
 When a deadline expires, the parent stops its direct worker and writes one error with the expired budget and a recovery action.
 The error does not describe application-owned child processes.
 
+Amendment (2026-10-02): the parent returns 0 only when the worker announced exit code 0 before it exited. Node reports exit code 0 with no signal for a worker that a signal it cannot name ended (measured on macOS with signal 7, which `os.constants.signals` does not name), and for a worker whose exit code an exit listener in application code rewrote to 0. A close of 0 without that announcement, or after a nonzero one, returns 1 and prints why. A nonzero exit code and a signal keep their earlier results, so a query error still exits 2.
+
 Write each generated file and each `migrations/index.ts` replacement through a sibling temporary file and an atomic rename.
 Before a migration worker creates its lock, it announces the candidate lock path to the parent and waits for an acknowledgement.
 The worker captures this private control channel before project imports execute.

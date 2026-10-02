@@ -56,6 +56,12 @@ if (options.mode === "report-case") {
   process.exitCode = 7;
 } else if (options.mode === "signal") {
   process.kill(process.pid, "SIGKILL");
+} else if (options.mode === "signal-number") {
+  process.kill(process.pid, options.code!);
+} else if (options.mode === "rewritten-exit") {
+  await announceWorkerDone(1);
+  process.on("exit", () => { process.exitCode = 0; });
+  process.exitCode = 1;
 } else if (options.mode === "lock") {
   await announceMigrationLock(options.path!);
   writeFileSync(options.receipt!, "acknowledged");

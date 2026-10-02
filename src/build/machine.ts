@@ -114,6 +114,7 @@ export async function runHuman(cli: string, args: string[], timeoutMs: number): 
   let failure: Error | undefined;
   let timedOut = false;
   let migrationLock: string | undefined;
+  let announcedCode: number | undefined;
   const timer = setTimeout(() => {
     timedOut = true;
     child.kill("SIGKILL");
@@ -130,6 +131,7 @@ export async function runHuman(cli: string, args: string[], timeoutMs: number): 
   const announceDone = (message: unknown) => {
     const value = message as { protocol?: unknown; token?: unknown; type?: unknown; code?: unknown };
     if (value?.protocol !== protocol || value.token !== protocolToken || value.type !== "worker-done" || typeof value.code !== "number") return;
+    announcedCode = value.code;
     // The child's real work is already done; do not let a still-armed
     // deadline kill it and discard that result.
     clearTimeout(timer);
@@ -148,6 +150,15 @@ export async function runHuman(cli: string, args: string[], timeoutMs: number): 
   }
   if (failure) {
     console.error(`error: ${failure.message}`);
+    return 1;
+  }
+  // Node reports exit code 0 with no signal for a worker that a signal it
+  // cannot name killed, and for one whose exit code application code
+  // rewrote, so only the worker's own announcement shows that it finished.
+  if (signal === null && code === 0 && announcedCode !== 0) {
+    console.error(announcedCode === undefined
+      ? "error: The worker closed with exit code 0 and no signal, but never announced that it finished. Project code that calls process.exit(0), or a signal Node cannot name, ends the worker this way; inspect the output above before you run the command again."
+      : `error: The worker closed with exit code 0 and no signal, but announced exit code ${announcedCode}. An exit listener in project code that rewrote the exit code, or a signal Node cannot name, ends the worker this way; read the error above.`);
     return 1;
   }
   // Node's exit handler records either the signal or the exit code, so exactly

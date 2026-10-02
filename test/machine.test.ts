@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { constants, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { afterEach, test, vi } from "vitest";
 import * as hegel from "@hegeldev/hegel";
@@ -274,9 +274,32 @@ test("human worker preserves exit codes without printing an error", async () => 
   const { machine, errors } = await parentChannel();
   await hegel.testAsync(async tc => {
     const code = tc.draw(gs.integers({ minValue: 0, maxValue: 255 }));
-    assert.equal(await bounded(machine.runHuman(parentFixture, ["query", JSON.stringify({ mode: "wait", delay: 0, code })], 5000)), code);
+    // A success needs the worker's own announcement; a failure code stands on its own.
+    assert.equal(await bounded(machine.runHuman(parentFixture, ["query", JSON.stringify({ mode: code === 0 ? "done" : "wait", delay: 0, code })], 5000)), code);
     assert.deepEqual(errors, []);
   }, { testCases: 8 });
+});
+
+test("human worker returns failure when the child exits 0 without announcing that it finished", async () => {
+  const { machine, errors } = await parentChannel();
+  assert.equal(await bounded(machine.runHuman(parentFixture, ["query", JSON.stringify({ mode: "wait", delay: 0, code: 0 })], 5000)), 1);
+  assert.match(errors[0]!, /closed with exit code 0 and no signal, but never announced that it finished/);
+});
+
+test("human worker returns failure when an exit listener rewrites an announced failure to 0", async () => {
+  const { machine, errors } = await parentChannel();
+  assert.equal(await bounded(machine.runHuman(parentFixture, ["query", JSON.stringify({ mode: "rewritten-exit" })], 5000)), 1);
+  assert.match(errors[0]!, /closed with exit code 0 and no signal, but announced exit code 1/);
+});
+
+// Node names no signal 7 on macOS (SIGEMT) and no real-time signal on Linux,
+// and reports such an end as exit code 0 with no signal.
+const unnamedSignal = process.platform === "win32" ? undefined
+  : [7, ...Array.from({ length: 31 }, (_, i) => 34 + i)].find((n) => !Object.values(constants.signals).includes(n));
+test.skipIf(unnamedSignal === undefined)("human worker returns failure when a signal Node cannot name ends the child", async () => {
+  const { machine, errors } = await parentChannel();
+  assert.equal(await bounded(machine.runHuman(parentFixture, ["query", JSON.stringify({ mode: "signal-number", code: unnamedSignal })], 5000)), 1);
+  assert.match(errors[0]!, /never announced that it finished/);
 });
 
 test("human worker returns failure after signal termination", async () => {

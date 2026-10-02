@@ -4,6 +4,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: The human CLI returns 1, and says why, when its worker closes with exit code 0 without announcing success, for example after a signal Node cannot name or an exit listener that rewrites the exit code.
 - Fixed: A generated file that drops a view records the view's triggers, and `applied()` and `migrate()` refuse it when a sibling migration added one of them since, or removed one that the file would create again.
 - Fixed: The `json_group_array` fan-out proof refuses a join whose equality compares the joined table with its own column written without a table name (`join b on b.id = onlyb`), instead of typing a result whose elements can repeat.
 - Fixed: Generated migrations create a view's triggers again when they drop and recreate the view, and drop a changed or removed trigger on a kept view.
