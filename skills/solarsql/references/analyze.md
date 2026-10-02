@@ -67,6 +67,8 @@ The supported query shapes and named parameter rules in [queries](queries.md) al
 | The message contains | Fix |
 |---|---|
 | `must contain CREATE statements` | supply schema DDL without data or PRAGMAs |
+| `creates a TEMP object` or `in the TEMP schema` | drop `TEMP` or `temp.`: D1 and Durable Objects refuse TEMP objects, so declare the object in the main schema |
+| `but a declaration belongs to the main schema` | drop the schema qualifier, or write `main.` |
 | `must be a JSON object of names and SQL strings` | supply the catalog as a plain object mapping each query name to a SQL string |
 | `is reserved. Choose another catalog name` | rename the query away from `kind`, `entries`, or `__proto__` |
 

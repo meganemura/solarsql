@@ -15,7 +15,7 @@ import { Engine, WORKERD_SQLITE_VERSION, type Access, type OutputColumn, type Pl
 import { applied, diff, introspect, open, requireReplayReachesTarget, type DropIntent, type Rename, type RenameRepair } from "./migration.ts";
 import type { MigrationIntent } from "./migration-intent.ts";
 import { migrationSequence, nextMigrationFile, withMigrationLock, writeNewMigration } from "./migration-files.ts";
-import { aliasCandidates, created, definitions, indexTarget, isKeyword, namedParams, quoteIdent, returningClause, significant, sqliteName, tokenize, triggerTarget, unquote, type RebuildRecord, type ViewRecord } from "./scan.ts";
+import { aliasCandidates, created, definitions, indexTarget, isKeyword, namedParams, quoteIdent, returningClause, schemaPlacement, significant, sqliteName, tokenize, triggerTarget, unquote, type RebuildRecord, type ViewRecord } from "./scan.ts";
 import { shellArgument } from "./shell.ts";
 import { writeGeneratedFile } from "./output.ts";
 import { BuildError, Typer, brandName, isSelect, type Analysis, type Brand } from "./typegen.ts";
@@ -422,6 +422,8 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
   const declaredTableSql = new Map<string, string>();
   for (const m of modules) {
     for (const sql of m.tables) {
+      const placement = schemaPlacement(sql);
+      if (placement) throw new BuildError(`module ${m.name}: table() ${placement}`, sql);
       const c = created(sql);
       if (!c || c.kind !== "table") throw new BuildError(`module ${m.name}: table() needs one CREATE TABLE statement`, sql);
       const other = owner.get(c.name);
@@ -430,10 +432,14 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
       declaredTableSql.set(c.name, sql);
     }
     for (const sql of m.indexes) {
+      const placement = schemaPlacement(sql);
+      if (placement) throw new BuildError(`module ${m.name}: index() ${placement}`, sql);
       const c = created(sql);
       if (!c || c.kind !== "index") throw new BuildError(`module ${m.name}: index() needs one CREATE INDEX statement`, sql);
     }
     for (const sql of m.searches) {
+      const placement = schemaPlacement(sql);
+      if (placement) throw new BuildError(`module ${m.name}: search() ${placement}`, sql);
       const c = created(sql);
       if (!c || c.kind !== "virtual" || !/\busing\s+fts5\s*\(/i.test(sql)) throw new BuildError(`module ${m.name}: search() needs one CREATE VIRTUAL TABLE ... USING fts5(...) statement`, sql);
       const other = owner.get(c.name);
@@ -441,6 +447,8 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
       owner.set(c.name, m);
     }
     for (const sql of m.views) {
+      const placement = schemaPlacement(sql);
+      if (placement) throw new BuildError(`module ${m.name}: view() ${placement}`, sql);
       const c = created(sql);
       if (!c || c.kind !== "view") throw new BuildError(`module ${m.name}: view() needs one CREATE VIEW statement`, sql);
     }
@@ -460,6 +468,8 @@ async function buildLoaded(loaded: Loaded, options: BuildOptions, buildStarted =
   for (const m of modules) for (const sql of m.views) viewOwner.set(created(sql)!.name, m);
   for (const m of modules) {
     for (const sql of m.triggers) {
+      const placement = schemaPlacement(sql);
+      if (placement) throw new BuildError(`module ${m.name}: trigger() ${placement}`, sql);
       const t = triggerTarget(sql);
       if (!t) throw new BuildError(`module ${m.name}: trigger() needs one CREATE TRIGGER statement with BEFORE, AFTER, or INSTEAD OF, an event, and ON <table or view>`, sql);
       const o = owner.get(t.table) ?? viewOwner.get(t.table);

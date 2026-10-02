@@ -146,6 +146,8 @@ Shared SQL reports all its catalog locations.
 | `has a foreign key to` | fix the foreign key's target table or column name |
 | `which maps to no TypeScript type` | use `text`, `integer`, `real`, `blob`, or `any` |
 | `needs one CREATE TABLE statement` (and `CREATE INDEX`, `CREATE VIEW`, `CREATE TRIGGER`, `CREATE VIRTUAL TABLE ... USING fts5(...)`) | one CREATE statement per call |
+| `creates a TEMP object` or `in the TEMP schema` | drop `TEMP` or `temp.`: D1 and Durable Objects refuse TEMP objects, so declare the object in the main schema |
+| `but a declaration belongs to the main schema` | drop the schema qualifier, or write `main.` |
 | `A trigger belongs to the module of its table or view` | move the trigger to the owner of its table or view |
 | `An index belongs to the module of its table` | move the index to the owner of its table |
 | `schema:` | the engine refused the DDL; the rest is its own message |

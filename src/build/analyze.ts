@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { Engine } from "./facts.ts";
 import { emitGenerated } from "./emit.ts";
 import { busyTimeoutMs, isLockError, lockMessage } from "./lock-timeout.ts";
-import { created, splitStatements } from "./scan.ts";
+import { created, schemaPlacement, splitStatements } from "./scan.ts";
 import { catalogStatement, refuseTransactionEndingSchemaConflict } from "./statements.ts";
 import { BuildError, Typer } from "./typegen.ts";
 
@@ -14,6 +14,8 @@ export function analyzeSchema(schema: string, catalog: unknown, library = "solar
   const engine = new Engine([]);
   try {
     for (const sql of splitStatements(schema)) {
+      const placement = schemaPlacement(sql);
+      if (placement) throw new BuildError(`This schema statement ${placement}`, sql);
       const declaration = created(sql);
       if (!declaration) throw new BuildError("The schema must contain CREATE statements. Supply schema DDL without data or PRAGMAs.", sql);
       if (declaration.kind === "table" || declaration.kind === "trigger") refuseTransactionEndingSchemaConflict(sql, declaration.kind);

@@ -327,6 +327,41 @@ function mainObject(t: readonly Token[], start: number, allowStringName = false)
   return { name, token, next: i + 1, start };
 }
 
+// Why a declaration sits outside the main schema, as the rest of a sentence,
+// or null when it does not. createObject() refuses these shapes without a
+// reason, so the build and analyze ask here first and name the cause. The
+// TEMP keyword is read before the object kind, so `create temp index` and
+// `create temp virtual table`, which SQLite rejects as syntax errors, are
+// named too.
+export function schemaPlacement(sql: string): string | null {
+  const t = significant(tokenize(sql));
+  if (!isKeyword(t[0], "create")) return null;
+  const temp = "creates a TEMP object, but D1 and Durable Objects refuse TEMP objects. Declare it without TEMP, in the main schema.";
+  if (isKeyword(t[1], "temp") || isKeyword(t[1], "temporary")) return temp;
+  const schemaOf = (i: number): string | null => {
+    if (t[i + 1]?.text !== ".") return null;
+    const schema = t[i];
+    if (!schema || (schema.type !== "ident" && schema.type !== "string")) return null;
+    return schema.type === "string" ? schema.text.slice(1, -1).replace(/''/g, "'") : unquote(schema.text);
+  };
+  const outside = (schema: string | null, what: string): string | null => {
+    if (schema === null || sqliteName(schema) === "main") return null;
+    return sqliteName(schema) === "temp" ? `${what} in the TEMP schema, but D1 and Durable Objects refuse TEMP objects. Declare it in the main schema, without a schema qualifier or with main.`
+      : `${what} in schema ${quoteIdent(schema)}, but a declaration belongs to the main schema. Declare it without a schema qualifier, or with main.`;
+  };
+  let i = 1;
+  if (isKeyword(t[i], "unique")) i++;
+  const kind = t[i]?.text.toLowerCase();
+  if (kind === "virtual" && isKeyword(t[i + 1], "table")) i++;
+  else if (kind !== "table" && kind !== "index" && kind !== "trigger" && kind !== "view") return null;
+  i++;
+  if (isKeyword(t[i], "if") && isKeyword(t[i + 1], "not") && isKeyword(t[i + 2], "exists")) i += 3;
+  const own = outside(schemaOf(i), "places its object");
+  if (own !== null || kind !== "trigger") return own;
+  const on = t.findIndex((token, k) => k > i && token.depth === 0 && isKeyword(token, "on"));
+  return on < 0 ? null : outside(schemaOf(on + 1), "puts its ON target");
+}
+
 function createObject(t: readonly Token[], allowStringName = false): { kind: "table" | "index" | "trigger" | "view" | "virtual"; object: NonNullable<ReturnType<typeof mainObject>> } | null {
   if (!isKeyword(t[0], "create")) return null;
   let i = 1;

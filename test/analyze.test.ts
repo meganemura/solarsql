@@ -10,6 +10,7 @@ import { join, resolve } from "node:path";
 import { Engine } from '../src/build/facts.ts';
 import { Typer } from '../src/build/typegen.ts';
 import { analyzeDatabase, analyzeSchema } from "../src/build/analyze.ts";
+import { BuildError } from "../src/build/build-error.ts";
 import { fixtureDir, librarySpecifier, specifier, tscArgs } from "./fixture-dir.ts";
 
 const root = resolve(import.meta.dirname, "..");
@@ -580,4 +581,33 @@ test('all unshadowed row-identifier spellings return the stored integer', async 
     assert.equal(report.operations[0]!.params[0]!.type,'number');
     assert.equal(db.prepare(sql).get({id})!.identifier,id);
   });
+});
+
+test("analysis names TEMP or the schema for a schema statement outside the main schema", () => {
+  const temp = "This schema statement creates a TEMP object, but D1 and Durable Objects refuse TEMP objects. Declare it without TEMP, in the main schema.";
+  const tempSchema = (what: string) => `This schema statement ${what} in the TEMP schema, but D1 and Durable Objects refuse TEMP objects. Declare it in the main schema, without a schema qualifier or with main.`;
+  for (const [ddl, message] of [
+    ["create temp table t (id integer primary key) strict", temp],
+    ["create temporary table t (id integer primary key) strict", temp],
+    ["create temp table if not exists t (id integer primary key) strict", temp],
+    ["create temp index i on t (id)", temp],
+    ["create temp virtual table s using fts5(x)", temp],
+    ["create temp view v as select 1 as x", temp],
+    ["create temp trigger tr after insert on t begin select 1; end", temp],
+    ["create table temp.t (id integer primary key) strict", tempSchema("places its object")],
+    ["create table \"TEMP\".t (id integer primary key) strict", tempSchema("places its object")],
+    ["create table 'temp'.t (id integer primary key) strict", tempSchema("places its object")],
+    ["create table Temp.t (id integer primary key) strict", tempSchema("places its object")],
+    ["create table if not exists temp.t (id integer primary key) strict", tempSchema("places its object")],
+    ["create index temp.i on t (id)", tempSchema("places its object")],
+    ["create virtual table temp.s using fts5(x)", tempSchema("places its object")],
+    ["create view temp.v as select 1 as x", tempSchema("places its object")],
+    ["create trigger temp.tr after insert on t begin select 1; end", tempSchema("places its object")],
+    ["create trigger tr after insert on temp.t begin select 1; end", tempSchema("puts its ON target")],
+    ["create table aux.t (id integer primary key) strict", "This schema statement places its object in schema \"aux\", but a declaration belongs to the main schema. Declare it without a schema qualifier, or with main."],
+  ] as const) {
+    assert.throws(() => analyzeSchema(ddl, {}), (e: unknown) => e instanceof BuildError && e.message === `${message}\n  in: ${ddl}` && e.sql === ddl, ddl);
+  }
+  // A main-qualified declaration is not refused for its schema.
+  assert.doesNotThrow(() => analyzeSchema("create table main.t (id integer primary key) strict", {}));
 });

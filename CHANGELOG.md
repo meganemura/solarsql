@@ -4,6 +4,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: A TEMP declaration, or one in a schema other than main, now fails with a message that names TEMP or the schema, instead of, for example, "table() needs one CREATE TABLE statement" or "The schema must contain CREATE statements".
 - Changed: A CLI deadline (`--timeout-ms`) starts when the worker starts, not when the parent forks it, so Node's startup on a loaded machine no longer uses up a short budget. The worker's startup has its own 30,000 ms bound.
 - Fixed: The human CLI returns 1, and says why, when its worker closes with exit code 0 without announcing success, for example after a signal Node cannot name or an exit listener that rewrites the exit code.
 - Fixed: A generated file that drops a view records the view's triggers, and `applied()` and `migrate()` refuse it when a sibling migration added one of them since, or removed one that the file would create again.

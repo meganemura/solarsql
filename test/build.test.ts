@@ -616,6 +616,31 @@ void includingRejectsNumber;
     }
   });
 
+  test("a declaration outside the main schema names TEMP or the schema, for every kind", async () => {
+    const dir = copy();
+    try {
+      const module = join(dir, "example/modules/orders/module.ts");
+      const source = readFileSync(module, "utf8");
+      const temp = /creates a TEMP object, but D1 and Durable Objects refuse TEMP objects\. Declare it without TEMP, in the main schema\./;
+      const tempSchema = /in the TEMP schema, but D1 and Durable Objects refuse TEMP objects\./;
+      for (const [from, to, pattern] of [
+        ["create table orders (", "create temp table orders (", new RegExp(`module orders: table\\(\\) ${temp.source}`)],
+        ["create table orders (", "create table aux.orders (", /module orders: table\(\) places its object in schema "aux", but a declaration belongs to the main schema\./],
+        ["create index orders_customer_id", "create index temp.orders_customer_id", new RegExp(`module orders: index\\(\\) places its object ${tempSchema.source}`)],
+        ["create virtual table order_search", "create temp virtual table order_search", new RegExp(`module orders: search\\(\\) ${temp.source}`)],
+        ["create trigger orders_touch after update on orders", "create trigger orders_touch after update on temp.orders", new RegExp(`module orders: trigger\\(\\) puts its ON target ${tempSchema.source}`)],
+        ["create trigger orders_touch after update on orders", "create temporary trigger orders_touch after update on orders", new RegExp(`module orders: trigger\\(\\) ${temp.source}`)],
+      ] as const) {
+        writeFileSync(module, source.replace(from, to));
+        await expectBuildError(dir, pattern);
+      }
+      writeFileSync(module, source.replace("import { assert, commands, index, queries, search, table, trigger }", "import { assert, commands, index, queries, search, table, trigger, view }") + "\nexport const openOrders = view(`create temp view open_orders as select id from orders`);\n");
+      await expectBuildError(dir, new RegExp(`module orders: view\\(\\) ${temp.source}`));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("search() needs an FTS5 virtual table, and another module may not read it without readsAll", async () => {
     const dir = copy();
     try {
