@@ -12,7 +12,7 @@ import type { Command, Config, Index, ModuleConfig, PlanInclusion, PlanItem, Que
 import { GUARD_DDL, GUARD_TABLE, assertStatement } from "../runtime/plan.ts";
 import { GENERATED_FILE, emitGenerated, emitMigrationsIndex, emitStub } from "./emit.ts";
 import { Engine, WORKERD_SQLITE_VERSION, type Access, type OutputColumn, type PlanRow } from "./facts.ts";
-import { applied, diff, introspect, open, type DropIntent, type Rename, type RenameRepair } from "./migration.ts";
+import { applied, diff, introspect, open, requireReplayReachesTarget, type DropIntent, type Rename, type RenameRepair } from "./migration.ts";
 import type { MigrationIntent } from "./migration-intent.ts";
 import { migrationSequence, nextMigrationFile, withMigrationLock, writeNewMigration } from "./migration-files.ts";
 import { aliasCandidates, created, definitions, indexTarget, isKeyword, namedParams, quoteIdent, returningClause, significant, sqliteName, tokenize, triggerTarget, unquote, type RebuildRecord } from "./scan.ts";
@@ -1262,6 +1262,11 @@ function migrationStatus(configDir: string, config: Config, modules: readonly Mo
   try {
     const plan = diff(introspect(current), introspect(target), intent.renames, intent.drops);
     if (plan.kind === "blocked") return { pending: true, statements: [], reason: plan.reason, ...(plan.drops ? { drops: plan.drops } : {}), ...(plan.renames ? { renames: plan.renames } : {}), ...(plan.renameCandidates ? { renameCandidates: plan.renameCandidates } : {}) };
+    // build, build --check and migration all read this status, so a plan that
+    // would not reach the declared schema stops each of them, including an
+    // empty plan that leaves an object behind; migration stops before its
+    // migration file exists.
+    requireReplayReachesTarget(files.map((f) => f.sql), files.map((f) => f.name), plan.statements, plan.rebuilds ?? [], introspect(target));
     return { pending: plan.statements.length > 0, statements: plan.statements, reason: null, ...(plan.rebuilds ? { rebuilds: plan.rebuilds } : {}) };
   } finally {
     current.close();

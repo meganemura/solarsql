@@ -128,14 +128,15 @@ explicit migration that preserves the required rows and foreign keys.
 | a table that both loses and gains a column | blocked until `renames` gives each data-preserving mapping; split an ambiguous multi-column change when needed |
 | a changed column, constraint, or foreign key; a dropped column; a new stored generated column on a table with rows | a rebuild: create the new table, copy common columns into a side table, drop the original, rename the new table, restore rows, then drop the side table; one transaction with `pragma defer_foreign_keys = on` first. A row that violates the new declaration -- NOT NULL, UNIQUE, CHECK, or a foreign key -- fails the restore insert, or fails at commit for a deferred foreign key; either way the whole rebuild rolls back |
 | a rebuild referenced through ON DELETE CASCADE, SET NULL, SET DEFAULT, or RESTRICT | blocked; write an explicit migration that preserves related rows and foreign keys |
-| a changed view or trigger | `drop` then `create` |
-| any rebuild | every view is dropped first and created last, because a rename under a view fails |
+| a changed view or trigger | `drop` then `create`; the triggers on a dropped view are created again after it |
+| any rebuild | every view is dropped first and created last, with its triggers, because a rename under a view fails |
 | a changed search table | `drop table` then `create virtual table`; the search rows start empty, and only a later write brings a row back through the triggers (ADR 0034). When exactly one `INSERT` trigger on the search table's base keeps to the documented shape (schema.md, "Search tables"), the generator also emits `insert into order_search (order_id, note) select id, note from orders`, right after the create statement; otherwise the create statement carries a comment, and the caller writes that insert (ADR 0118) |
 | a removed ordinary table or column | blocked until an exact destructive intent names it |
 | a removed ordinary table with a surviving child that has a non-`NO ACTION` delete action | blocked; write an explicit migration that preserves the child rows and foreign keys |
 | a removed or changed search table | `drop table` then `create virtual table` when needed |
 
 The order in a file: drop views, drop triggers and indexes, drop tables, change tables, create search tables, create indexes, views, and triggers.
+Before the build uses a plan, it replays the existing files and the generated statements and compares the result with the declared schema. When they differ, `build`, `build --check`, and `migration` stop with an error that names each object that differs, and `migration` writes no migration file (ADR 0142).
 The rebuild check examines incoming references in both schemas, including self-references; cheap ALTER changes remain available.
 A trigger in a migration file opens with an uppercase `BEGIN`, whatever the declaration wrote: D1's HTTP API keeps a trigger body whole only then.
 Automatic table rebuilds preserve accessible row identifiers when both schema versions have them. If all identifier spellings are shadowed, or a new primary-key alias would change their meaning, generation reports a blocked migration; keep an accessible identifier with the same alias, or write an explicit migration with a data check (ADR 0068). When both versions use AUTOINCREMENT, rebuilds also retain its sequence history, including deleted maximum identifiers (ADR 0070).

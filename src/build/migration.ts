@@ -10,7 +10,7 @@
 // again, and its shadow tables are the engine's own.
 import { DatabaseSync } from "node:sqlite";
 import { withDeniedFunctions, withWorkerdLimits } from "./facts.ts";
-import { created, definitions, isKeyword, normalize, parseRebuildRecords, quoteIdent, redeclaredByFile, REBUILD_HEADER, renamedColumn, revivedDeclaration, searchFill, significant, splitStatements, tokenize, triggerBodyBegin, triggerInsertTarget, type RebuildRecord, type Token, unknownDeclaration } from "./scan.ts";
+import { created, definitions, isKeyword, normalize, parseRebuildRecords, quoteIdent, redeclaredByFile, REBUILD_HEADER, renamedColumn, revivedDeclaration, searchFill, significant, splitStatements, sqliteName, tokenize, triggerBodyBegin, triggerInsertTarget, type RebuildRecord, type Token, unknownDeclaration } from "./scan.ts";
 import { BuildError } from "./build-error.ts";
 
 export type Column = { name: string; type: string; notnull: boolean; dflt: string | null; pk: number; def: string; generated: boolean };
@@ -345,7 +345,9 @@ export function shape(schema: Schema): unknown {
   return {
     tables: [...schema.tables.values()].sort(byName).map(tableShape),
     indexes: [...schema.indexes.values()].sort(byName).map((i) => ({ name: i.name, table: i.table, sql: normalize(i.sql) })),
-    triggers: [...schema.triggers.values()].sort(byName).map((t) => ({ name: t.name, table: t.table, sql: normalize(t.sql) })),
+    // sqlite_schema keeps a trigger's table as its ON clause spells it, and
+    // SQLite resolves that name under its identifier case rule.
+    triggers: [...schema.triggers.values()].sort(byName).map((t) => ({ name: t.name, table: sqliteName(t.table), sql: normalize(t.sql) })),
     views: [...schema.views.values()].sort(byName).map((v) => ({ name: v.name, sql: normalize(v.sql) })),
     virtuals: [...schema.virtuals.values()].sort(byName).map((v) => ({ name: v.name, sql: normalize(v.sql) })),
   };
@@ -379,6 +381,39 @@ function tableShape(t: Table): unknown {
     strict: t.strict,
     rowidAlias: t.rowidAlias,
   };
+}
+
+// The objects whose shapes differ between two schemas, as "<kind> <name>".
+export function shapeDifferences(left: Schema, right: Schema): string[] {
+  const kinds = [["tables", "table"], ["indexes", "index"], ["triggers", "trigger"], ["views", "view"], ["virtuals", "search table"]] as const;
+  const a = shape(left) as Record<string, { name: string }[]>;
+  const b = shape(right) as Record<string, { name: string }[]>;
+  const differences: string[] = [];
+  for (const [kind, label] of kinds) {
+    const entriesByName = (entries: { name: string }[]) => new Map(entries.map((entry) => [entry.name, JSON.stringify(entry)]));
+    const before = entriesByName(a[kind]!);
+    const after = entriesByName(b[kind]!);
+    for (const name of [...new Set([...before.keys(), ...after.keys()])].sort()) {
+      if (before.get(name) !== after.get(name)) differences.push(`${label} ${name}`);
+    }
+  }
+  return differences;
+}
+
+// The plan must reach its own target. The replay runs the rendered file text
+// through applied(), the way a database applies it, and compares shapes, so
+// it also sees an empty plan that leaves an object behind, which a second
+// diff of the same two schemas cannot see.
+export function replayDifferences(files: readonly string[], names: readonly string[], statements: readonly string[], rebuilds: readonly RebuildRecord[], target: Schema): string[] {
+  const generated = statements.length > 0 ? [render(files.length + 1, "replay", statements, rebuilds).sql] : [];
+  const db = applied([...files, ...generated], [...names, ...generated.map(() => "the generated migration")]);
+  try { return shapeDifferences(introspect(db), target); } finally { db.close(); }
+}
+
+export function requireReplayReachesTarget(files: readonly string[], names: readonly string[], statements: readonly string[], rebuilds: readonly RebuildRecord[], target: Schema): void {
+  const differences = replayDifferences(files, names, statements, rebuilds, target);
+  if (differences.length === 0) return;
+  throw new BuildError(`The migration files plus the generated statements do not reach the declared schema; these objects differ after a replay: ${differences.join(", ")}. This is a gap in solarsql's migration diff. Write the next migration by hand so that a replay reaches the declared schema.`);
 }
 
 // Keyed on every field, not only `from`: SQLite allows more than one foreign
@@ -846,18 +881,34 @@ export function diff(current: Schema, target: Schema, renames: readonly Rename[]
     return c !== undefined && t !== undefined && normalize(c.sql) === normalize(t.sql);
   };
   const allViews = rebuilt.size > 0;
-  for (const name of current.views.keys()) if (allViews || !viewSame(name)) dropViews.push(`drop view main.${quoteIdent(name)}`);
-  const gone = (table: string) => rebuilt.has(table) || !target.tables.has(table);
+  const droppedViews: string[] = [];
+  for (const name of current.views.keys()) {
+    if (allViews || !viewSame(name)) {
+      droppedViews.push(name);
+      dropViews.push(`drop view main.${quoteIdent(name)}`);
+    }
+  }
+  // DROP VIEW takes the view's triggers with it, and DROP TABLE takes the
+  // table's. A changed or removed trigger on a kept view still needs its own
+  // DROP TRIGGER, so a view counts as gone only when this plan drops it.
+  // An ON clause can spell its table in another case, so names match
+  // under SQLite's identifier case rule.
+  const droppedView = (name: string) => droppedViews.some(view => sameSqliteName(view, name));
+  const currentView = (name: string) => [...current.views.keys()].some(view => sameSqliteName(view, name));
+  const rebuiltTable = (name: string) => [...rebuilt].some(table => sameSqliteName(table, name));
+  const targetTable = (name: string) => [...target.tables.keys()].some(table => sameSqliteName(table, name));
+  const gone = (table: string) => rebuiltTable(table) || droppedView(table) || (!targetTable(table) && !currentView(table));
   for (const [name, table] of dropTriggerOf) if (!gone(table)) dropFirst.push(`drop trigger main.${quoteIdent(name)}`);
   for (const [name, table] of dropIndexOf) if (!gone(table)) dropFirst.push(`drop index main.${quoteIdent(name)}`);
   for (const [name, index] of target.indexes) {
     const c = current.indexes.get(name);
-    if (rebuilt.has(index.table) || !c || normalize(c.sql) !== normalize(index.sql)) createLast.push(renamedCreate(index.sql));
+    if (rebuiltTable(index.table) || !c || normalize(c.sql) !== normalize(index.sql)) createLast.push(renamedCreate(index.sql));
   }
   for (const [name, view] of target.views) if (allViews || !viewSame(name)) createLast.push(allViews ? renamedCreate(view.sql) : view.sql);
   for (const [name, trigger] of target.triggers) {
     const c = current.triggers.get(name);
-    if (rebuilt.has(trigger.table) || !c || normalize(c.sql) !== normalize(trigger.sql)) createLast.push(triggerForD1(renamedCreate(trigger.sql)));
+    // A trigger on a view that this plan drops is created again after the view.
+    if (rebuiltTable(trigger.table) || droppedView(trigger.table) || !c || normalize(c.sql) !== normalize(trigger.sql)) createLast.push(triggerForD1(renamedCreate(trigger.sql)));
   }
   const statements = [...dropViews, ...dropFirst, ...dropTables, ...changeTables, ...createVirtuals, ...createLast];
   if (needsDefer) statements.unshift(`pragma defer_foreign_keys = on`);

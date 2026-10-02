@@ -14,7 +14,12 @@ type ColumnType = "text" | "integer" | "real";
 type Column = { name: string; type: ColumnType; notnull: boolean; check: boolean; generated: "stored" | "virtual" | null };
 type Table = { name: "a" | "b"; columns: Column[]; fkToA: boolean };
 type IndexDef = { name: string; table: "a" | "b"; columns: string[] };
-type Schema = { tables: Table[]; indexes: IndexDef[] };
+// A view on a, alone or with one of two INSTEAD OF triggers, so an added or
+// removed view, a rebuild under it, and an added, changed, or removed view
+// trigger all take part.
+type ViewState = null | "view" | "trigger" | "other-trigger";
+type Schema = { tables: Table[]; indexes: IndexDef[]; view: ViewState };
+const viewStates: ViewState[] = [null, "view", "trigger", "other-trigger"];
 
 const names = ["c1", "c2", "c3", "c4"];
 const types: ColumnType[] = ["text", "integer", "real"];
@@ -50,6 +55,9 @@ function ddl(s: Schema): string[] {
     out.push(`create table ${t.name} (${cols.join(", ")}) strict`);
   }
   for (const i of s.indexes) out.push(`create index ${i.name} on ${i.table} (${i.columns.join(", ")})`);
+  if (s.view) out.push(`create view av as select id from a`);
+  if (s.view === "trigger") out.push(`create trigger av_insert instead of insert on av begin insert into guard values (new.id, 1); end`);
+  if (s.view === "other-trigger") out.push(`create trigger av_insert instead of insert on av begin insert into guard values (upper(new.id), 1); end`);
   return out;
 }
 
@@ -93,11 +101,11 @@ const schemaGen = gs.composite((tc): Schema => {
       indexes.push({ name: `idx_${t.name}_${t.columns[0]!.name}`, table: t.name, columns: [t.columns[0]!.name] });
     }
   }
-  return { tables, indexes };
+  return { tables, indexes, view: tc.draw(gs.sampledFrom(viewStates)) };
 });
 
-type Edit = "add" | "drop" | "retype" | "nullability" | "check" | "index" | "table" | "fk" | "rename";
-const editGen = gs.sampledFrom<Edit>(["add", "drop", "retype", "nullability", "check", "index", "table", "fk", "rename"]);
+type Edit = "add" | "drop" | "retype" | "nullability" | "check" | "index" | "table" | "fk" | "rename" | "view";
+const editGen = gs.sampledFrom<Edit>(["add", "drop", "retype", "nullability", "check", "index", "table", "fk", "rename", "view"]);
 
 // One edit on a copy of the schema. Edits that do not apply leave it unchanged.
 // A rename also reports what it renamed, so the caller can track a surviving
@@ -123,7 +131,11 @@ function apply(
   let indexes = s.indexes.map((i) => ({ ...i, columns: [...i.columns] }));
   const t = pick(tables);
   let renamed: { table: "a" | "b"; from: string; to: string } | null = null;
+  let view = s.view;
   switch (edit) {
+    case "view":
+      view = pick(viewStates);
+      break;
     case "add":
       if (!t.columns.some((c) => c.name === column.name) && !isVacatedOriginal(t.name, column.name)) t.columns.push(column);
       break;
@@ -171,7 +183,7 @@ function apply(
       }
       break;
   }
-  return { schema: { tables, indexes }, renamed };
+  return { schema: { tables, indexes, view }, renamed };
 }
 
 // The generator must stop in two cases: a table both loses and gains a column
@@ -444,8 +456,8 @@ test("adding a stored and a virtual generated column together still forces a reb
 // The blocked path is rare under the generator, so one case pins it: a
 // table that loses one column and gains another in one change.
 test("a table that loses and gains a column in one change is blocked", () => {
-  const s1: Schema = { tables: [{ name: "a", columns: [{ name: "c1", type: "text", notnull: false, check: false, generated: null }], fkToA: false }], indexes: [] };
-  const s2: Schema = { tables: [{ name: "a", columns: [{ name: "c2", type: "text", notnull: false, check: false, generated: null }], fkToA: false }], indexes: [] };
+  const s1: Schema = { tables: [{ name: "a", columns: [{ name: "c1", type: "text", notnull: false, check: false, generated: null }], fkToA: false }], indexes: [], view: null };
+  const s2: Schema = { tables: [{ name: "a", columns: [{ name: "c2", type: "text", notnull: false, check: false, generated: null }], fkToA: false }], indexes: [], view: null };
   assert.equal(expectedBlock(s1, s2), true);
   const current = introspect(open(ddl(s1)));
   const target = introspect(open(ddl(s2)));

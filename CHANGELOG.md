@@ -4,6 +4,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: Generated migrations create a view's triggers again when they drop and recreate the view, and drop a changed or removed trigger on a kept view.
+- Changed: `build`, `build --check`, and `migration` replay the migration files and the generated statements, and stop with an error that names the objects that differ when the result does not reach the declared schema.
 - Fixed: Rehearsal counts a primary-key value that changes inside its own collation (`upper()` on a `NOCASE` key, trailing spaces on an `RTRIM` key) as updated, so such a rewrite no longer passes unreported. A key whose stored type changes under `expected.retyped` (an integer to the text of the same number) now also counts in the strict `updated` count of `result.rows`, while `ok` is unchanged.
 - Fixed: Build facts, migration introspection, the rehearsal, and runtime `migrate()` read catalogs with PRAGMA statements, so objects named after pragma table functions cannot hide tables or row loss.
 - Fixed: Rehearsal reads main table facts and rows explicitly, so same-named TEMP objects cannot hide schema changes or alter reported counts.
