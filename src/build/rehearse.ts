@@ -182,8 +182,9 @@ function counts(db: DatabaseSync): Record<string, number> {
 // src/durable.ts already reads.
 function columnsOf(db: DatabaseSync, table: string): RehearsalColumn[] {
   // A same-named object can shadow a pragma table function; a PRAGMA statement reads the engine catalog.
+  // It lists the columns in cid order, the order the result keeps.
   return db.prepare(`pragma main.table_xinfo(${quoteIdent(table)})`)
-    .all().filter(r => [0, 2, 3].includes(Number(r.hidden))).sort((a, b) => Number(a.cid) - Number(b.cid))
+    .all().filter(r => [0, 2, 3].includes(Number(r.hidden)))
     .map(r => ({ name: String(r.name), type: String(r.type), notnull: (r.notnull ? 1 : 0) as 0 | 1, pk: Number(r.pk) }));
 }
 
@@ -281,7 +282,8 @@ function sqlString(value: string): string {
 // implementation detail, not a table an agent wrote.
 function tableTypes(db: DatabaseSync): Map<string, string> {
   // A same-named object can shadow a pragma table function; a PRAGMA statement reads the engine catalog.
-  return new Map(db.prepare("pragma main.table_list").all().filter(r => r.schema === 'main').map(r => [sqliteName(String(r.name)), String(r.type)]));
+  // With a schema name, the PRAGMA lists that schema's tables only.
+  return new Map(db.prepare("pragma main.table_list").all().map(r => [sqliteName(String(r.name)), String(r.type)]));
 }
 
 type ColumnPair = { after: string; before: string };
@@ -312,15 +314,13 @@ function pkPairs(beforeColumns: RehearsalColumn[], afterColumns: RehearsalColumn
   return pairs;
 }
 
-// Every non-primary-key column present on both sides is matched with SQLite's identifier case rule.
+// Every column present on both sides, primary-key columns included, is matched with SQLite's identifier case rule.
 // A one-sided column is a schemaShapeFindings drop or a new column, so it plays no part here.
-function commonColumns(beforeColumns: RehearsalColumn[], afterColumns: RehearsalColumn[], pk: ColumnPair[]): ColumnPair[] {
-  const pkAfterNames = new Set(pk.map(p => sqliteName(p.after)));
+function commonColumns(beforeColumns: RehearsalColumn[], afterColumns: RehearsalColumn[]): ColumnPair[] {
   const beforeByName = new Map(beforeColumns.map(c => [sqliteName(c.name), c]));
   const pairs: ColumnPair[] = [];
   for (const afterColumn of afterColumns) {
     const nameKey = sqliteName(afterColumn.name);
-    if (pkAfterNames.has(nameKey)) continue;
     const match = beforeByName.get(nameKey);
     if (match) pairs.push({ after: afterColumn.name, before: match.name });
   }
@@ -351,7 +351,7 @@ function duplicateNullKeyCount(db: DatabaseSync, tableRef: string, columns: stri
 // plus merged rows.
 // A primary-key match preserves at most one before row for each after row.
 // Extra before rows have no continuation, so each counts as deleted.
-// Updated: primary key in both, and at least one common column differs --
+// Updated: primary key in both, and at least one primary-key or common column differs --
 // `IS NOT ... COLLATE BINARY` catches a value change even across a NOCASE
 // or other non-binary column collation (ADR 0139: measured, plain `IS NOT`
 // alone misses an upper() rewrite on a COLLATE NOCASE column), and
@@ -382,7 +382,7 @@ function duplicateNullKeyCount(db: DatabaseSync, tableRef: string, columns: stri
 // aggregates over the same after-row scan. A merged after row stays unchanged
 // when any matching before row has the same values, because that row can be
 // its continuation while the other matching rows count as deleted.
-function diffTable(db: DatabaseSync, table: string, beforeTable: string, pk: ColumnPair[], nonPk: ColumnPair[], valuePreservingColumns: Set<string> = new Set()): { inserted: number; deleted: number; updated: number; remainingUpdated: number; ambiguousBeforeRows: number } {
+function diffTable(db: DatabaseSync, table: string, beforeTable: string, pk: ColumnPair[], columns: ColumnPair[], valuePreservingColumns: Set<string> = new Set()): { inserted: number; deleted: number; updated: number; remainingUpdated: number; ambiguousBeforeRows: number } {
   const mainTable = `main.${quoteIdent(table)}`;
   const beforeTableRef = `${quoteIdent(BEFORE_SCHEMA)}.${quoteIdent(beforeTable)}`;
   const pkJoin = pk.map(p => `a.${quoteIdent(p.after)} is b.${quoteIdent(p.before)}`).join(' and ');
@@ -391,15 +391,16 @@ function diffTable(db: DatabaseSync, table: string, beforeTable: string, pk: Col
   const mergedDeleted = Number(db.prepare(`select coalesce(sum((select count(*) from ${beforeTableRef} b where ${pkJoin}) - 1), 0) as n from ${mainTable} a where (select count(*) from ${beforeTableRef} b where ${pkJoin}) > 1`).get()!.n);
   const deleted = unmatchedDeleted + mergedDeleted;
   const ambiguousBeforeRows = Number(db.prepare(`select count(*) as n from ${beforeTableRef} b where (select count(*) from ${mainTable} a where ${pkJoin}) > 1`).get()!.n);
-  let updated = 0;
-  let remainingUpdated = 0;
-  if (nonPk.length > 0) {
-    const strictTerms = nonPk.map(c => `(a.${quoteIdent(c.after)} is not b.${quoteIdent(c.before)} collate binary or typeof(a.${quoteIdent(c.after)}) is not typeof(b.${quoteIdent(c.before)}))`);
-    const relaxedTerms = nonPk.map((c, i) => valuePreservingColumns.has(sqliteName(c.before)) ? `(a.${quoteIdent(c.after)} is not b.${quoteIdent(c.before)} collate binary)` : strictTerms[i]!);
-    const row = db.prepare(`select count(*) filter (where not exists (select 1 from ${beforeTableRef} b where ${pkJoin} and not (${strictTerms.join(' or ')}))) as updated, count(*) filter (where not exists (select 1 from ${beforeTableRef} b where ${pkJoin} and not (${relaxedTerms.join(' or ')}))) as remaining from ${mainTable} a where exists (select 1 from ${beforeTableRef} b where ${pkJoin})`).get();
-    updated = Number(row!.updated);
-    remainingUpdated = Number(row!.remaining);
-  }
+  // `columns` holds the key columns too. The join above pairs keys under
+  // the after key's collation, so a key rewritten inside one equality class
+  // of that collation (upper() under NOCASE, trailing spaces under RTRIM)
+  // still pairs with its old row; comparing the key here is what counts that
+  // row as updated.
+  const strictTerms = columns.map(c => `(a.${quoteIdent(c.after)} is not b.${quoteIdent(c.before)} collate binary or typeof(a.${quoteIdent(c.after)}) is not typeof(b.${quoteIdent(c.before)}))`);
+  const relaxedTerms = columns.map((c, i) => valuePreservingColumns.has(sqliteName(c.before)) ? `(a.${quoteIdent(c.after)} is not b.${quoteIdent(c.before)} collate binary)` : strictTerms[i]!);
+  const row = db.prepare(`select count(*) filter (where not exists (select 1 from ${beforeTableRef} b where ${pkJoin} and not (${strictTerms.join(' or ')}))) as updated, count(*) filter (where not exists (select 1 from ${beforeTableRef} b where ${pkJoin} and not (${relaxedTerms.join(' or ')}))) as remaining from ${mainTable} a where exists (select 1 from ${beforeTableRef} b where ${pkJoin})`).get();
+  const updated = Number(row!.updated);
+  const remainingUpdated = Number(row!.remaining);
   return { inserted, deleted, updated, remainingUpdated, ambiguousBeforeRows };
 }
 
@@ -472,8 +473,8 @@ function diffAllTables(
       continue;
     }
     // Same guarantee as the pkPairs lookup above: both lookups always hit.
-    const nonPk = commonColumns(beforeColumns[beforeTable]!, afterColumns[table]!, pk);
-    const diffed = diffTable(db, table, beforeTable, pk, nonPk, retypedColumns.get(nameKey));
+    const columns = commonColumns(beforeColumns[beforeTable]!, afterColumns[table]!);
+    const diffed = diffTable(db, table, beforeTable, pk, columns, retypedColumns.get(nameKey));
     comparisons[table] = {
       compared: true,
       inserted: diffed.inserted,
@@ -520,7 +521,7 @@ function reportedRows(comparisons: Record<string, TableComparison>): Record<stri
 // a per-row comparison could catch it, and that comparison is exactly what
 // `compared: false` means the diff could not do.
 //
-// A column drop already excludes that column from `nonPk` (`commonColumns`
+// A column drop already excludes that column from the compared columns (`commonColumns`
 // above only pairs columns present on both sides), so the value it carried
 // away never counts as an update; test 'rows compares over the columns a
 // rebuild kept' pins this.

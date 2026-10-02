@@ -4,6 +4,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Fixed: Rehearsal counts a primary-key value that changes inside its own collation (`upper()` on a `NOCASE` key, trailing spaces on an `RTRIM` key) as updated, so such a rewrite no longer passes unreported. A key whose stored type changes under `expected.retyped` (an integer to the text of the same number) now also counts in the strict `updated` count of `result.rows`, while `ok` is unchanged.
 - Fixed: Build facts, migration introspection, the rehearsal, and runtime `migrate()` read catalogs with PRAGMA statements, so objects named after pragma table functions cannot hide tables or row loss.
 - Fixed: Rehearsal reads main table facts and rows explicitly, so same-named TEMP objects cannot hide schema changes or alter reported counts.
 - Fixed: A FROM-clause subquery that reads a column an earlier table does not have now gets SQLite's own `no such column` error, when the table name has no schema qualifier and no CTE of the same name hides it. Elsewhere the correlation refusal now calls the reference a reference to the earlier FROM item, not a column of it.

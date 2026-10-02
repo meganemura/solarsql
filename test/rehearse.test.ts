@@ -969,7 +969,10 @@ test('an ambiguous before-row match fails without hiding an unmatched deletion',
       alter table n rename to t
     `, { expected: { retyped: [{ table: 't', column: 'id' }], deleted: [{ table: 't' }] } });
     assert.equal(result.ok, false);
-    assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 1, updated: 0, remainingUpdated: 0 });
+    // Each paired key changed storage class (integer to text), so the strict
+    // count includes both rows; expected.retyped keeps them out of
+    // remainingUpdated.
+    assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 1, updated: 2, remainingUpdated: 0 });
     assert.equal(result.diagnostics[0]?.code, 'ROW_DIFF_FAILED');
     assert.equal(result.diagnostics[0]?.message, 'Primary-key row diff for t is unreliable: 1 before row matched two or more after rows; primary-key affinity or collation differences made the join non-one-to-one');
   } finally { db.close(); }
@@ -987,7 +990,7 @@ test('one before row matching two after rows fails the row diff', () => {
       alter table n rename to t
     `, { expected: { retyped: [{ table: 't', column: 'id' }], deleted: [{ table: 't' }] } });
     assert.equal(result.ok, false);
-    assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 0, updated: 0, remainingUpdated: 0 });
+    assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 0, updated: 2, remainingUpdated: 0 });
     assert.equal(result.diagnostics[0]?.code, 'ROW_DIFF_FAILED');
     assert.equal(result.diagnostics[0]?.message, 'Primary-key row diff for t is unreliable: 1 before row matched two or more after rows; primary-key affinity or collation differences made the join non-one-to-one');
   } finally { db.close(); }
@@ -1004,7 +1007,7 @@ test('opposite primary-key fan-ins do not cancel each other', () => {
       alter table n rename to t
     `, { expected: { retyped: [{ table: 't', column: 'id' }] } });
     assert.equal(result.ok, false);
-    assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 1, updated: 0, remainingUpdated: 0 });
+    assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 1, updated: 2, remainingUpdated: 0 });
     assert.equal(result.diagnostics[0]?.code, 'ROW_DIFF_FAILED');
     assert.equal(result.diagnostics[0]?.message, 'Primary-key row diff for t is unreliable: 1 before row matched two or more after rows; primary-key affinity or collation differences made the join non-one-to-one');
   } finally { db.close(); }
@@ -1987,14 +1990,120 @@ test('rows reports a renamed primary key as not compared, not a missing-match cr
   } finally { db.close(); }
 });
 
-test('rows excludes the primary key column from its own value comparison, so a NOCASE case change there does not count as updated', () => {
+test('rows counts a NOCASE primary-key case change as updated, and expected.updated accepts it', () => {
+  for (const expected of [undefined, { updated: [{ table: 't' }] }]) {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec("create table t(id text primary key collate nocase, v integer) strict; insert into t values ('abc', 1)");
+      const result = rehearseSnapshot(db, "update t set id = upper(id)", expected ? { expected } : undefined);
+      assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 1, remainingUpdated: 1 } });
+      assert.equal(result.ok, expected !== undefined, JSON.stringify(result));
+      if (!expected) assert.equal(result.diagnostics[0]?.message, 'Rows lost or changed unexpectedly: updated t (1)');
+    } finally { db.close(); }
+  }
+});
+
+test('a key rewrite that its own collation calls equal fails the rehearsal, in place and through a rebuild', () => {
+  const rebuild = (collation: string, key: string) => `create table n(id text collate ${collation} primary key not null, v integer) strict; insert into n select ${key}, v from t; drop table t; alter table n rename to t`;
+  for (const [start, migration] of [
+    ['nocase', 'update t set id = upper(id)'],
+    ['rtrim', "update t set id = id || '  '"],
+    ['binary', rebuild('nocase', 'upper(id)')],
+    ['binary', rebuild('rtrim', "id || '   '")],
+  ] as const) {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec(`create table t(id text collate ${start} primary key not null, v integer) strict; insert into t values ('a', 1), ('b', 2)`);
+      const result = rehearseSnapshot(db, migration);
+      assert.equal(result.ok, false, migration);
+      assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 0, updated: 2, remainingUpdated: 2 }, migration);
+      assert.equal(result.diagnostics[0]?.message, 'Rows lost or changed unexpectedly: updated t (2)', migration);
+      assert.deepEqual(db.prepare('select id from t order by id').all().map(row => row.id), ['a', 'b'], migration);
+    } finally { db.close(); }
+  }
+});
+
+test('a key rewrite counts as updated in a table whose every column is a key column', () => {
+  for (const [ddl, seed, migration, updated] of [
+    ['create table t(id text collate nocase primary key not null) strict', "insert into t values ('a'), ('b')", 'update t set id = upper(id)', 2],
+    ['create table t(a text collate nocase not null, b text collate rtrim not null, primary key (a, b)) strict', "insert into t values ('x', 'p'), ('y', 'q')", "update t set a = upper(a), b = b || ' ' where a = 'x'", 1],
+  ] as const) {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec(ddl); db.exec(seed);
+      const result = rehearseSnapshot(db, migration);
+      assert.equal(result.ok, false, migration);
+      assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 0, updated, remainingUpdated: updated }, migration);
+    } finally { db.close(); }
+  }
+});
+
+test('a key collation change that keeps every key value passes', () => {
   const db = new DatabaseSync(':memory:');
   try {
-    db.exec("create table t(id text primary key collate nocase, v integer) strict; insert into t values ('abc', 1)");
-    const result = rehearseSnapshot(db, "update t set id = upper(id)");
+    db.exec("create table t(id text primary key not null, v integer) strict; insert into t values ('a', 1), ('B', 2)");
+    const result = rehearseSnapshot(db, 'create table n(id text collate nocase primary key not null, v integer) strict; insert into n select id, v from t; drop table t; alter table n rename to t');
     assert.equal(result.ok, true, JSON.stringify(result));
-    assert.deepEqual(result.rows, { t: { compared: true, inserted: 0, deleted: 0, updated: 0, remainingUpdated: 0 } });
+    assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 0, updated: 0, remainingUpdated: 0 });
   } finally { db.close(); }
+});
+
+test('a non-STRICT integer key retyped to the text of the same number counts only in the strict updated count', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table t(id int primary key, v text); insert into t values (1, 'a')");
+    const result = rehearseSnapshot(db, 'create table n(id text primary key, v text); insert into n select cast(id as text), v from t; drop table t; alter table n rename to t', { expected: { retyped: [{ table: 't', column: 'id' }] } });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 0, updated: 1, remainingUpdated: 0 });
+  } finally { db.close(); }
+});
+
+test('a case change in the NOCASE column of a composite key counts as updated', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec("create table t(a text collate nocase not null, b integer not null, v text, primary key (a, b)) strict; insert into t values ('x', 1, 'v'), ('y', 2, 'v')");
+    const result = rehearseSnapshot(db, "update t set a = upper(a) where b = 1", { expected: { updated: [{ table: 't' }] } });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 0, updated: 1, remainingUpdated: 1 });
+  } finally { db.close(); }
+});
+
+test('the updated count matches a separate collation-aware pairing of the before and after rows', async () => {
+  const { test: property } = await import('@hegeldev/hegel');
+  const gs = await import('@hegeldev/hegel/generators');
+  property(tc => {
+    const collation = tc.draw(gs.sampledFrom(['binary', 'nocase', 'rtrim']));
+    const strict = tc.draw(gs.booleans());
+    const keys = tc.draw(gs.arrays(gs.sampledFrom(['a', 'b', 'c', 'd', 'ab', 'ba']), { minSize: 1, maxSize: 6, unique: true }));
+    // Each rewrite stays inside the key's equality class under its collation,
+    // so every after row pairs with exactly one before row.
+    const rows = keys.map((key, index) => {
+      const nextKey = collation === 'nocase' ? [...key].map(ch => tc.draw(gs.booleans()) ? ch.toUpperCase() : ch).join('')
+        : collation === 'rtrim' ? key + ' '.repeat(tc.draw(gs.integers({ minValue: 0, maxValue: 2 })))
+        : key;
+      return { key, value: index, nextKey, nextValue: tc.draw(gs.booleans()) ? index + 100 : index };
+    });
+    const ddl = `create table t(id text collate ${collation} primary key not null, v integer)${strict ? ' strict' : ''}`;
+    const seed = rows.map(row => `insert into t values ('${row.key}', ${row.value});`).join('\n');
+    const migration = rows.map(row => `update t set id = '${row.nextKey}', v = ${row.nextValue} where id = '${row.key}' collate binary;`).join('\n');
+    const after = new DatabaseSync(':memory:');
+    const db = new DatabaseSync(':memory:');
+    const oracle = new DatabaseSync(':memory:');
+    try {
+      after.exec(ddl); after.exec(seed); after.exec(migration);
+      // The oracle pairs rows itself, with the after key's collation spelled
+      // out, and compares each paired column by storage class and by value
+      // under binary collation.
+      oracle.exec('create table b(id, v); create table a(id, v)');
+      for (const row of rows) oracle.prepare('insert into b values (?, ?)').run(row.key, row.value);
+      for (const row of after.prepare('select id, v from t').all()) oracle.prepare('insert into a values (?, ?)').run(row.id ?? null, row.v ?? null);
+      const expectedUpdated = Number(oracle.prepare(`select count(*) as n from a join b on a.id = b.id collate ${collation} where not (a.id = b.id collate binary and typeof(a.id) = typeof(b.id) and a.v = b.v and typeof(a.v) = typeof(b.v))`).get()!.n);
+      db.exec(ddl); db.exec(seed);
+      const result = rehearseSnapshot(db, migration, expectedUpdated > 0 ? { expected: { updated: [{ table: 't' }] } } : undefined);
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.deepEqual(result.rows.t, { compared: true, inserted: 0, deleted: 0, updated: expectedUpdated, remainingUpdated: expectedUpdated });
+    } finally { after.close(); db.close(); oracle.close(); }
+  });
 });
 
 test('a TMPDIR containing a single quote is escaped correctly in the row diff\'s own ATTACH', () => {
