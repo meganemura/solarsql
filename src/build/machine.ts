@@ -150,6 +150,8 @@ export async function runHuman(cli: string, args: string[], timeoutMs: number): 
     console.error(`error: ${failure.message}`);
     return 1;
   }
+  // Node's exit handler records either the signal or the exit code, so exactly
+  // one of them is non-null here, and either check alone gives this result.
   return signal === null && code !== null ? code : 1;
 }
 
@@ -188,6 +190,9 @@ async function collectReport(cli: string, args: string[], options: ProcessOption
   });
   clearTimeout(timer);
   const report = reports[0];
+  // Node records an exit code only when it reports no signal, so a reported
+  // signal leaves the exit code null and the exit-code comparison already
+  // refuses it; the signal check gives the same result.
   if (!timedOut && !failure && reports.length === 1 && validReport(report) && code === (report.ok ? 0 : 1) && signal === null) {
     return { code, report };
   }

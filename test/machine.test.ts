@@ -108,10 +108,12 @@ async function parentChannel(error?: Error) {
     }
     if (event === "spawn") {
       parentChildren.push(this);
-      if (error) emit.call(this, "error", error);
     }
     // Listener exceptions must fail this test instead of escaping into the runner.
-    try { return emit.call(this, event, ...args); }
+    try {
+      if (event === "spawn" && error) emit.call(this, "error", error);
+      return emit.call(this, event, ...args);
+    }
     catch (exception) { parentExceptions.push(exception); return false; }
   });
   return { ...channel, errors };
@@ -138,6 +140,86 @@ function reportOutput() {
     return JSON.parse(writes[0]!.text);
   };
 }
+
+const defaultAction = "Check stderr for application import output and premature process termination.";
+
+function failedReport(message: string, code = "BUILD_WORKER_FAILED", action = defaultAction, timeoutMs?: number) {
+  return { version: 1, ok: false, diagnostics: [{ code, message, ...(timeoutMs === undefined ? {} : { timeoutMs }), action }] };
+}
+
+for (const [label, options, exit, signal] of [
+  ["no reports", { count: 0 }, 0, null],
+  ["two reports", { count: 2 }, 0, null],
+  ["successful report with exit one", { code: 1 }, 1, null],
+  ["failed report with exit zero", { ok: false, code: 0 }, 0, null],
+  ["report followed by a signal", { signal: true }, null, "SIGKILL"],
+] as const) {
+  test(`machine rejects ${label} with the default failure diagnostic`, async () => {
+    const { machine } = await parentChannel();
+    const report = reportOutput();
+    assert.equal(await bounded(machine.runMachine(parentFixture, ["inspect", JSON.stringify({ mode: "report-case", ...options })], { timeoutMs: 5000 })), 1);
+    const child = parentChildren.at(-1)!;
+    assert.deepEqual(report(), failedReport(`The process ended without one valid report (exit ${child.exitCode}, signal ${child.signalCode}).`));
+    // On Windows, Node's process.kill ends the process abruptly instead of
+    // sending a POSIX signal, so the exit values it reports can differ.
+    if (signal === null) assert.deepEqual([child.exitCode, child.signalCode], [exit, null]);
+    else assert.notEqual(child.exitCode, 0);
+  });
+}
+
+for (const field of ["protocol", "token", "type", "null"]) {
+  test(field === "null" ? "machine ignores a null report message" : `machine ignores a report message with an invalid ${field}`, async () => {
+    const { machine } = await parentChannel();
+    const report = reportOutput();
+    assert.equal(await bounded(machine.runMachine(parentFixture, ["inspect", JSON.stringify({ mode: "report-case", field, value: "wrong" })], { timeoutMs: 5000 })), 0);
+    assert.deepEqual(report(), { version: 1, ok: true, diagnostics: [] });
+  });
+}
+
+test("machine reports a child error even with a valid report and exit zero", async () => {
+  const { machine } = await parentChannel(new Error("worker channel failed"));
+  const report = reportOutput();
+  assert.equal(await bounded(machine.runMachine(parentFixture, ["inspect", JSON.stringify({ mode: "report-case" })], { failureCode: "CUSTOM_FAILURE", action: "Inspect the worker." })), 1);
+  assert.deepEqual(report(), failedReport("worker channel failed", "CUSTOM_FAILURE", "Inspect the worker."));
+});
+
+for (const custom of [false, true]) {
+  timeoutTest(`machine timeout diagnostic uses ${custom ? "custom" : "default"} code and action`, async () => {
+    const { machine } = await parentChannel();
+    const report = reportOutput();
+    const options = custom ? { timeoutMs: 1000, timeoutCode: "CUSTOM_TIMEOUT", action: "Inspect the budget." } : { timeoutMs: 1000 };
+    assert.equal(await bounded(machine.runMachine(parentFixture, ["inspect", JSON.stringify({ mode: "wait", delay: 3000 })], options)), 1);
+    assert.equal(parentChildren.at(-1)!.signalCode, "SIGKILL");
+    assert.deepEqual(report(), failedReport("The operation exceeded its 1000ms time budget.", custom ? "CUSTOM_TIMEOUT" : "WORKER_TIMEOUT", custom ? "Inspect the budget." : defaultAction, 1000));
+  });
+}
+
+timeoutTest("machine report cancels the deadline before the child closes", async () => {
+  const { machine } = await parentChannel();
+  const report = reportOutput();
+  assert.equal(await bounded(machine.runMachine(parentFixture, ["inspect", JSON.stringify({ mode: "report-case", delay: 50 })], { timeoutMs: 1000 })), 0);
+  assert.deepEqual(report(), { version: 1, ok: true, diagnostics: [] });
+  assert.equal(vi.getTimerCount(), 0);
+});
+
+timeoutTest("machine without a timeout accepts a report after the clock advances", async () => {
+  const { machine } = await parentChannel();
+  const report = reportOutput();
+  // Send the report after fixture-ready so an accidental zero-budget timer fires first.
+  assert.equal(await bounded(machine.runMachine(parentFixture, ["inspect", JSON.stringify({ mode: "report-case", delay: 0, waitBefore: true })])), 0);
+  assert.deepEqual(report(), { version: 1, ok: true, diagnostics: [] });
+  assert.equal(parentChildren.at(-1)!.exitCode, 0);
+  assert.equal(vi.getTimerCount(), 0);
+});
+
+test("machine clears its deadline when a child closes without a report", async () => {
+  const { machine } = await parentChannel();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const report = reportOutput();
+  assert.equal(await bounded(machine.runMachine(parentFixture, ["inspect", JSON.stringify({ mode: "failure" })], { timeoutMs: 5000 })), 1);
+  assert.deepEqual(report(), failedReport("The process ended without one valid report (exit 7, signal null)."));
+  assert.equal(vi.getTimerCount(), 0);
+});
 
 test("machine rejects primitive, array, and function reports after IPC serialization", async () => {
   const { machine } = await parentChannel();

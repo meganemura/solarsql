@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 const options = JSON.parse(process.argv[3]!) as {
   mode: string; path?: string; receipt?: string; delay?: number; code?: number;
   field?: string; value?: unknown;
+  count?: number; ok?: boolean; signal?: boolean; waitBefore?: boolean;
 };
 const pause = async (ms: number) => {
   // The parent can advance its test clock after control messages and file writes.
@@ -22,10 +23,23 @@ const pause = async (ms: number) => {
 };
 const protocol = "solarsql.direct-worker.v1";
 const token = process.env.SOLARSQL_CLI_PROTOCOL_TOKEN;
+const reportToken = process.env.SOLARSQL_REPORT_PROTOCOL_TOKEN;
 // Capture the token before machine.ts consumes the worker environment.
 const { announceMigrationLock, announceWorkerDone, printReport } = await import("../../src/build/machine.ts");
 
-if (options.mode === "report" || options.mode === "remove-root") {
+if (options.mode === "report-case") {
+  const report = { version: 1, ok: options.ok ?? true, diagnostics: [] };
+  const message = { protocol, token: reportToken, type: "report", report };
+  const send = (value: unknown) => new Promise<void>((resolve, reject) => {
+    process.send!(value, error => error ? reject(error) : resolve());
+  });
+  if (options.waitBefore) await pause(options.delay!);
+  if (options.field) await send(options.field === "null" ? null : { ...message, [options.field]: options.value });
+  for (let i = 0; i < (options.count ?? 1); i++) await send(message);
+  if (options.delay !== undefined && !options.waitBefore) await pause(options.delay);
+  if (options.signal) process.kill(process.pid, "SIGKILL");
+  process.exitCode = options.code ?? (report.ok ? 0 : 1);
+} else if (options.mode === "report" || options.mode === "remove-root") {
   const root = process.env.TMPDIR!;
   // Reject a shared temporary directory before creating or removing fixture files.
   if (dirname(root) !== dirname(dirname(options.receipt!))) throw new Error("Expected a dedicated temporary directory.");
