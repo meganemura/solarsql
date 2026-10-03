@@ -28,13 +28,15 @@ test("on D1, run() rejects with an error constraintFailure() cannot classify, an
     assert.equal(response.status, 200);
     const reply = (await response.json()) as { threw: boolean; name?: string; message?: string };
     assert.equal(reply.threw, true, JSON.stringify(reply));
+    console.warn("or-rollback D1: response read; threw =", reply.threw);
   } catch (e) {
     // A dropped connection still means run() did not complete, and the row
     // check below holds either way. Elsewhere a reset still fails the test.
     const cause = (e as { cause?: { code?: unknown } }).cause;
     if (!(process.platform === "win32" && e instanceof TypeError && e.message === "fetch failed" && cause?.code === "ECONNRESET")) throw e;
+    console.warn("or-rollback D1: dispatchFetch reset; the threw check did not run");
   } finally {
-    await mf.dispose().catch(() => {});
+    await mf.dispose().catch((e: unknown) => console.warn("or-rollback D1: dispose failed:", e));
   }
   const reader = workerMiniflare(resolve(root, "test/or-rollback.worker.ts"), root, { persistTo });
   onTestFinished(() => reader.dispose());
