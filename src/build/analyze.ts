@@ -67,8 +67,15 @@ function analyzeCatalog(engine: Engine, catalog: unknown, library: string) {
       // reaches the output only through emitGenerated.
       return { name, key: sql, analysis: typer.analyze(statement, "schema"), origins: engine.columns(statement), accesses: engine.accesses(statement), returning: false as const };
     } catch (e) {
-      if (e instanceof BuildError) e.locations.push(`queries.${name}`);
-      throw e;
+      // A prepare inside an engine probe throws SQLite's own Error, which
+      // carries no location, so it is wrapped to name the catalog entry.
+      // Any other error stays as thrown: it is not a fault in the query.
+      // A lock error also stays, so analyzeDatabase still reports the lock.
+      const sqliteError = e instanceof Error && (e as { code?: unknown }).code === "ERR_SQLITE_ERROR" && !isLockError(e);
+      const error = e instanceof BuildError ? e : sqliteError ? new BuildError(e.message, sql) : undefined;
+      if (!error) throw e;
+      error.locations.push(`queries.${name}`);
+      throw error;
     }
   });
   // Repeated SQL names share one metadata entry, while the catalog retains every name.

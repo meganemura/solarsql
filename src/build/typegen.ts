@@ -252,22 +252,22 @@ export class Typer {
     return result;
   }
 
-  private sourceRows(source: ReturnType<typeof querySources>[number], environment: Map<string, Binding>, active: Set<Binding | string>, note: (r: Resolved) => Resolved, matched = false, siblings?: Map<string, ScopeColumn[]>): ScopeColumn[] {
-    if (source.query) return this.scopeRows(source.query, environment, active, note);
+  private sourceRows(source: ReturnType<typeof querySources>[number], environment: Map<string, Binding>, active: Set<Binding | string>, note: (r: Resolved) => Resolved, matched = false, parent?: ScopeContext): ScopeColumn[] {
+    // A derived table cannot see a sibling FROM source, but it can read a
+    // column of an enclosing query, so it gets the enclosing context and not
+    // the context of its own FROM list. A non-recursive CTE body below gets
+    // the enclosing context for the same reason.
+    if (source.query) return this.scopeRows(source.query, environment, active, note, parent);
     if (source.functionSql) {
-      // A table-valued function's argument can name an earlier FROM
-      // source's column (json_each(o.tags), json_each(o.value -> 'lines')):
-      // SQLite resolves that reference at run time (measured on node:sqlite,
-      // local D1, and a local Durable Object all running it). The probe
-      // below only needs the function's own output
-      // columns, so an outer reference is replaced with `null` (the same
-      // detach detachedProbe already does for a parent query's alias)
-      // instead of being carried into the probe, which would need the
-      // earlier source's own FROM text prepended and reintroduce a
-      // "column resolved against the wrong alias" failure. This also covers a non-JSON table-valued function, such as
-      // pragma_table_info(t.name), with no separate fixed-column table.
-      const probe = `select * from ${source.functionSql}`;
-      const detached = siblings ? this.detachSiblingReferences(probe, siblings) : probe;
+      // The output columns of SQLite's table-valued functions (json_each,
+      // json_tree, the pragma functions, an FTS5 table) do not depend on the
+      // argument values. An argument can read a column of an earlier FROM
+      // source or of any enclosing query (json_each(o.tags), or
+      // exists (select 1 from json_each(items.labels))), which this probe
+      // cannot see, so each argument is replaced with null. The full
+      // statement is still prepared as a whole, so a wrong reference or a
+      // wrong argument count fails there.
+      const detached = `select * from ${nullArguments(source.functionSql)}`;
       return this.engine.columns(this.scopeProbe(detached, environment)).map((column) => ({ name: column.name, type: "SqlValue", json: false }));
     }
     const name = source.name!;
@@ -282,7 +282,7 @@ export class Typer {
       const rename = (rows: ScopeColumn[]) => rows.map((column, i) => ({ ...column, name: binding.columns[i] ?? column.name }));
       const scope = queryScope(binding.sql);
       if (scope.branches.length === 1 || scope.operators.some((op) => !op.startsWith("union"))) {
-        return rename(this.scopeRows(binding.sql, binding.environment, next, note));
+        return rename(this.scopeRows(binding.sql, binding.environment, next, note, parent));
       }
       // The seed starts a monotone type union. Accept only a fixed point:
       // this proves that another recursive step cannot add a new value type.
@@ -360,28 +360,6 @@ export class Typer {
     }
     for (const replacement of replacements.reverse()) sql = sql.slice(0, replacement.start) + "null" + sql.slice(replacement.end);
     return this.scopeProbe(sql, context.environment);
-  }
-
-  // A table-valued function's own arguments (sourceRows, above) can qualify
-  // a column with an alias already resolved earlier in the same FROM list
-  // (json_each(o.tags), pragma_table_info(t.name)). The engine only needs
-  // the function's output columns here, so that reference is replaced with
-  // `null`, the same substitution detachedProbe makes for a parent query's
-  // alias; `siblings` differs from detachedProbe's `context.parent` in that
-  // it walks the sources of this same FROM list, not an enclosing query.
-  private detachSiblingReferences(sql: string, siblings: Map<string, ScopeColumn[]>): string {
-    const tokens = significant(tokenize(sql));
-    const replacements: { start: number; end: number }[] = [];
-    for (let i = 0; i < tokens.length; i++) {
-      const token = tokens[i]!;
-      if (token.type !== "ident" || tokens[i + 1]?.text !== "." || tokens[i + 2]?.type !== "ident") continue;
-      if (siblings.has(sqliteName(unquote(token.text)))) {
-        replacements.push({ start: token.start, end: tokens[i + 2]!.end });
-        i += 2;
-      }
-    }
-    for (const replacement of replacements.reverse()) sql = sql.slice(0, replacement.start) + "null" + sql.slice(replacement.end);
-    return sql;
   }
 
   // SQLite gives a FROM-clause subquery a closed scope. Thus, a reference
@@ -498,7 +476,7 @@ export class Typer {
     const matchedAliases = new Set([...unconditionalMatchAliases(sql)].map(sqliteName));
     for (const source of sources) {
       const alias = sqliteName(source.alias);
-      const rows = this.sourceRows(source, environment, active, note, matchedAliases.has(alias), context.rows);
+      const rows = this.sourceRows(source, environment, active, note, matchedAliases.has(alias), parent);
       const common = new Set((source.natural ? rows.filter((column) => !column.hidden && context.visible.some((left) => sqliteName(left.name) === sqliteName(column.name))).map((column) => column.name) : source.using).map(sqliteName));
       const before = context.visible;
       if (source.join === "right" || source.join === "full") {
@@ -1354,6 +1332,17 @@ export function castNeverNull(expr: string, columnNullable: (ref: { alias: strin
   if (lt.length === 1 && (lt[0]!.type === "number" || lt[0]!.type === "string")) return true;
   const ref = columnRef(last);
   return ref !== null && columnNullable(ref) === false;
+}
+
+// A table-valued function call with each argument replaced by null; the
+// argument count stays, so the probe sees the same function overload.
+function nullArguments(call: string): string {
+  const tokens = significant(tokenize(call));
+  const open = tokens.findIndex((token) => token.text === "(");
+  const close = tokens.length - 1;
+  if (open < 0 || tokens[close]?.text !== ")" || close === open + 1) return call;
+  const count = splitAtCommas(call, tokens, open + 1, close).length;
+  return `${call.slice(0, tokens[open]!.end)}${Array(count).fill("null").join(", ")})`;
 }
 
 // The index of a statement's own verb: `0`, or — when the statement opens

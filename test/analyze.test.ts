@@ -611,3 +611,108 @@ test("analysis names TEMP or the schema for a schema statement outside the main 
   // A main-qualified declaration is not refused for its schema.
   assert.doesNotThrow(() => analyzeSchema("create table main.t (id integer primary key) strict", {}));
 });
+
+test('the correlated json_each fixture is the current analyze output, and node:sqlite runs it with the driver\'s rows', async () => {
+  const fixture = await import('./fixtures/correlated-json-each.ts');
+  const { generated, statements } = await import('./fixtures/correlated-json-each.generated.ts');
+  const { queries } = await import('../src/index.ts');
+  const { node } = await import('../src/node.ts');
+  const expected = readFileSync(join(root, 'test/fixtures/correlated-json-each.generated.ts'), 'utf8');
+  assert.equal(analyzeSchema(fixture.schema, fixture.catalog, '../../src/index.ts').generated, expected);
+  const q = queries(generated, statements);
+  const db = new DatabaseSync(':memory:');
+  onTestFinished(() => db.close());
+  db.exec(fixture.schema);
+  for (const [id, labels] of fixture.rows) db.prepare('insert into items (id, labels) values (?, ?)').run(id, labels);
+  const adapter = node(db);
+  for (const label of fixture.labels) {
+    const rows = await adapter.all(q.byLabel, { label });
+    assert.deepEqual(rows, db.prepare(fixture.catalog.byLabel).all({ label }).map(row => ({ ...row })), label);
+    assert.deepEqual(rows, await adapter.all(q.byLabelJoin, { label }), label);
+  }
+  assert.deepEqual((await adapter.all(q.byLabel, { label: 'red' })).map(row => row.id), ['a', 'd']);
+  assert.deepEqual(await adapter.all(q.labelCounts), db.prepare(fixture.catalog.labelCounts).all().map(row => ({ ...row })));
+});
+
+test('a table-valued function that reads an enclosing query\'s column is analyzed exactly when node:sqlite prepares it', () => {
+  const schema = 'create table items (id text primary key, labels text not null, parent text); create table groups (id text primary key, name text not null);';
+  const shapes = [
+    'select items.* from items where exists (select 1 from json_each(items.labels) where value = :label)',
+    'select id from items where not exists (select 1 from json_each(items.labels) where value = :label)',
+    'select i.id from items as i where exists (select 1 from json_each(i.labels) where value = :label)',
+    'select I.id from items I where exists (select 1 from json_each(i.labels) where value = :label)',
+    'select "items".id from items where exists (select 1 from json_each("items".labels) where value = :label)',
+    'select id, (select cast(count(*) as integer) from json_each(items.labels) where value = :label) as hits from items',
+    'select g.id from groups g where exists (select 1 from items where items.parent = g.id and exists (select 1 from json_each(items.labels) where value = :label))',
+    'select g.id from groups g where exists (select 1 from items where exists (select 1 from json_each(g.name) where value = :label))',
+    'select id from items where exists (select 1 from json_tree(items.labels) where atom = :label)',
+    'select g.id from groups g where exists (select 1 from pragma_table_info(g.name) where name = :col)',
+    'select id from items where exists (select 1 from json_each(items.labels) as l where l.value = :label)',
+    'select items.id from items where exists (select 1 from items as x, json_each(items.labels) where x.id = :id)',
+    'select id from items where id = :id and exists (select 1 from json_each(items.labels) where value = :label)',
+    'select id from items where exists (select 1 from json_each(items.missing) where value = :label)',
+    'select id from items where exists (select * from (select value from json_each(items.labels)) where value = :label)',
+    'select id from items where exists (with w as (select value from json_each(items.labels)) select 1 from w where value = :label)',
+    'select id from items where exists (select 1 from json_each(labels) where value = :label)',
+    'select id from items where exists (select 1 from json_each(items.labels, \'$\') where value = :label)',
+    'select g.id from groups g where exists (select 1 from pragma_table_info(g.name, \'main\') where name = :col)',
+    'select i.id from items i where exists (select 1 from groups i, json_each(i.name) where value = :label)',
+    'select id from items order by (select count(*) from json_each(items.labels))',
+    'select id from items where exists (select 1 from json_each(items.labels, 1, 2) where value = :label)',
+    'select id from items where exists (select 1 from json_each(nowhere.labels) where value = :label)',
+  ];
+  const db = new DatabaseSync(':memory:');
+  onTestFinished(() => db.close());
+  db.exec(schema);
+  for (const sql of shapes) {
+    let native: string | null = null;
+    try { db.prepare(sql); } catch (error) { native = (error as Error).message; }
+    let analyzed: string | null = null;
+    try { analyzeSchema(schema, { shape: sql }); } catch (error) { analyzed = (error as Error).message.split('\n')[0]!; }
+    assert.equal(analyzed, native, sql);
+  }
+});
+
+test('a SQLite error from an engine probe names its catalog entry', () => {
+  let sqliteError: unknown;
+  try { new DatabaseSync(':memory:').prepare('select nowhere.x'); } catch (error) { sqliteError = error; }
+  const spy = vi.spyOn(Engine.prototype, 'columns').mockImplementation(() => { throw sqliteError; });
+  try {
+    assert.throws(() => analyzeSchema(schema, { item: 'select n from items' }), (error: unknown) => {
+      assert.ok(error instanceof BuildError);
+      assert.equal(error.message.split('\n')[0], 'no such column: nowhere.x');
+      assert.deepEqual(error.locations, ['queries.item']);
+      return true;
+    });
+  } finally { spy.mockRestore(); }
+});
+
+test('a statement in a command plan passes an enclosing column to a table-valued function, typed exactly when node:sqlite prepares it', () => {
+  const schema = 'create table items (id text primary key, labels text not null, n integer) strict; create table groups (id text primary key, name text not null) strict;';
+  const statements = [
+    'update items set n = 1 where exists (select 1 from json_each(items.labels) where value = :label)',
+    'delete from items where exists (select 1 from json_each(items.labels) where value = :label)',
+    'delete from items where exists (select 1 from json_each(items.labels) where value = :label) returning id',
+    'update items set n = 1 from groups g where g.id = items.id and exists (select 1 from json_each(g.name) where value = :label)',
+    'update items set n = (select count(*) from json_each(items.labels)) where id = :id',
+    'insert into groups (id, name) select id, labels from items where exists (select 1 from json_each(items.labels) where value = :label)',
+    'update items set n = 1 where exists (select 1 from json_each(items.missing) where value = :label)',
+  ];
+  const engine = new Engine([schema]);
+  onTestFinished(() => engine.close());
+  const typer = new Typer(engine, new Map());
+  for (const sql of statements) {
+    let native: string | null = null;
+    try { engine.db.prepare(sql); } catch (error) { native = (error as Error).message; }
+    let typed: string | null = null;
+    try { typer.analyze(sql, 'm'); } catch (error) { typed = (error as Error).message.split('\n')[0]!; }
+    assert.equal(typed, native, sql);
+  }
+});
+
+test('a SQLite lock error from an engine probe stays as thrown, so database analysis can still report the lock', () => {
+  const locked = Object.assign(new Error('database is locked'), { code: 'ERR_SQLITE_ERROR', errcode: 5 });
+  const spy = vi.spyOn(Engine.prototype, 'columns').mockImplementation(() => { throw locked; });
+  try { assert.throws(() => analyzeSchema(schema, { item: 'select n from items' }), error => error === locked); }
+  finally { spy.mockRestore(); }
+});

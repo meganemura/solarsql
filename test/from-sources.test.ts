@@ -8,7 +8,7 @@
 // different owner's file) already exercises the example project itself.
 import { onTestFinished, test } from "vitest";
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -78,4 +78,25 @@ test("a FROM-clause subquery reading an earlier FROM item's column is refused, n
     assert.match(message, /\n\s*at: .*shop[\\/]module\.ts/);
     return true;
   });
+});
+
+test("a module query whose subquery passes an enclosing column to json_each builds, and returns the matching rows", async () => {
+  const { dir, config } = project();
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+  writeModule(dir, "queries", `export const shopQueries = queries(generated, { tagged: "select o.id from orders o where exists (select 1 from json_each(o.tags) where value = :tag) order by o.id" });`);
+  await build(config);
+  const written = await migration(config, "shop");
+  assert.ok(written.filename);
+
+  // build() imports shop/module.ts through a fresh URL, but that module's
+  // own import of ./solarsql.generated.ts uses the plain URL, which stays
+  // cached with the file as it was during the build, with no parameter.
+  // A copy of the built module has URLs this process has not loaded.
+  cpSync(resolve(dir, "shop"), resolve(dir, "built"), { recursive: true });
+  const { shopQueries } = await import(pathToFileURL(resolve(dir, "built/module.ts")).href);
+  const { node } = await import("../src/node.ts");
+  const db = new DatabaseSync(":memory:");
+  db.exec(readFileSync(resolve(dir, "migrations", written.filename!), "utf8"));
+  for (const [id, tags] of [["o1", ["a", "b"]], ["o2", ["b"]], ["o3", ["a", "a"]]] as const) db.prepare("insert into orders (id, tags) values (?, ?)").run(id, JSON.stringify(tags));
+  assert.deepEqual(await node(db).all(shopQueries.tagged, { tag: "a" }), [{ id: "o1" }, { id: "o3" }]);
 });
