@@ -6,30 +6,41 @@
 // test/miniflare/deferred-foreign-key.test.ts uses for its own refused shape.
 import { test, onTestFinished } from "vitest";
 import assert from "node:assert/strict";
-import { resolve } from "node:path";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { workerMiniflare } from "../worker.ts";
 
 const root = resolve(import.meta.dirname, "../..");
 
 test("on D1, run() rejects with an error constraintFailure() cannot classify, and no plan row remains", async () => {
-  const mf = workerMiniflare(resolve(root, "test/or-rollback.worker.ts"), root, {});
-  onTestFinished(() => mf.dispose());
-  // On Windows, workerd's local D1 appears to drop the connection while this
-  // INSERT OR ROLLBACK ends the transaction: dispatchFetch failed with "fetch
-  // failed", caused by ECONNRESET, in both attempts of a windows-latest CI run
-  // on 2026-10-03, and once on 2026-09-25, where a rerun passed.
-  // A dropped connection still means run() did not complete, and the row
-  // check below holds either way. Elsewhere a reset still fails the test.
+  // On some windows-latest VMs, workerd prints "There was an access
+  // violation in the runtime" in this test, and the first instance then
+  // resets the request (ECONNRESET) or refuses later connections
+  // (ECONNREFUSED). On 2026-10-03 one VM printed it in 20 of 20 runs, and
+  // another VM printed it in none. So the rows are read from a second
+  // Miniflare over the same persisted storage.
+  const persistTo = mkdtempSync(join(tmpdir(), "solarsql-or-rollback-"));
+  onTestFinished(() => rmSync(persistTo, { recursive: true, force: true, maxRetries: 5 }));
+  const mf = workerMiniflare(resolve(root, "test/or-rollback.worker.ts"), root, { persistTo });
   try {
     const response = await mf.dispatchFetch("http://localhost/d1", { method: "POST" });
     assert.equal(response.status, 200);
     const reply = (await response.json()) as { threw: boolean; name?: string; message?: string };
     assert.equal(reply.threw, true, JSON.stringify(reply));
   } catch (e) {
+    // On Windows, a reset before the response means the threw check did
+    // not run, and only the row check below applies. The warning makes
+    // that visible in the CI log. Elsewhere a reset still fails the test.
     const cause = (e as { cause?: { code?: unknown } }).cause;
     if (!(process.platform === "win32" && e instanceof TypeError && e.message === "fetch failed" && cause?.code === "ECONNRESET")) throw e;
+    console.warn("or-rollback D1: dispatchFetch reset; the threw check did not run");
+  } finally {
+    await mf.dispose().catch((e: unknown) => console.warn("or-rollback D1: dispose failed:", e));
   }
-  const database = await mf.getD1Database("DB");
+  const reader = workerMiniflare(resolve(root, "test/or-rollback.worker.ts"), root, { persistTo });
+  onTestFinished(() => reader.dispose());
+  const database = await reader.getD1Database("DB");
   const rows = await database.prepare("select id from log").all();
   assert.deepEqual(rows.results, []);
 });
