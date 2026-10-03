@@ -4,6 +4,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+## 0.7.1 (2026-10-03)
+
 - Fixed: `solarsql analyze` and `solarsql build` type a table-valued function whose argument reads a column of an enclosing query, instead of failing with `no such column`. This covers EXISTS and scalar subqueries (`exists (select 1 from json_each(items.labels) where value = :label)`), a derived table or a non-recursive CTE inside such a subquery, and UPDATE and DELETE plan items. A recursive CTE inside the subquery still fails.
 - Fixed: when an engine probe in `solarsql analyze` fails with a SQLite error, the diagnostic names the catalog entry in `locations`, and the message shows the SQL.
 
