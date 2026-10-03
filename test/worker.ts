@@ -34,7 +34,7 @@ export function loadWorkerModules(entry: string, root: string): WorkerModule[] {
   return [...modules.values()];
 }
 
-export function workerMiniflare(entry: string, root: string, options: { durableObjects?: Record<string, string>; unsafeInspectDurableObjects?: boolean } = {}): Miniflare {
+export function workerMiniflare(entry: string, root: string, options: { durableObjects?: Record<string, string>; unsafeInspectDurableObjects?: boolean; persistTo?: string } = {}): Miniflare {
   const modules = loadWorkerModules(entry, root);
   return new Miniflare(
     convertV4MiniflareOptions({
@@ -48,6 +48,9 @@ export function workerMiniflare(entry: string, root: string, options: { durableO
       // raw rows before migrate() runs: every other caller's Miniflare
       // options object stays exactly what it was before this flag existed.
       ...(options.unsafeInspectDurableObjects ? { unsafeInspectDurableObjects: true } : {}),
+      // Only set when a test reads storage from a second instance, after the
+      // first one's workerd process may have stopped.
+      ...(options.persistTo ? { resourcePersistencePath: options.persistTo } : {}),
     }),
   );
 }
