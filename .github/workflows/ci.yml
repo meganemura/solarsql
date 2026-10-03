@@ -33,6 +33,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      # archstrict 0.1.0 compares Windows paths with the configured public
+      # surfaces and reports every import as a bypass. Module boundaries do
+      # not depend on the OS, so the ubuntu and macOS jobs check them.
       - run: npm run archstrict
+        if: runner.os != 'Windows'
       - run: npm run test:all
       - run: node src/build/cli.ts build --check example/solarsql.config.ts
