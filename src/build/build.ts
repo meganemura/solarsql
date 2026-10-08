@@ -202,6 +202,10 @@ export type Loaded = { config: Config; configDir: string; modules: Module[] };
 // nothing stops at a missing generated file instead.
 export async function load(configPath: string, write = true): Promise<Loaded> {
   const absolute = resolve(configPath);
+  if (!existsSync(absolute)) {
+    throw new BuildError(`${configPath} does not exist (${absolute}). Run: npx solarsql init <module>, or pass the path of an existing solarsql.config.ts.`, undefined,
+      "Run `npx solarsql init <module>`, or pass the path of an existing solarsql.config.ts.");
+  }
   const configDir = dirname(absolute);
   const stubbed: string[] = [];
   const config = (await importConfig(absolute, write, stubbed, configPath)).default as Config | undefined;

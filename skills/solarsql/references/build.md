@@ -152,6 +152,7 @@ Shared SQL reports all its catalog locations.
 | `An index belongs to the module of its table` | move the index to the owner of its table |
 | `schema:` | the engine refused the DDL; the rest is its own message |
 | `is missing. Run: npx solarsql build` | run the build; a check writes nothing |
+| `or pass the path of an existing solarsql.config.ts` | the configuration file is not at that path: run the command in the project's directory, pass the file's path, or start a project with `npx solarsql init <module>` |
 | `is not in modules` | the configuration imports a module it does not list; add the module's directory to `modules` |
 | `migration pending. Write the migration` | run `npx solarsql migration <name>` |
 | `migration blocked:` | follow the reason. For an ordinary removal, copy the exact JSON and command. For another block, split an ambiguous change, add a default, or write a data-preserving migration for a rebuild with foreign-key delete actions |

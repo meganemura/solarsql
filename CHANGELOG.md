@@ -9,6 +9,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 - Added: `node()` throws `UnsupportedRuntimeError`, exported from `solarsql/node`, with the code `UNSUPPORTED_RUNTIME`. The CLI gives the same code as the diagnostic code of the JSON report for `--json`, `inspect`, `rehearse`, and `analyze`, which printed a plain line before.
 - Changed: `solarsql query` on a refused runtime prints the refusal after `error: ` and exits 2, the same as its other failures. Before, it printed the plain line and exited 1, as `build` does.
 - Fixed: on a runtime without node:sqlite, such as Node 20 or Bun 1.3.14, the CLI prints the runtime refusal instead of failing where it imports node:sqlite, and `--help` and `--version` still answer.
+- Fixed: `solarsql build`, `migration`, `inspect`, and `query` with no configuration file at the given path print one error line that names the path and the next step. Before, `build` and `migration` printed the stack trace of Node's ERR_MODULE_NOT_FOUND.
 - Changed: `node()` opens and closes one in-memory connection per call to read the SQLite version. A database that is not open yet still works, and `solarsql/node` still loads on a runtime without node:sqlite.
 
 ## 0.7.1 (2026-10-03)

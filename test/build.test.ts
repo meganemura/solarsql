@@ -4,7 +4,7 @@
 import { describe, onTestFinished, test, vi } from "vitest";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, cpSync, existsSync, fstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, cpSync, existsSync, fstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -33,6 +33,26 @@ async function expectBuildError(dir: string, pattern: RegExp): Promise<void> {
 }
 
 describe("solarsql build", () => {
+  test("a missing configuration file is one error line with the next step, from build(), the CLI, and query", async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "solarsql-no-config-")));
+    try {
+      const absolute = join(dir, "solarsql.config.ts");
+      const message = `solarsql.config.ts does not exist (${absolute}). Run: npx solarsql init <module>, or pass the path of an existing solarsql.config.ts.`;
+      const cli = join(root, "src/build/cli.ts");
+      const run = (...args: string[]) => spawnSync(process.execPath, [cli, ...args], { cwd: dir, encoding: "utf8", timeout: 30_000 });
+      await assert.rejects(build(absolute), (e: unknown) => {
+        assert.ok(e instanceof BuildError, String(e));
+        assert.equal(e.message, `${absolute} does not exist (${absolute}). Run: npx solarsql init <module>, or pass the path of an existing solarsql.config.ts.`);
+        return true;
+      });
+      const human = run("build");
+      assert.deepEqual([human.status, human.stderr, human.stdout], [1, `error: ${message}\n`, "next: fix the error above, then npx solarsql build\n"]);
+      const machine = run("build", "--json");
+      assert.deepEqual([machine.status, JSON.parse(machine.stdout).diagnostics[0].action], [1, "Run `npx solarsql init <module>`, or pass the path of an existing solarsql.config.ts."]);
+      const query = run("query", "shop.customerQueries.byId", "--database", "shop.sqlite");
+      assert.deepEqual([query.status, query.stdout, query.stderr], [2, "", `error: ${message}\n`]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   for (const kind of ['table', 'view'] as const) {
     for (const invalid of ['STRICT', 'primary key'] as const) {
       test(`build checks ${invalid} with a pragma_table_list ${kind} in module DDL`, async () => {
