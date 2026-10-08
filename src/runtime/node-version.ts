@@ -1,20 +1,63 @@
-// Responsibility: refuse a Node version whose node:sqlite does not report
-// the SQLite build that the release's Miniflare pin uses for D1 and a
-// Durable Object (ADR 0129). The range is "^24.20.0 || >=26.7.0": Node 25
-// and Node 26.0-26.6 report an older SQLite, and Node 24 below 24.20.0
-// truncates TEXT at an embedded NUL and can fail a fresh-clone build.
-// Boundary: a pure string-in, string-or-null-out function. No process
-// access, so a table of versions can drive the test without spawning Node.
+// Responsibility: decide whether this process may run node() and the CLI,
+// from the runtime's process.versions and the SQLite version node:sqlite
+// reports (ADR 0129, ADR 0145).
+// Boundary: a pure function of strings. No process access and no
+// node:sqlite import, so a table of versions can drive the test.
 export const NODE_RANGE = "^24.20.0 || >=26.7.0";
 
-export function nodeVersionError(version: string): string | null {
+// The SQLite version this release's pinned workerd builds against (from
+// workerd's MODULE.bazel at the pinned tag, strip_prefix sqlite-src-NNNNNNN;
+// docs/releasing.md has the read-it-off-the-tag step). runtimeRefusal()
+// accepts a newer SQLite, because a newer Node can ship one before the
+// pinned workerd does (ADR 0129).
+export const WORKERD_SQLITE_VERSION = "3.53.4";
+
+export class UnsupportedRuntimeError extends Error {
+  readonly code = "UNSUPPORTED_RUNTIME";
+  constructor(message: string) {
+    super(message);
+    this.name = "UnsupportedRuntimeError";
+  }
+}
+
+// Bun sets process.versions.node to the Node release it imitates (Bun 1.4.2
+// reports 26.3.0), and that number says nothing about its node:sqlite, so
+// the runtime's own key decides first. Deno gets the same rule by its key.
+const OTHER_RUNTIMES = [["bun", "Bun"], ["deno", "Deno"]] as const;
+
+const REQUIREMENT = `solarsql requires Node ${NODE_RANGE} and node:sqlite on SQLite ${WORKERD_SQLITE_VERSION} or later, the SQLite that workerd runs in the release's tests.`;
+
+const SQLITE_FLOOR = numbers(WORKERD_SQLITE_VERSION)!;
+
+// `sqlite` is null when the caller could not read a version from node:sqlite.
+export function runtimeRefusal(versions: { readonly node: string; readonly bun?: string; readonly deno?: string }, sqlite: string | null): UnsupportedRuntimeError | null {
+  const engine = sqlite === null ? null : numbers(sqlite);
+  const runs = engine === null ? "reports no SQLite version" : `runs SQLite ${sqlite}`;
+  const other = OTHER_RUNTIMES.find(([key]) => versions[key] !== undefined);
+  if (other) {
+    const [key, name] = other;
+    return new UnsupportedRuntimeError(`${REQUIREMENT} This process runs ${name} ${versions[key]}, which reports Node ${versions.node}, and its node:sqlite ${runs}. solarsql does not support ${name}; run the command with Node.`);
+  }
+  const node = numbers(versions.node);
+  const inRange = node !== null && ((node[0] === 24 && node[1] >= 20) || (node[0] === 26 && node[1] >= 7) || node[0] > 26);
+  if (!inRange) {
+    return new UnsupportedRuntimeError(`${REQUIREMENT} This process runs Node ${versions.node}, and its node:sqlite ${runs}. Install a Node release in that range.`);
+  }
+  if (engine === null) {
+    return new UnsupportedRuntimeError(`${REQUIREMENT} This process runs Node ${versions.node}, but its node:sqlite reports no SQLite version.`);
+  }
+  if (compare(engine, SQLITE_FLOOR) < 0) {
+    return new UnsupportedRuntimeError(`${REQUIREMENT} This process runs Node ${versions.node}, but its node:sqlite runs SQLite ${sqlite}, older than ${WORKERD_SQLITE_VERSION}. A Node build that links a system SQLite can do this; use an official Node build.`);
+  }
+  return null;
+}
+
+function numbers(version: string): [number, number, number] | null {
   const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
-  if (!match) return `solarsql requires Node ${NODE_RANGE}. Node reports an unparseable version "${version}".`;
-  // The range uses only the major and minor. One patch digit establishes a
-  // version; later patch digits do not change acceptance or diagnostic text.
-  const major = Number(match[1]);
-  const minor = Number(match[2]);
-  const accepted = (major === 24 && minor >= 20) || (major >= 26 && !(major === 26 && minor < 7));
-  if (accepted) return null;
-  return `solarsql requires Node ${NODE_RANGE} (node:sqlite must run the SQLite that the release tests against in Miniflare; remote D1 and deployed Durable Object SQLite versions are not measured). Node reports ${version}.`;
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+}
+
+function compare(a: readonly number[], b: readonly number[]): number {
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i]! - b[i]!;
+  return 0;
 }

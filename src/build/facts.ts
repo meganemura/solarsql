@@ -131,21 +131,18 @@ const ALLOWED_SQLITE_FUNCTIONS = new Set([
   "sqlite_rename_quotefix",
 ]);
 
-// The SQLite version this release's pinned workerd builds against (from
-// workerd's MODULE.bazel at the pinned tag, strip_prefix sqlite-src-NNNNNNN;
-// docs/releasing.md has the read-it-off-the-tag step). A developer's own
-// node:sqlite can run a newer or older SQLite than this: the Node floor
-// (ADR 0129) refuses an older one, but nothing stops a newer Node shipping a
-// newer SQLite than the pinned workerd release tests against. Measured
-// 2026-09-25: the example project's generated files are byte-identical when
-// built on SQLite 3.50.4, 3.51.2, 3.51.3, and 3.53.4, so a differing engine
-// does not by itself justify refusing the build; what can differ instead is
-// node()'s own decoded REAL/CAST values and Engine.fullScans()'s EXPLAIN
-// QUERY PLAN notes. solarsql build and inspect compare the build engine's
-// own `select sqlite_version()` against this constant and note a mismatch
-// (test/miniflare/sqlite-version.test.ts pins that Miniflare's D1 and its
-// own Durable Object still report exactly this value).
-export const WORKERD_SQLITE_VERSION = "3.53.4";
+export function linkedSqliteVersion(): string | null {
+  try {
+    const db = new DatabaseSync(":memory:");
+    try {
+      return String(db.prepare("select sqlite_version() as version").get()!.version);
+    } finally {
+      db.close();
+    }
+  } catch {
+    return null;
+  }
+}
 
 // Sets the allowlist's deny authorizer on `db` for the duration of `fn`
 // only, then clears it in a `finally`, whatever `fn` does -- the call-scoped

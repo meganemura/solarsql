@@ -196,3 +196,4 @@ Bun 1.3.14 cannot run the script, because it does not resolve `node:sqlite`. On 
 
 Conclusion: on these probes, Bun 1.4.2's node:sqlite binding gives the results of Node 24.18.0, 24.20.0, and 26.7.0 (Node 25.6.1 truncates the NUL text), and its SQLite does not.
 The system SQLite 3.51.0 of macOS 26.5.2 returns the older REAL text through JSON, and the build would report `b` as read in full, which Node 26.7.0 does not.
+`docs/adr/0145-the-runtime-check-names-the-runtime-and-reads-the-sqlite-build.md` cites this table.

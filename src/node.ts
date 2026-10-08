@@ -10,14 +10,32 @@ import type { DatabaseSync } from "node:sqlite";
 import type { AdapterOptions, Database } from "./index.ts";
 import { durable, migrate as migrateStorage, type MigrationFile, type MigrationOptions, type StorageLike } from "./durable.ts";
 import { namedSlots } from "./build/scan.ts";
-import { nodeVersionError } from "./runtime/node-version.ts";
+import { runtimeRefusal } from "./runtime/node-version.ts";
 
 export function node(db: DatabaseSync, options: AdapterOptions = {}): Database {
   // Checked once here, at construction, so solarsql query and any script
   // that builds a Database through node() are covered without a second check.
-  const versionError = nodeVersionError(process.versions.node);
-  if (versionError) throw new Error(versionError);
+  const refusal = runtimeRefusal(process.versions, linkedSqliteVersion());
+  if (refusal) throw refusal;
   return durable(storageOf(db), options);
+}
+
+// Every DatabaseSync in a process links the same SQLite. A fresh in-memory
+// connection reads its version without a statement on the caller's
+// database, which can be closed or not yet open. getBuiltinModule() keeps
+// node:sqlite a type import, so solarsql/node still loads on a runtime
+// without node:sqlite, as it did before this check read SQLite.
+function linkedSqliteVersion(): string | null {
+  try {
+    const probe = new (process.getBuiltinModule("node:sqlite").DatabaseSync)(":memory:");
+    try {
+      return String(probe.prepare("select sqlite_version() as version").get()!.version);
+    } finally {
+      probe.close();
+    }
+  } catch {
+    return null;
+  }
 }
 
 // Apply the migration files this database has not applied yet, in name
@@ -76,3 +94,4 @@ export function storageOf(db: DatabaseSync): StorageLike {
 
 export { MigrationHistoryError, type MigrationOptions } from "./durable.ts";
 export { NODE_TEST_LIMITS } from "./runtime/node-limits.ts";
+export { UnsupportedRuntimeError } from "./runtime/node-version.ts";

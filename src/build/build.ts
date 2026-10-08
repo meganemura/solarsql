@@ -10,8 +10,9 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Command, Config, Index, ModuleConfig, PlanInclusion, PlanItem, Query, Search, Table, Trigger, View } from "../index.ts";
 import { GUARD_DDL, GUARD_TABLE, assertStatement } from "../runtime/plan.ts";
+import { WORKERD_SQLITE_VERSION } from "../runtime/node-version.ts";
 import { GENERATED_FILE, emitGenerated, emitMigrationsIndex, emitStub } from "./emit.ts";
-import { Engine, WORKERD_SQLITE_VERSION, type Access, type OutputColumn, type PlanRow } from "./facts.ts";
+import { Engine, type Access, type OutputColumn, type PlanRow } from "./facts.ts";
 import { applied, diff, introspect, open, requireReplayReachesTarget, type DropIntent, type Rename, type RenameRepair } from "./migration.ts";
 import type { MigrationIntent } from "./migration-intent.ts";
 import { migrationSequence, nextMigrationFile, withMigrationLock, writeNewMigration } from "./migration-files.ts";
@@ -161,12 +162,10 @@ export function writeScans(engine: Engine, sql: string): string[] {
 
 export type BuildResult = {
   // The build engine's own SQLite version, and the version the release's
-  // pinned workerd build ships (facts.ts's WORKERD_SQLITE_VERSION). A
-  // mismatch does not fail the build (measured: the example's generated
-  // files are byte-identical across 3.50.4-3.53.4): what can differ is a
-  // node() value (REAL through json_array/json_object and CAST digit
-  // count; STRICT generated-column enforcement) and a full-scan note
-  // (EXPLAIN QUERY PLAN's own shape changed for EXISTS in 3.51).
+  // pinned workerd build ships. The CLI refuses an older engine before the
+  // build starts (ADR 0145), so a difference here is a newer engine. It gets
+  // a note instead of a failure, because a newer Node can ship a newer SQLite
+  // before the pinned workerd does (ADR 0129).
   sqlite: string;
   workerdSqlite: string;
   sqliteNote: string | null;

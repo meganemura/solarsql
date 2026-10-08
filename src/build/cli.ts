@@ -12,7 +12,8 @@ import { analyzeDatabase, analyzeSchema } from "./analyze.ts";
 import { rehearse } from "./rehearse.ts";
 import { build, migration, StatementFailures } from "./build.ts";
 import { init, initEmpty } from "./init.ts";
-import { nodeVersionError } from "../runtime/node-version.ts";
+import { runtimeRefusal } from "../runtime/node-version.ts";
+import { linkedSqliteVersion } from "./facts.ts";
 import { readMigrationIntent, type MigrationIntent } from "./migration-intent.ts";
 import type { DropIntent, Rename, RenameRepair } from "./migration.ts";
 import { announceWorkerDone, announceWorkerStarted, isCliWorker, isReportWorker, printReport, runHuman, runMachine, runRehearsalProcess } from "./machine.ts";
@@ -363,18 +364,20 @@ async function main(argv: string[]): Promise<number> {
 const args = process.argv.slice(2);
 const machineBuild = args[0] === "inspect" || (args[0] === "build" && args.includes("--json"));
 const humanBuild = args[0] === "build" || args[0] === "migration";
+const reportsJson = args.includes("--json") || ["inspect", "rehearse", "analyze"].includes(args[0] ?? "");
 try {
   // Discovery must precede worker dispatch and application configuration imports.
-  const discovered = discovery(args);
-  // Skip the Node floor for help and version: they answer without a project.
-  if (discovered === undefined) {
-    const versionError = nodeVersionError(process.versions.node);
-    if (versionError) {
-      console.error(versionError);
+  const answered = discovery(args);
+  // Help and version answer before the runtime check, so a refused runtime still shows them.
+  if (answered === undefined) {
+    const refusal = runtimeRefusal(process.versions, linkedSqliteVersion());
+    if (refusal) {
+      if (reportsJson) await printReport({ version: 1, ok: false, diagnostics: [{ code: refusal.code, message: refusal.message }] });
+      else console.error(refusal.message);
       process.exit(1);
     }
   }
-  const code = discovered ?? (args[0] === "rehearse" && !isReportWorker()
+  const code = answered ?? (args[0] === "rehearse" && !isReportWorker()
     ? await runRehearsalProcess(import.meta.filename, args, rehearsalArguments(args.slice(1)).timeoutMs)
     : machineBuild && !isReportWorker()
     ? await (() => {
@@ -420,7 +423,7 @@ try {
   if (isCliWorker()) await announceWorkerDone(code);
   process.exit(code);
 } catch (e) {
-  if (args.includes("--json") || ["inspect", "rehearse", "analyze"].includes(args[0] ?? "")) {
+  if (reportsJson) {
     await printReport({ version: 1, ok: false, diagnostics: [{ code: "BUILD_FAILED", message: e instanceof Error ? e.message : String(e), sql: e instanceof BuildError ? e.sql : undefined, locations: e instanceof BuildError ? e.locations : [], action: e instanceof BuildError ? e.action : undefined, failures: e instanceof StatementFailures ? e.failures : undefined }] });
   } else if (e instanceof BuildError) {
     console.error(`error: ${e.message}`);

@@ -4,7 +4,7 @@
 import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { migrate, MigrationHistoryError, node } from "../src/node.ts";
+import { migrate, MigrationHistoryError, node, UnsupportedRuntimeError } from "../src/node.ts";
 import { diff, introspect, open, render } from "../src/build/migration.ts";
 import { REBUILD_HEADER, splitStatements } from "../src/build/scan.ts";
 import { read, type Observed } from "../src/index.ts";
@@ -76,17 +76,27 @@ test('a transaction cleanup failure retains both errors and its diagnostic', asy
   } finally { raw.close(); }
 });
 
-test('the version floor accepts 24.20.0 and 26.7.0, rejects 24.19.0, 25.6.1 and 26.6.0, and node() builds on the running Node', async () => {
-  const { nodeVersionError } = await import('../src/runtime/node-version.ts');
-  assert.equal(nodeVersionError(process.versions.node), null);
-  for (const version of ['24.20.0', '26.7.0', '24.19.0', '25.6.1', '26.6.0']) {
-    assert.equal(nodeVersionError(version) === null, ['24.20.0', '26.7.0'].includes(version));
-  }
-  const raw = new DatabaseSync(':memory:');
+test('node() checks the runtime without a statement on the database it wraps, which can open later', async () => {
+  const raw = new DatabaseSync(':memory:', { open: false });
+  const db = node(raw, { observe: () => {} });
+  raw.open();
   try {
-    assert.ok(node(raw));
-    assert.ok(node(raw, { observe: () => {} }));
+    const query = { kind: 'query' as const, name: 'one', sql: 'select 1 as one', meta: { params: [], encode: [], json: [], reads: [] } };
+    assert.deepEqual(await db.all(query), [{ one: 1 }]);
   } finally { raw.close(); }
+});
+
+test('node() refuses a process whose versions name Bun, with the SQLite that node:sqlite runs', () => {
+  const raw = new DatabaseSync(':memory:');
+  const sqlite = String(raw.prepare('select sqlite_version() as version').get()!.version);
+  Object.defineProperty(process.versions, 'bun', { value: '1.4.2', configurable: true, enumerable: true });
+  try {
+    assert.throws(() => node(raw), (e: unknown) => e instanceof UnsupportedRuntimeError && e.code === 'UNSUPPORTED_RUNTIME'
+      && e.message.includes(`This process runs Bun 1.4.2, which reports Node ${process.versions.node}, and its node:sqlite runs SQLite ${sqlite}.`));
+  } finally {
+    delete (process.versions as Record<string, string | undefined>).bun;
+    raw.close();
+  }
 });
 
 describe("the example on node:sqlite", () => {

@@ -1,6 +1,6 @@
 # ADR 0129: The Node floor tracks the workerd SQLite version
 
-Status: accepted (2026-09-25).
+Status: partially superseded by ADR 0145 (2026-10-08). The Node range and the way to derive it remain accepted; ADR 0145 adds the runtime's own name and the SQLite version to the check, in `runtimeRefusal()`, which replaces `nodeVersionError()`. Originally accepted (2026-09-25).
 
 ## Context
 
