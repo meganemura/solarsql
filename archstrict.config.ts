@@ -14,8 +14,6 @@ import type { Config } from "./archstrict.types.js";
 // package exports are adapters; machine.ts is the CLI worker channel; the
 // rest of src/build is the compiler. Adapters never import the compiler.
 // The one compiler file that opens a database is query.ts, through node.ts.
-// Worker host tags also cover type imports. The Node adapter keeps its
-// SQLite type dependency; shared scan and runtime code stay portable.
 export default {
   schemaVersion: 1,
   surface: ["index.ts", "index.tsx", "index.mts", "index.cts"],

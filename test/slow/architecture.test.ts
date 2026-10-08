@@ -40,8 +40,7 @@ const cases = [
   },
 ];
 
-// archstrict 0.1.0 reports false surface bypasses on Windows. CI runs the
-// architecture check and these controls on Ubuntu and macOS instead.
+// archstrict 0.1.0 reports false surface bypasses on Windows.
 for (const proof of cases) {
   test.skipIf(process.platform === "win32")(proof.name, () => {
     const file = new URL(`../../${proof.path}`, import.meta.url);

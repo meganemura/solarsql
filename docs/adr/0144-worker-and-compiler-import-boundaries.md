@@ -15,14 +15,11 @@ A simulated D1 value import of `node:perf_hooks` also passed the selected builti
 The existing callers keep their direct imports:
 
 ```ts
-// The CLI requests a complete build.
 import { build } from "./build.ts";
 
-// A Worker adapter uses API types and the execution contract.
 import type { Database } from "./index.ts";
 import { bindValues } from "./runtime/plan.ts";
 
-// The Node adapter uses the SQLite connection type.
 import type { DatabaseSync } from "node:sqlite";
 ```
 
