@@ -156,6 +156,7 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0141](adr/0141-mutation-testing-with-stryker-and-the-vitest-runner.md) | Mutation testing runs on StrykerJS with the vitest runner |
 | [0142](adr/0142-a-generated-migration-is-replayed-before-it-is-written.md) | A generated migration is replayed before it is written, and a view's triggers move with the view |
 | [0143](adr/0143-a-file-that-drops-a-view-records-the-views-triggers.md) | A file that drops a view records the view's triggers |
+| [0144](adr/0144-worker-and-compiler-import-boundaries.md) | Worker and compiler import boundaries |
 | [0145](adr/0145-the-runtime-check-names-the-runtime-and-reads-the-sqlite-build.md) | The runtime check names the runtime and reads the SQLite build |
 
 ## Measurements

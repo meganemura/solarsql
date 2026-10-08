@@ -14,6 +14,8 @@ import type { Config } from "./archstrict.types.js";
 // package exports are adapters; machine.ts is the CLI worker channel; the
 // rest of src/build is the compiler. Adapters never import the compiler.
 // The one compiler file that opens a database is query.ts, through node.ts.
+// Worker host tags also cover type imports. The Node adapter keeps its
+// SQLite type dependency; shared scan and runtime code stay portable.
 export default {
   schemaVersion: 1,
   surface: ["index.ts", "index.tsx", "index.mts", "index.cts"],
@@ -86,12 +88,12 @@ export default {
   // naming the file. src/runtime/** stays the Workers contract.
   classify: [
     { glob: "src/build/**", tags: ["plane:compiler", "layer:cli", "io:pure", "proc:rest"] },
-    { glob: "src/runtime/**", tags: ["plane:engine", "io:pure", "proc:rest"] },
-    { glob: "src/index.ts", tags: ["plane:adapter", "io:pure", "proc:rest"] },
-    { glob: "src/d1.ts", tags: ["plane:adapter", "io:pure", "proc:rest"] },
-    { glob: "src/durable.ts", tags: ["plane:adapter", "io:pure", "proc:rest"] },
+    { glob: "src/runtime/**", tags: ["plane:engine", "io:pure", "proc:rest", "host:worker"] },
+    { glob: "src/index.ts", tags: ["plane:adapter", "io:pure", "proc:rest", "host:worker"] },
+    { glob: "src/d1.ts", tags: ["plane:adapter", "io:pure", "proc:rest", "host:worker"] },
+    { glob: "src/durable.ts", tags: ["plane:adapter", "io:pure", "proc:rest", "host:worker"] },
     { glob: "src/node.ts", tags: ["plane:adapter", "io:pure", "proc:rest"] },
-    { glob: "src/build/scan.ts", tags: ["plane:text", "layer:kernel", "io:pure", "proc:rest"] },
+    { glob: "src/build/scan.ts", tags: ["plane:text", "layer:kernel", "io:pure", "proc:rest", "host:worker"] },
     { glob: "src/build/shell.ts", tags: ["plane:compiler", "layer:kernel", "io:pure", "proc:rest"] },
     { glob: "src/build/build-error.ts", tags: ["plane:compiler", "layer:kernel", "io:pure", "proc:rest"] },
     { glob: "src/build/lock-timeout.ts", tags: ["plane:compiler", "layer:kernel", "io:pure", "proc:rest"] },
@@ -118,8 +120,8 @@ export default {
         source: "plane:adapter",
         targetNamespace: "plane",
         allow: ["engine", "text"],
-        edgeType: "value",
-        because: "D1, a Durable Object, and the node shim execute plans through scan and the runtime contract; they do not import the compiler or the CLI worker channel",
+        edgeType: "both",
+        because: "adapters use shared text and runtime contracts; compiler types and values stay in the compiler",
       },
       {
         source: "plane:compiler",
@@ -154,10 +156,16 @@ export default {
     ],
     point: [
       {
+        from: { tags: ["host:worker"] },
+        to: { tags: ["pkg:node"] },
+        edgeType: "both",
+        because: "Workers code uses platform APIs; Node builtin types and values belong to the compiler or the Node adapter",
+      },
+      {
         from: "src/runtime/**",
         to: "src/build/**",
-        edgeType: "value",
-        because: "the runtime contract runs in Workers and must not import the compiler",
+        edgeType: "both",
+        because: "the runtime contract owns execution types and must not depend on compiler types or values",
       },
       {
         from: "src/runtime/**",
