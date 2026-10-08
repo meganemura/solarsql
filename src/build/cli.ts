@@ -32,6 +32,12 @@ const usage = `usage:
   solarsql init <module> [dir]                  writes solarsql.config.ts and modules/<module>/, then builds and writes the first migration
   solarsql init --empty [dir]                   writes solarsql.config.ts with modules: [], tsconfig.json, and an empty migrations/index.ts`;
 
+// The query contract in build.md: one `error:` line on stderr, and exit 2.
+function queryFailure(message: string): 2 {
+  console.error(`error: ${message}`);
+  return 2;
+}
+
 function discovery(argv: string[]): number | undefined {
   const commands = ["analyze", "build", "rehearse", "inspect", "migration", "query", "init"];
   const [command, ...rest] = argv;
@@ -302,8 +308,7 @@ async function main(argv: string[]): Promise<number> {
       await printReport(rows);
       return 0;
     } catch (e) {
-      console.error(`error: ${e instanceof Error ? e.message : String(e)}`);
-      return 2;
+      return queryFailure(e instanceof Error ? e.message : String(e));
     }
   }
   if (command === "migration") {
@@ -364,12 +369,10 @@ const answered = discovery(args);
 if (answered !== undefined) process.exit(answered);
 const refusal = runtimeRefusal(process.versions, linkedSqliteVersion());
 if (refusal) {
-  // query reports every failure as one `error:` line and exit 2, and its
-  // callers branch on that, so the refusal takes the same form there.
-  if (queryCommand) console.error(`error: ${refusal.message}`);
-  else if (reportsJson) await printReport({ version: 1, ok: false, diagnostics: [{ code: refusal.code, message: refusal.message }] });
+  if (queryCommand) process.exit(queryFailure(refusal.message));
+  if (reportsJson) await printReport({ version: 1, ok: false, diagnostics: [{ code: refusal.code, message: refusal.message }] });
   else console.error(refusal.message);
-  process.exit(queryCommand ? 2 : 1);
+  process.exit(1);
 }
 // These modules import node:sqlite. On a runtime without it, a static import
 // stops the process before the check above can refuse the runtime.
@@ -398,10 +401,7 @@ try {
     })()
     : queryCommand && !isReportWorker() && !isCliWorker()
     ? await (async () => {
-      // A bad option fails here, in the parent, before any project import;
-      // it reports the same way main()'s own query branch does (exit 2,
-      // one stderr line), not the exit-1 path the outer catch below uses
-      // for every other command's BuildError.
+      // A bad option fails here, in the parent, before any project import.
       try {
         const worker = deadlineArguments(args);
         queryArguments(worker.args.slice(1));
@@ -412,8 +412,7 @@ try {
         return await runHuman(import.meta.filename, args, worker.timeoutMs);
       } catch (e) {
         if (!(e instanceof BuildError)) throw e;
-        console.error(`error: ${e.message}`);
-        return 2;
+        return queryFailure(e.message);
       }
     })()
     : await (async () => {
