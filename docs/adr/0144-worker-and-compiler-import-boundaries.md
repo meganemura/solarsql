@@ -85,3 +85,5 @@ The whole-project simulation and architecture check passed.
 All four positive controls passed.
 The project typecheck, configuration typecheck, and 1,372 unit tests passed.
 One unit test was skipped because its remote execution target was not configured.
+
+Rechecked on 2026-10-09, with the later changes on main: the architecture check reports 29 modules, 80 edges, and no violations or todo entries, and the four positive controls pass. The CLI now imports `build.ts` with a dynamic import after the runtime check (ADR 0145, amendment of 2026-10-09), so the CLI line of the first example no longer matches `cli.ts`.
