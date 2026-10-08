@@ -12,7 +12,7 @@ import { analyzeDatabase, analyzeSchema } from "./analyze.ts";
 import { rehearse } from "./rehearse.ts";
 import { build, migration, StatementFailures } from "./build.ts";
 import { init, initEmpty } from "./init.ts";
-import { runtimeRefusal } from "../runtime/node-version.ts";
+import { runtimeRefusal } from "../runtime/runtime-check.ts";
 import { linkedSqliteVersion } from "./facts.ts";
 import { readMigrationIntent, type MigrationIntent } from "./migration-intent.ts";
 import type { DropIntent, Rename, RenameRepair } from "./migration.ts";

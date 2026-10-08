@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { runtimeRefusal } from "../src/runtime/node-version.ts";
+import { runtimeRefusal } from "../src/runtime/runtime-check.ts";
 
 const REQUIREMENT = "solarsql requires Node ^24.20.0 || >=26.7.0 and node:sqlite on SQLite 3.53.4 or later, the SQLite that workerd runs in the release's tests.";
 

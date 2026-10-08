@@ -10,7 +10,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { AdapterOptions, Database } from "./index.ts";
 import { durable, migrate as migrateStorage, type MigrationFile, type MigrationOptions, type StorageLike } from "./durable.ts";
 import { namedSlots } from "./build/scan.ts";
-import { runtimeRefusal } from "./runtime/node-version.ts";
+import { runtimeRefusal } from "./runtime/runtime-check.ts";
 
 export function node(db: DatabaseSync, options: AdapterOptions = {}): Database {
   // Checked once here, at construction, so solarsql query and any script
@@ -94,4 +94,4 @@ export function storageOf(db: DatabaseSync): StorageLike {
 
 export { MigrationHistoryError, type MigrationOptions } from "./durable.ts";
 export { NODE_TEST_LIMITS } from "./runtime/node-limits.ts";
-export { UnsupportedRuntimeError } from "./runtime/node-version.ts";
+export { UnsupportedRuntimeError } from "./runtime/runtime-check.ts";

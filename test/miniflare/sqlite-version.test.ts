@@ -25,7 +25,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { D1Harness, type WorkerOk } from "../d1.ts";
-import { WORKERD_SQLITE_VERSION } from "../../src/runtime/node-version.ts";
+import { WORKERD_SQLITE_VERSION } from "../../src/runtime/runtime-check.ts";
 
 async function d1SqliteVersion(): Promise<string> {
   const d1 = new D1Harness();

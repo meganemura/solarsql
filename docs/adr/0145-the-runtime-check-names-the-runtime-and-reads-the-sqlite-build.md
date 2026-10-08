@@ -62,3 +62,5 @@ Rule 1 also refuses Deno when `process.versions.deno` is present. The measuremen
 - A program tells the refusal apart from other errors by `error.code === "UNSUPPORTED_RUNTIME"`, or by `instanceof UnsupportedRuntimeError`.
 - When a miniflare bump raises `WORKERD_SQLITE_VERSION`, the SQLite floor rises with it. `docs/releasing.md` names the places to move with it.
 - `node()` opens and closes one in-memory connection per call.
+
+Amendment (2026-10-09): the file is now `src/runtime/runtime-check.ts`, named for the check it holds, and its tests are in `test/runtime-check.test.ts`.

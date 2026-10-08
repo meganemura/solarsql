@@ -10,7 +10,7 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Command, Config, Index, ModuleConfig, PlanInclusion, PlanItem, Query, Search, Table, Trigger, View } from "../index.ts";
 import { GUARD_DDL, GUARD_TABLE, assertStatement } from "../runtime/plan.ts";
-import { WORKERD_SQLITE_VERSION } from "../runtime/node-version.ts";
+import { WORKERD_SQLITE_VERSION } from "../runtime/runtime-check.ts";
 import { GENERATED_FILE, emitGenerated, emitMigrationsIndex, emitStub } from "./emit.ts";
 import { Engine, type Access, type OutputColumn, type PlanRow } from "./facts.ts";
 import { applied, diff, introspect, open, requireReplayReachesTarget, type DropIntent, type Rename, type RenameRepair } from "./migration.ts";
