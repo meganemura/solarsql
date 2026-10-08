@@ -7,7 +7,7 @@
 import { test } from "vitest";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fixtureDir } from "../fixture-dir.ts";
 import { runBattery } from "../../spike/13-agent-battery/run.ts";
@@ -15,6 +15,12 @@ import { runBattery } from "../../spike/13-agent-battery/run.ts";
 const root = resolve(import.meta.dirname, "../..");
 const stubAgent = `node ${JSON.stringify(join(root, "spike/13-agent-battery/stub-agent.ts"))}`;
 const summarizePath = join(root, "spike/13-agent-battery/summarize.ts");
+
+// Called last in a test, not from onTestFinished, so a failing test keeps
+// its run in .scratch/ for reading.
+function discardPassedRun(out: string): void {
+  rmSync(out, { recursive: true, force: true });
+}
 
 const expected: Record<string, { filesRead: number; filesEdited: number; failedCommands: number; hunksOutsideTask: number }> = {
   "invalid-sql": { filesRead: 1, filesEdited: 1, failedCommands: 1, hunksOutsideTask: 0 },
@@ -68,6 +74,7 @@ test("the stub repairs all seven scenarios, with the pinned reads and failed com
   }
   assert.match(table, /\| scenario \| runs \| success \| median files read \| median files edited \| median failed commands \| median hunks outside task \| median duration \(ms\) \| median cost \(USD\) \|/);
   for (const scenario of Object.keys(expected)) assert.match(table, new RegExp(`\\| ${scenario} \\| 1 \\| 1/1 \\|`));
+  discardPassedRun(out);
 });
 
 test("a stub run that skips its fix fails the check, not the agent's own report", { timeout: 60_000 }, async () => {
@@ -78,4 +85,5 @@ test("a stub run that skips its fix fails the check, not the agent's own report"
   assert.equal(records[0]!.success, false);
   assert.equal(typeof records[0]!.checkFailure, "string");
   assert.ok(records[0]!.checkFailure!.length > 0);
+  discardPassedRun(out);
 });
