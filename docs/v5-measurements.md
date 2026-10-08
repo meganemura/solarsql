@@ -160,3 +160,39 @@ The 30 earlier runs summed to 15.65 USD in `costUsd`. These include section 2's 
 | after | 63,856 KB | 64,816 KB | 71,504 KB | 72,432 KB | 73,472 KB | 8,656 KB |
 
 Both curves rise at first (workerd warms up its own caches beyond just this one statement), and `before`'s own rise visibly slows past run 7,001 (87,296 to 88,272 KB across the last 3,000 runs, versus 4,712 KB across the first 1,000), consistent with its per-text cache approaching its cap and starting to evict. `after`'s curve is flatter but still rises across the whole run: 71,104 to 73,472 KB across runs 3,001 to 10,001, about 0.3 KB per 1,000-run batch's own last measured step, against `before`'s roughly 3.5 KB per batch over the same span -- smaller, not flat. `docs/adr/0086-assert-results-have-invocation-identities.md`'s 2026-09-25 section cites these numbers directly.
+
+## 5. node:sqlite on four Node releases and on Bun
+
+`spike/16-runtime-contract.ts` opens in-memory databases and prints what the running runtime's node:sqlite returns for the calls the node adapter makes, and what `Engine.fullScans()` reports for an EXISTS query.
+From solarsql it imports only `Engine`, which has no runtime check, so it also runs where `node()` and the CLI refuse to run.
+Each runtime came from mise on macOS 26.5.2 (25F84) arm64, on 2026-10-08:
+
+```sh
+mise exec node@26.7.0 -- node spike/16-runtime-contract.ts
+mise exec bun@1.4.2 -- bun spike/16-runtime-contract.ts
+```
+
+The same command ran on node@24.20.0, node@24.18.0, and node@25.6.1.
+
+| runtime | `process.versions.node` | SQLite | length of `'a' \|\| char(0) \|\| 'b'` | `json_array(0.1 + 0.2)` | `Engine.fullScans()` of the EXISTS query |
+|---|---|---|---|---|---|
+| Node 26.7.0 | 26.7.0 | 3.53.4 | 3 | `[0.30000000000000004]` | `a` |
+| Node 24.20.0 | 24.20.0 | 3.53.4 | 3 | `[0.30000000000000004]` | `a` |
+| Node 24.18.0 | 24.18.0 | 3.53.1 | 3 | `[0.3]` | `a` |
+| Node 25.6.1 | 25.6.1 | 3.51.2 | 1 | `[0.3]` | `Engine` fails to construct |
+| Bun 1.4.2 | 26.3.0 | 3.51.0, source id ends in `aapl` | 3 | `[0.3]` | `a`, `b` |
+
+The EXISTS query is `select * from a where exists (select 1 from b where b.x = a.x)`.
+On Bun 1.4.2, its plan is `SCAN a`, `CORRELATED SCALAR SUBQUERY 1`, `SCAN b`.
+On the four Node releases, it is `SCAN a`, `BLOOM FILTER ON b (x=?)`, `SEARCH b EXISTS USING AUTOMATIC PARTIAL COVERING INDEX (x=?)`.
+
+The five runs agree on the other probes.
+A read of 9007199254740993 throws `ERR_OUT_OF_RANGE`.
+With `setAllowBareNamedParameters(false)`, `all({ ":a": "x" }, "y")` on `select :a as a, ? as b` returns `[{ a: "x", b: "y" }]`.
+`isTransaction` is true inside `savepoint solarsql_transaction`, and `rollback to` removes the row that was inserted after the savepoint.
+A duplicate primary key throws `ERR_SQLITE_ERROR` with errcode 1555.
+A trigger's `raise(abort, ...)` throws `ERR_SQLITE_ERROR` with errcode 1811.
+Bun 1.3.14 cannot run the script, because it does not resolve `node:sqlite`. On the same machine, `bun -e 'console.log(process.versions.node)'` prints 24.3.0 on Bun 1.3.14 and 26.3.0 on Bun 1.4.2.
+
+Conclusion: on these probes, Bun 1.4.2's node:sqlite binding gives the results of Node 24.18.0, 24.20.0, and 26.7.0 (Node 25.6.1 truncates the NUL text), and its SQLite does not.
+The system SQLite 3.51.0 of macOS 26.5.2 returns the older REAL text through JSON, and the build would report `b` as read in full, which Node 26.7.0 does not.
