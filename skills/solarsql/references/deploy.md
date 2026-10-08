@@ -114,6 +114,7 @@ SOLARSQL_REMOTE_URL=https://solarsql-example.<your subdomain>.workers.dev SOLARS
 ```
 
 `npm test` skips it without the URL. The observe test is skipped on remote D1, because a deployed Worker runs several isolates and the hook's events live in one.
+The same run prints a table of the deployed platform's SQLite limits (limits.md) and of four `json_each` sizes, on D1 and on the Durable Object, and asserts none of the values: the example's `place` command with about 150 KB of lines, and its `byIds` query with about 1 MB, 1.9 MB, and 2.1 MB of ids. It writes about 1,800 rows to each store and deletes them with a reset. `node spike/17-deployed-limits.ts`, with the same two variables, prints the table alone; set `SOLARSQL_WORKERS_PLAN` to the account's plan to print it in the header. Redeploy the Worker first, so it has the `limits` step.
 This test runs the example's own steps -- the queries and commands its module already declares -- against the store the reset just emptied; it does not run a migration file, so a rebuild that carries `pragma defer_foreign_keys = on` is not among the steps it sends.
 
 A user's own Worker follows the same shape: a `wrangler.jsonc` with the D1 binding and `migrations_dir`, and a Durable Object class with `new_sqlite_classes`. wrangler's own init writes the Worker; solarsql writes none.

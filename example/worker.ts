@@ -4,6 +4,7 @@ import { DurableObject } from "cloudflare:workers";
 import { d1 } from "../src/d1.ts";
 import { durable, migrate } from "../src/durable.ts";
 import { read, type Database, type Observed } from "../src/index.ts";
+import { runLimitProbes } from "./limit-probes.ts";
 import { migrations } from "./migrations/index.ts";
 import { customerCommands, customerQueries } from "./modules/customers/public.ts";
 import { orderCommands, orderQueries } from "./modules/orders/public.ts";
@@ -88,9 +89,14 @@ async function run(db: Database, s: Step): Promise<unknown> {
   }
 }
 
-async function handle(db: Database, request: Request): Promise<Response> {
+// The limits step runs SQL from no catalog (example/limit-probes.ts), so it
+// takes the engine itself, which a solarsql Database does not expose.
+type Execute = (sql: string, params: unknown[]) => unknown;
+
+async function handle(db: Database, execute: Execute, request: Request): Promise<Response> {
   try {
-    return Response.json({ ok: true, value: await run(db, (await request.json()) as Step) });
+    const body = (await request.json()) as Step | { step: "limits" };
+    return Response.json({ ok: true, value: body.step === "limits" ? await runLimitProbes(execute) : await run(db, body) });
   } catch (e) {
     const err = e as Error & { cause?: Error };
     return Response.json({ ok: false, message: err.message, cause: err.cause?.message ?? null });
@@ -105,7 +111,7 @@ export class Store extends DurableObject {
     });
   }
   override async fetch(request: Request): Promise<Response> {
-    return handle(durable(this.ctx.storage, { observe }), request);
+    return handle(durable(this.ctx.storage, { observe }), (sql, params) => this.ctx.storage.sql.exec(sql, ...params).toArray(), request);
   }
 }
 
@@ -121,6 +127,6 @@ export default {
       const id = env.STORE.idFromName("example");
       return env.STORE.get(id).fetch(new Request("http://do/", { method: "POST", body: await request.text() }));
     }
-    return handle(d1(env.DB, { observe }), request);
+    return handle(d1(env.DB, { observe }), (sql, params) => env.DB.prepare(sql).bind(...params).all(), request);
   },
 };

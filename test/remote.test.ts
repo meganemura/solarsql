@@ -2,10 +2,13 @@
 // remote D1 and a Durable Object in production, after a reset of both
 // stores. Opt-in: SOLARSQL_REMOTE_URL names the Worker, and
 // SOLARSQL_REMOTE_TOKEN carries its TOKEN secret when it has one. Without
-// the URL the test is skipped, so `npm test` needs no account.
+// the URL the test is skipped, so `npm test` needs no account. The limits
+// test prints the deployed platform's answers and asserts none of them,
+// because the deployed values are what it measures (ADR 0134).
 import { beforeAll, describe, test } from "vitest";
 import assert from "node:assert/strict";
 import { exampleSteps, type Reply } from "./example-steps.ts";
+import { deployedLimits, fetchSend, markdownTable } from "../spike/17-deployed-limits.ts";
 
 const url = process.env.SOLARSQL_REMOTE_URL;
 const token = process.env.SOLARSQL_REMOTE_TOKEN;
@@ -39,4 +42,10 @@ if (url === undefined) {
       exampleSteps(value, { oneIsolate: target === "do", engineMeta: target === "d1" || target === "do" });
     });
   }
+
+  test("the deployed platform's SQLite limits and four json_each sizes (prints the table)", async () => {
+    const rows = await deployedLimits(fetchSend(url, token));
+    console.log(markdownTable(rows));
+    assert.ok(rows.every((row) => row.do !== "missing"), "the Durable Object answered every probe that D1 answered");
+  });
 }
