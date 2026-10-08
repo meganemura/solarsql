@@ -7,6 +7,7 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 - Changed: `node()` and the CLI read the SQLite version that node:sqlite runs, and refuse a version older than 3.53.4, the SQLite of the pinned workerd. A Node build in the supported range that links an older system SQLite is now refused.
 - Changed: The refusal names the runtime. On Bun, it says that the process runs Bun, gives the Node version that Bun reports and Bun's SQLite version, and says that solarsql does not support Bun. Before, it named the runtime only by the Node version that it imitates.
 - Added: `node()` throws `UnsupportedRuntimeError`, exported from `solarsql/node`, with the code `UNSUPPORTED_RUNTIME`. The CLI gives the same code as the diagnostic code of the JSON report for `--json`, `inspect`, `rehearse`, and `analyze`, which printed a plain line before.
+- Changed: `solarsql query` on a refused runtime prints the refusal after `error: ` and exits 2, the same as its other failures. Before, it printed the plain line and exited 1, as `build` does.
 - Changed: `node()` opens and closes one in-memory connection per call to read the SQLite version. A database that is not open yet still works, and `solarsql/node` still loads on a runtime without node:sqlite.
 
 ## 0.7.1 (2026-10-03)

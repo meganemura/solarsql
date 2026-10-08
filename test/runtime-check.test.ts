@@ -30,6 +30,8 @@ test("the CLI prints the refusal as one line, and as a JSON diagnostic when it r
   assert.deepEqual([machine.status, JSON.parse(machine.stdout)], [1, { version: 1, ok: false, diagnostics: [{ code: "UNSUPPORTED_RUNTIME", message }] }]);
   const inspect = runAsBun("inspect");
   assert.deepEqual([inspect.status, JSON.parse(inspect.stdout)], [1, { version: 1, ok: false, diagnostics: [{ code: "UNSUPPORTED_RUNTIME", message }] }]);
+  const query = runAsBun("query", "shop.customerQueries.byId", "--database", "shop.sqlite");
+  assert.deepEqual([query.status, query.stdout, query.stderr], [2, "", `error: ${message}\n`]);
 });
 
 test("the CLI answers --version without the runtime check", () => {

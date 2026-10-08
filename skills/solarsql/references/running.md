@@ -70,7 +70,7 @@ A caller that picks a data source by table, or drops a cache by table, reads it 
 `node()` and the CLI run only on Node `^24.20.0 || >=26.7.0` whose node:sqlite runs SQLite 3.53.4 or later (ADR 0145).
 On another runtime, `node()` throws `UnsupportedRuntimeError` from `solarsql/node`, with the code `UNSUPPORTED_RUNTIME`.
 The message names the runtime, the Node version it reports, and its SQLite version.
-The CLI prints the same message as one line on stderr. For `--json`, `inspect`, `rehearse`, and `analyze`, whose failures are JSON reports, the report's diagnostic code is `UNSUPPORTED_RUNTIME`.
+The CLI prints the same message as one line on stderr and exits 1. For `--json`, `inspect`, `rehearse`, and `analyze`, whose failures are JSON reports, the report's diagnostic code is `UNSUPPORTED_RUNTIME`. `query` prints the line after `error: ` and exits 2, the same as its other failures.
 A runtime with no node:sqlite (Node 20, Bun 1.3.14) fails earlier, where the CLI or the caller's own code imports node:sqlite.
 Bun is not supported, and the check refuses it by name: Bun sets `process.versions.node` to the Node release it imitates, which says nothing about its node:sqlite, and on macOS 26.5.2 Bun 1.4.2's node:sqlite runs the system SQLite 3.51.0. Run the tests and the scripts with Node.
 

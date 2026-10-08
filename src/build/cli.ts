@@ -364,6 +364,7 @@ async function main(argv: string[]): Promise<number> {
 const args = process.argv.slice(2);
 const machineBuild = args[0] === "inspect" || (args[0] === "build" && args.includes("--json"));
 const humanBuild = args[0] === "build" || args[0] === "migration";
+const queryCommand = args[0] === "query";
 const reportsJson = args.includes("--json") || ["inspect", "rehearse", "analyze"].includes(args[0] ?? "");
 try {
   // Discovery must precede worker dispatch and application configuration imports.
@@ -372,9 +373,12 @@ try {
   if (answered === undefined) {
     const refusal = runtimeRefusal(process.versions, linkedSqliteVersion());
     if (refusal) {
-      if (reportsJson) await printReport({ version: 1, ok: false, diagnostics: [{ code: refusal.code, message: refusal.message }] });
+      // query reports every failure as one `error:` line and exit 2, and its
+      // callers branch on that, so the refusal takes the same form there.
+      if (queryCommand) console.error(`error: ${refusal.message}`);
+      else if (reportsJson) await printReport({ version: 1, ok: false, diagnostics: [{ code: refusal.code, message: refusal.message }] });
       else console.error(refusal.message);
-      process.exit(1);
+      process.exit(queryCommand ? 2 : 1);
     }
   }
   const code = answered ?? (args[0] === "rehearse" && !isReportWorker()
@@ -394,7 +398,7 @@ try {
       else migrationArguments(worker.args.slice(1));
       return runHuman(import.meta.filename, worker.args, worker.timeoutMs);
     })()
-    : args[0] === "query" && !isReportWorker() && !isCliWorker()
+    : queryCommand && !isReportWorker() && !isCliWorker()
     ? await (async () => {
       // A bad option fails here, in the parent, before any project import;
       // it reports the same way main()'s own query branch does (exit 2,
