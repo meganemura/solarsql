@@ -5,7 +5,10 @@
 // below asserts that D1's verdict, the Durable Object's verdict, and
 // facts.ts's Engine.prepare() verdict all agree -- so a future workerd
 // release that moves one of these numbers fails here first, against the
-// real deploy targets, not only against the local copy in facts.ts.
+// real deploy targets, not only against the local copy in facts.ts. A
+// refused case also asserts the error text of the limit it names on D1 and
+// the Durable Object, because a statement can cross two limits, and the
+// engines then name different ones.
 // Boundary: no assertions about the build's own error message live here;
 // test/facts.test.ts owns those. No case in this file sits between 15,000
 // and 25,000 VDBE ops: the measurements behind ADR 0134 found node:sqlite
@@ -35,27 +38,31 @@ const padded = (bytes: number) => {
   const prefix = "select 1 as a --";
   return prefix + " " + "x".repeat(Math.max(0, bytes - prefix.length - 1));
 };
-const values = (rows: number) => `select * from (values ${Array.from({ length: rows }, (_, i) => `(${i})`).join(",")})`;
+// Every row is `(0)`, so 15,000 rows stay at 60,022 bytes. With numbered
+// rows the text passes 100,000 bytes, and D1 and the Durable Object refuse
+// it for its length instead of the VDBE limit.
+const values = (rows: number) => `select * from (values ${Array.from({ length: rows }, () => "(0)").join(",")})`;
 
 // Each case is a SELECT (so D1's .first(), a Durable Object's exec(), and
-// Engine.prepare() all take the same statement) and the verdict every
-// engine is expected to agree on.
-const cases: { name: string; sql: string; refused: boolean; values?: unknown[] }[] = [
-  { name: "6-term UNION ALL (compoundSelect 5)", sql: `select * from (${union(6)})`, refused: true },
-  { name: "5-term UNION ALL", sql: `select * from (${union(5)})`, refused: false },
-  { name: "600-row VALUES (multi-row VALUES is exempt)", sql: `select * from (values ${Array.from({ length: 600 }, (_, i) => `(${i})`).join(",")})`, refused: false },
-  { name: "coalesce with 128 arguments (functionArg 127)", sql: `select coalesce(${args(128)})`, refused: true },
-  { name: "coalesce with 127 arguments", sql: `select coalesce(${args(127)})`, refused: false },
-  { name: "101-term addition chain (exprDepth 100)", sql: `select ${chain(101)}`, refused: true },
-  { name: "100-term addition chain", sql: `select ${chain(100)}`, refused: false },
-  { name: "101 result columns (column 100)", sql: `select ${cols(101)}`, refused: true },
-  { name: "100 result columns", sql: `select ${cols(100)}`, refused: false },
-  { name: "101 bound parameters (variableNumber 100)", sql: `select ${params(101)}`, refused: true, values: paramValues(101) },
-  { name: "100 bound parameters", sql: `select ${params(100)}`, refused: false, values: paramValues(100) },
-  { name: "100,001-byte statement (sqlLength 100,000)", sql: padded(100_001), refused: true },
-  { name: "99,990-byte statement", sql: padded(99_990), refused: false },
-  { name: "~30,000 EXPLAIN rows (vdbeOp 25,000)", sql: values(14_995), refused: true },
-  { name: "~10,000 EXPLAIN rows", sql: values(4_995), refused: false },
+// Engine.prepare() all take the same statement), and either null (every
+// engine accepts it) or the error text D1 and the Durable Object refuse it with.
+const cases: { name: string; sql: string; refusal: RegExp | null; values?: unknown[] }[] = [
+  { name: "6-term UNION ALL (compoundSelect 5)", sql: `select * from (${union(6)})`, refusal: /too many terms in compound SELECT/ },
+  { name: "5-term UNION ALL", sql: `select * from (${union(5)})`, refusal: null },
+  { name: "600-row VALUES (multi-row VALUES is exempt)", sql: `select * from (values ${Array.from({ length: 600 }, (_, i) => `(${i})`).join(",")})`, refusal: null },
+  { name: "coalesce with 128 arguments (functionArg 127)", sql: `select coalesce(${args(128)})`, refusal: /too many arguments on function coalesce/ },
+  { name: "coalesce with 127 arguments", sql: `select coalesce(${args(127)})`, refusal: null },
+  { name: "101-term addition chain (exprDepth 100)", sql: `select ${chain(101)}`, refusal: /Expression tree is too large \(maximum depth 100\)/ },
+  { name: "100-term addition chain", sql: `select ${chain(100)}`, refusal: null },
+  { name: "101 result columns (column 100)", sql: `select ${cols(101)}`, refusal: /too many columns in result set/ },
+  { name: "100 result columns", sql: `select ${cols(100)}`, refusal: null },
+  { name: "101 bound parameters (variableNumber 100)", sql: `select ${params(101)}`, refusal: /too many SQL variables/, values: paramValues(101) },
+  { name: "100 bound parameters", sql: `select ${params(100)}`, refusal: null, values: paramValues(100) },
+  { name: "100,001-byte statement (sqlLength 100,000)", sql: padded(100_001), refusal: /statement too long/ },
+  { name: "99,990-byte statement", sql: padded(99_990), refusal: null },
+  // SQLite reports a program past SQLITE_LIMIT_VDBE_OP as out of memory.
+  { name: "~30,000 EXPLAIN rows (vdbeOp 25,000)", sql: values(15_000), refusal: /out of memory/ },
+  { name: "~10,000 EXPLAIN rows", sql: values(5_000), refusal: null },
 ];
 
 function nodeVerdict(sql: string): boolean {
@@ -81,7 +88,8 @@ describe("D1 SQLite's prepare-time verdict matches facts.ts's WORKERD_LIMITS", (
     test(c.name, async () => {
       const reply = await d1.first(c.sql, c.values ?? []);
       const refused = reply.ok === false;
-      assert.equal(refused, c.refused, JSON.stringify(reply));
+      assert.equal(refused, c.refusal !== null, JSON.stringify(reply));
+      if (!reply.ok && c.refusal) assert.match(reply.message, c.refusal);
       assert.equal(refused, nodeVerdict(c.sql), "D1 and the build's Engine.prepare() disagree");
     });
   }
@@ -139,7 +147,8 @@ export default {
     test(c.name, async () => {
       const reply = await run(c.sql, c.values ?? []);
       const refused = reply.ok === false;
-      assert.equal(refused, c.refused, JSON.stringify(reply));
+      assert.equal(refused, c.refusal !== null, JSON.stringify(reply));
+      if (c.refusal) assert.match(reply.message ?? "", c.refusal);
       assert.equal(refused, nodeVerdict(c.sql), "the Durable Object and the build's Engine.prepare() disagree");
     });
   }

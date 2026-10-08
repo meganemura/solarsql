@@ -41,3 +41,11 @@ Preparing user SQL against a second `DatabaseSync` connection carrying the limit
 - `migration.ts`'s `applied()` gates the same limits, so a migration file with a statement past one of them is refused at replay, not only on deploy; `test/facts.test.ts` pins one case (a 101-column `CREATE TABLE`) through `applied()` directly.
 - The `FUNCTION_ARG` gap between workerd's source (127) and the Cloudflare docs page (32) is unresolved; this decision picks the source value and records the gap rather than guessing which one production enforces.
 - `test/facts.test.ts` pins each limit's own boundary pair on `node:sqlite`, and `test/miniflare/prepare-limits.test.ts` pins the same cases against real D1 and Durable Object storage through Miniflare, asserting all three verdicts agree, with no case placed between 15,000 and 25,000 VDBE ops — the band in which the measurements for this decision found node:sqlite and a local Durable Object disagreeing (a local Durable Object accepted up to 21,843 ops on macOS where node:sqlite's own `vdbeOp` 25,000 already refuses).
+
+## Correction (2026-10-08)
+
+The vdbeOp pair in both test files numbered its VALUES rows, so the refused statement was 108,872 bytes.
+D1 and a Durable Object refused that statement with `statement too long`, while node:sqlite reported the instruction limit.
+The case therefore pinned sqlLength on D1 and the Durable Object, and the three verdicts agreed for two different limits.
+Both files now build the pair from `(0)` rows. 15,000 such rows are 60,022 bytes and about 30,010 EXPLAIN rows, and local D1 and a local Durable Object refuse them with `out of memory` (Miniflare 5.20260828.0-alpha).
+Each refused case in `test/miniflare/prepare-limits.test.ts` now also asserts the error text of the limit it names on D1 and the Durable Object.

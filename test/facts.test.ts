@@ -532,15 +532,15 @@ describe("workerd's prepare-time limits", () => {
   });
 
   test("about 30,000 EXPLAIN rows is refused with the VDBE-limit message, about 10,000 builds (vdbeOp 25,000)", () => {
-    // Single-column VALUES keeps the SQL text compact: 14,995 rows is
-    // ~30,000 EXPLAIN rows at 60,002 bytes of SQL text, well under the
-    // 100,000-byte sqlLength boundary above, so the sqlLength check never
-    // fires first. Both fixtures sit outside the 15,000-25,000 op band
-    // where node:sqlite and a Durable Object were measured to disagree
-    // (test/miniflare/prepare-limits.test.ts asserts that band is empty).
-    const values = (rows: number) => `select * from (values ${Array.from({ length: rows }, (_, i) => `(${i})`).join(",")})`;
-    const refused = values(14_995);
-    const built = values(4_995);
+    // Rows of `(0)` keep the SQL text compact: 15,000 rows is about 30,000
+    // EXPLAIN rows at 60,022 bytes of SQL text, well under the 100,000-byte
+    // sqlLength boundary above, so the sqlLength check never fires first.
+    // Both fixtures sit outside the 15,000-25,000 op band where node:sqlite
+    // and a Durable Object were measured to disagree
+    // (test/miniflare/prepare-limits.test.ts keeps its cases out of that band too).
+    const values = (rows: number) => `select * from (values ${Array.from({ length: rows }, () => "(0)").join(",")})`;
+    const refused = values(15_000);
+    const built = values(5_000);
     assert.throws(() => engine.prepare(refused), /workerd's compiled-instruction limit \(25000\)/);
     assert.doesNotThrow(() => engine.prepare(built));
   });
