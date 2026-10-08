@@ -131,19 +131,6 @@ const ALLOWED_SQLITE_FUNCTIONS = new Set([
   "sqlite_rename_quotefix",
 ]);
 
-export function linkedSqliteVersion(): string | null {
-  try {
-    const db = new DatabaseSync(":memory:");
-    try {
-      return String(db.prepare("select sqlite_version() as version").get()!.version);
-    } finally {
-      db.close();
-    }
-  } catch {
-    return null;
-  }
-}
-
 // Sets the allowlist's deny authorizer on `db` for the duration of `fn`
 // only, then clears it in a `finally`, whatever `fn` does -- the call-scoped
 // shape ADR 0113 established for Engine.prepare(), factored out so the

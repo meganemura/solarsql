@@ -64,3 +64,5 @@ Rule 1 also refuses Deno when `process.versions.deno` is present. The measuremen
 - `node()` opens and closes one in-memory connection per call.
 
 Amendment (2026-10-09): the file is now `src/runtime/runtime-check.ts`, named for the check it holds, and its tests are in `test/runtime-check.test.ts`.
+
+Amendment (2026-10-09): one reader, `linkedSqliteVersion()` in `src/runtime/runtime-check.ts`, replaces the two readers above, and it opens its connection through `process.getBuiltinModule()`. The CLI imports the compiler modules that import node:sqlite only after discovery and the runtime check. On a runtime without node:sqlite (Node 20, Bun 1.3.14), the CLI now prints the refusal instead of failing at that import, and `--help` and `--version` still answer.

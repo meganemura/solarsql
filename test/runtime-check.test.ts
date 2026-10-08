@@ -1,7 +1,7 @@
 // Responsibility: the runtime check's verdicts and messages, through
-// runtimeRefusal() and through the CLI's output.
-// Boundary: no real Bun runs here; the CLI cases define process.versions.bun
-// in a child Node process.
+// runtimeRefusal(), node(), and the CLI's output.
+// Boundary: no real Bun or Node 20 runs here; a child Node process gets a
+// preload that defines process.versions.bun or hides node:sqlite.
 import { test } from "vitest";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -15,8 +15,24 @@ const REQUIREMENT = "solarsql requires Node ^24.20.0 || >=26.7.0 and node:sqlite
 const cli = fileURLToPath(new URL("../src/build/cli.ts", import.meta.url));
 const asBun = `data:text/javascript,${encodeURIComponent('Object.defineProperty(process.versions, "bun", { value: "1.4.2", enumerable: true, configurable: true });')}`;
 
+const withoutSqlite = `data:text/javascript,${encodeURIComponent(`
+import { registerHooks } from "node:module";
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier === "node:sqlite") throw Object.assign(new Error("No such built-in module: node:sqlite"), { code: "ERR_UNKNOWN_BUILTIN_MODULE" });
+    return nextResolve(specifier, context);
+  },
+});
+const getBuiltinModule = process.getBuiltinModule;
+process.getBuiltinModule = id => id === "node:sqlite" ? undefined : getBuiltinModule(id);
+`)}`;
+
 function runAsBun(...args: string[]) {
   return spawnSync(process.execPath, ["--import", asBun, cli, ...args], { encoding: "utf8", timeout: 30_000 });
+}
+
+function runWithoutSqlite(...args: string[]) {
+  return spawnSync(process.execPath, ["--import", withoutSqlite, ...args], { encoding: "utf8", timeout: 30_000 });
 }
 
 test("the CLI prints the refusal as one line, and as a JSON diagnostic when it reports JSON", () => {
@@ -32,6 +48,17 @@ test("the CLI prints the refusal as one line, and as a JSON diagnostic when it r
   assert.deepEqual([inspect.status, JSON.parse(inspect.stdout)], [1, { version: 1, ok: false, diagnostics: [{ code: "UNSUPPORTED_RUNTIME", message }] }]);
   const query = runAsBun("query", "shop.customerQueries.byId", "--database", "shop.sqlite");
   assert.deepEqual([query.status, query.stdout, query.stderr], [2, "", `error: ${message}\n`]);
+});
+
+test("a runtime without node:sqlite gets the refusal from the CLI and from node(), not an import failure", () => {
+  const message = `${REQUIREMENT} This process runs Node ${process.versions.node}, but its node:sqlite reports no SQLite version.`;
+  const human = runWithoutSqlite(cli, "build");
+  assert.deepEqual([human.status, human.stdout, human.stderr], [1, "", `${message}\n`]);
+  const help = runWithoutSqlite(cli, "--help");
+  assert.deepEqual([help.status, help.stdout.split("\n")[0]], [0, "usage:"]);
+  const adapter = new URL("../src/node.ts", import.meta.url).href;
+  const script = runWithoutSqlite("--input-type=module", "--eval", `import { node } from ${JSON.stringify(adapter)}; try { node({}); } catch (e) { console.log(e.code); }`);
+  assert.deepEqual([script.status, script.stdout], [0, "UNSUPPORTED_RUNTIME\n"]);
 });
 
 test("the CLI answers --version without the runtime check", () => {

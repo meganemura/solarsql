@@ -8,17 +8,11 @@
 // Boundary: printing and exit codes only. build.ts and init.ts do the work.
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { relative } from "node:path";
-import { analyzeDatabase, analyzeSchema } from "./analyze.ts";
-import { rehearse } from "./rehearse.ts";
-import { build, migration, StatementFailures } from "./build.ts";
-import { init, initEmpty } from "./init.ts";
-import { runtimeRefusal } from "../runtime/runtime-check.ts";
-import { linkedSqliteVersion } from "./facts.ts";
+import { linkedSqliteVersion, runtimeRefusal } from "../runtime/runtime-check.ts";
 import { readMigrationIntent, type MigrationIntent } from "./migration-intent.ts";
 import type { DropIntent, Rename, RenameRepair } from "./migration.ts";
 import { announceWorkerDone, announceWorkerStarted, isCliWorker, isReportWorker, printReport, runHuman, runMachine, runRehearsalProcess } from "./machine.ts";
 import { protectInputs, writeGeneratedFile } from "./output.ts";
-import { parseQueryTarget, runQuery } from "./query.ts";
 import { shellArgument } from "./shell.ts";
 import { BuildError } from "./build-error.ts";
 
@@ -366,22 +360,26 @@ const machineBuild = args[0] === "inspect" || (args[0] === "build" && args.inclu
 const humanBuild = args[0] === "build" || args[0] === "migration";
 const queryCommand = args[0] === "query";
 const reportsJson = args.includes("--json") || ["inspect", "rehearse", "analyze"].includes(args[0] ?? "");
+const answered = discovery(args);
+if (answered !== undefined) process.exit(answered);
+const refusal = runtimeRefusal(process.versions, linkedSqliteVersion());
+if (refusal) {
+  // query reports every failure as one `error:` line and exit 2, and its
+  // callers branch on that, so the refusal takes the same form there.
+  if (queryCommand) console.error(`error: ${refusal.message}`);
+  else if (reportsJson) await printReport({ version: 1, ok: false, diagnostics: [{ code: refusal.code, message: refusal.message }] });
+  else console.error(refusal.message);
+  process.exit(queryCommand ? 2 : 1);
+}
+// These modules import node:sqlite. On a runtime without it, a static import
+// stops the process before the check above can refuse the runtime.
+const { analyzeDatabase, analyzeSchema } = await import("./analyze.ts");
+const { build, migration, StatementFailures } = await import("./build.ts");
+const { init, initEmpty } = await import("./init.ts");
+const { rehearse } = await import("./rehearse.ts");
+const { parseQueryTarget, runQuery } = await import("./query.ts");
 try {
-  // Discovery must precede worker dispatch and application configuration imports.
-  const answered = discovery(args);
-  // Help and version answer before the runtime check, so a refused runtime still shows them.
-  if (answered === undefined) {
-    const refusal = runtimeRefusal(process.versions, linkedSqliteVersion());
-    if (refusal) {
-      // query reports every failure as one `error:` line and exit 2, and its
-      // callers branch on that, so the refusal takes the same form there.
-      if (queryCommand) console.error(`error: ${refusal.message}`);
-      else if (reportsJson) await printReport({ version: 1, ok: false, diagnostics: [{ code: refusal.code, message: refusal.message }] });
-      else console.error(refusal.message);
-      process.exit(queryCommand ? 2 : 1);
-    }
-  }
-  const code = answered ?? (args[0] === "rehearse" && !isReportWorker()
+  const code = args[0] === "rehearse" && !isReportWorker()
     ? await runRehearsalProcess(import.meta.filename, args, rehearsalArguments(args.slice(1)).timeoutMs)
     : machineBuild && !isReportWorker()
     ? await (() => {
@@ -423,7 +421,7 @@ try {
       // before main() imports any project code.
       await announceWorkerStarted();
       return main(args);
-    })());
+    })();
   if (isCliWorker()) await announceWorkerDone(code);
   process.exit(code);
 } catch (e) {

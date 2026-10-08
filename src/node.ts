@@ -5,12 +5,12 @@
 // reports the same constraint messages, and the guard trigger raises the
 // same way.
 // Boundary: the shim only. Nothing here composes SQL, and nothing here is
-// for a Worker; this file imports node:sqlite.
+// for a Worker; this file is typed against node:sqlite.
 import type { DatabaseSync } from "node:sqlite";
 import type { AdapterOptions, Database } from "./index.ts";
 import { durable, migrate as migrateStorage, type MigrationFile, type MigrationOptions, type StorageLike } from "./durable.ts";
 import { namedSlots } from "./build/scan.ts";
-import { runtimeRefusal } from "./runtime/runtime-check.ts";
+import { linkedSqliteVersion, runtimeRefusal } from "./runtime/runtime-check.ts";
 
 export function node(db: DatabaseSync, options: AdapterOptions = {}): Database {
   // Checked once here, at construction, so solarsql query and any script
@@ -18,24 +18,6 @@ export function node(db: DatabaseSync, options: AdapterOptions = {}): Database {
   const refusal = runtimeRefusal(process.versions, linkedSqliteVersion());
   if (refusal) throw refusal;
   return durable(storageOf(db), options);
-}
-
-// Every DatabaseSync in a process links the same SQLite. A fresh in-memory
-// connection reads its version without a statement on the caller's
-// database, which can be closed or not yet open. getBuiltinModule() keeps
-// node:sqlite a type import, so solarsql/node still loads on a runtime
-// without node:sqlite, as it did before this check read SQLite.
-function linkedSqliteVersion(): string | null {
-  try {
-    const probe = new (process.getBuiltinModule("node:sqlite").DatabaseSync)(":memory:");
-    try {
-      return String(probe.prepare("select sqlite_version() as version").get()!.version);
-    } finally {
-      probe.close();
-    }
-  } catch {
-    return null;
-  }
 }
 
 // Apply the migration files this database has not applied yet, in name

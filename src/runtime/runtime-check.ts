@@ -1,8 +1,6 @@
-// Responsibility: decide whether this process may run node() and the CLI,
-// from the runtime's process.versions and the SQLite version node:sqlite
-// reports (ADR 0129, ADR 0145).
-// Boundary: a pure function of strings. No process access and no
-// node:sqlite import, so a table of versions can drive the test.
+// Responsibility: decide whether this process may run node() and the CLI
+// (ADR 0129, ADR 0145).
+// Boundary: no static node:sqlite import, so a runtime without it loads this file.
 export const NODE_RANGE = "^24.20.0 || >=26.7.0";
 
 // The SQLite version this release's pinned workerd builds against (from
@@ -28,6 +26,26 @@ const OTHER_RUNTIMES = [["bun", "Bun"], ["deno", "Deno"]] as const;
 const REQUIREMENT = `solarsql requires Node ${NODE_RANGE} and node:sqlite on SQLite ${WORKERD_SQLITE_VERSION} or later, the SQLite that workerd runs in the release's tests.`;
 
 const SQLITE_FLOOR = numbers(WORKERD_SQLITE_VERSION)!;
+
+// Every DatabaseSync in a process links the same SQLite. A fresh in-memory
+// connection reads its version without a statement on a caller's database,
+// which can be closed or not yet open.
+export function linkedSqliteVersion(): string | null {
+  // Node before 20.16 and 22.3 has no getBuiltinModule(), and a runtime
+  // without node:sqlite gets undefined from it; @types/node admits neither.
+  const sqlite = process.getBuiltinModule?.("node:sqlite");
+  if (sqlite === undefined) return null;
+  try {
+    const probe = new sqlite.DatabaseSync(":memory:");
+    try {
+      return String(probe.prepare("select sqlite_version() as version").get()!.version);
+    } finally {
+      probe.close();
+    }
+  } catch {
+    return null;
+  }
+}
 
 // `sqlite` is null when the caller could not read a version from node:sqlite.
 export function runtimeRefusal(versions: { readonly node: string; readonly bun?: string; readonly deno?: string }, sqlite: string | null): UnsupportedRuntimeError | null {
