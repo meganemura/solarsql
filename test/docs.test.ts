@@ -1,7 +1,8 @@
 // The skill is the usage documentation (ADR 0038), and this keeps it honest:
 // every reference is linked from SKILL.md, every relative link under skills/
 // and in the README resolves, and every message fragment in build.md's
-// table appears in the source of the build.
+// table appears in the source of the build. The ADR index in docs/README.md
+// is where a reader starts, so it lists every ADR file and nothing else.
 import { test } from "vitest";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -15,6 +16,12 @@ const links = (file: string): string[] => [...readFileSync(file, "utf8").matchAl
 test("every reference is linked from SKILL.md", () => {
   const linked = new Set(links(join(skill, "SKILL.md")));
   for (const f of readdirSync(join(skill, "references"))) assert.ok(linked.has(`references/${f}`), `${f} is not linked from SKILL.md`);
+});
+
+test("the ADR index in docs/README.md links every ADR file, and only those", () => {
+  const indexed = [...new Set(links(join(root, "docs/README.md")).filter((l) => l.startsWith("adr/")))].sort();
+  const files = readdirSync(join(root, "docs/adr")).filter((f) => f.endsWith(".md")).map((f) => `adr/${f}`).sort();
+  assert.deepEqual(indexed, files);
 });
 
 test("every relative link in the skill and the README resolves", () => {

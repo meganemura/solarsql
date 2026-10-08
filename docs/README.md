@@ -154,6 +154,8 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0139](adr/0139-rehearsal-reports-a-primary-key-row-diff.md) | Rehearsal reports rows inserted, updated, and deleted, by primary key |
 | [0140](adr/0140-file-backed-reads-wait-out-a-held-sqlite-lock.md) | A file-backed read-only open waits out a held SQLite lock |
 | [0141](adr/0141-mutation-testing-with-stryker-and-the-vitest-runner.md) | Mutation testing runs on StrykerJS with the vitest runner |
+| [0142](adr/0142-a-generated-migration-is-replayed-before-it-is-written.md) | A generated migration is replayed before it is written, and a view's triggers move with the view |
+| [0143](adr/0143-a-file-that-drops-a-view-records-the-views-triggers.md) | A file that drops a view records the view's triggers |
 | [0145](adr/0145-the-runtime-check-names-the-runtime-and-reads-the-sqlite-build.md) | The runtime check names the runtime and reads the SQLite build |
 
 ## Measurements
