@@ -25,6 +25,9 @@ export default {
     "test/**",
     "example/**",
     "spike/**",
+    // The nukadoko scenario runs the packed CLI as a process, like test/slow.
+    "features/**",
+    "nukadoko.config.ts",
     // Runner config, not a product module. Leaving it declared pulled it
     // into the layer order with zero imports.
     "vitest.config.ts",

@@ -18,7 +18,9 @@
     "src",
     "spike",
     "test",
-    "example"
+    "example",
+    "features",
+    "nukadoko.config.ts"
   ],
   "exclude": [
     "spike/stale-type",

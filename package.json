@@ -62,6 +62,7 @@
     "prepublishOnly": "npm run build",
     "test": "vitest run --project unit",
     "test:all": "vitest run",
+    "test:scenarios": "nuka check && nuka run features",
     "typecheck": "tsc --noEmit",
     "archstrict": "archstrict check",
     "test:mutation": "stryker run"
@@ -73,6 +74,7 @@
     "@types/node": "26.4.0",
     "archstrict": "0.1.0",
     "miniflare": "5.20260828.0-alpha",
+    "nukadoko": "0.14.0",
     "stryker-agent-reporter": "0.1.0",
     "typescript": "7.0.2",
     "vitest": "4.1.11",

@@ -1,11 +1,11 @@
-# The tests, the typecheck, the module-boundary check, and the example's build
-# check, on the two Node lines the package supports and on each line's floor
+# The tests, the typecheck, the module-boundary check, the example's build
+# check, and the nukadoko scenario, on the two Node lines the package supports and on each line's floor
 # (24.20.0 and 26.7.0, ubuntu only, ADR 0129). The remote test skips without
 # SOLARSQL_REMOTE_URL, so this workflow needs no secret.
 name: ci
 on:
   push:
-    branches: [main]
+    branches: [main, queue]
   pull_request:
     branches: [main]
 permissions:
@@ -40,3 +40,8 @@ jobs:
         if: runner.os != 'Windows'
       - run: npm run test:all
       - run: node src/build/cli.ts build --check example/solarsql.config.ts
+      # The scenario starts npm through spawn, and Node refuses to spawn
+      # npm.cmd without a shell. The packed install it checks does not
+      # depend on the OS; the pack test covers Windows.
+      - run: npm run test:scenarios
+        if: runner.os != 'Windows'

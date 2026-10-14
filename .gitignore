@@ -29,3 +29,6 @@ example/.dev.vars
 # Stryker sandbox and reports
 .stryker-tmp/
 reports/
+
+# nukadoko run records
+.nukadoko/
