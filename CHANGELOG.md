@@ -4,6 +4,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+## 0.8.0 (2026-10-16)
+
 - Changed: a version bump in `package.json` that lands on `main` now starts the publish workflow. After `npm publish`, the workflow creates the `v<version>` tag and the GitHub release. Nobody pushes a release tag by hand.
 - Changed: `node()` and the CLI read the SQLite version that node:sqlite runs, and refuse a version older than 3.53.4, the SQLite of the pinned workerd. A Node build in the supported range that links an older system SQLite is now refused.
 - Changed: The refusal names the runtime. On Bun, it says that the process runs Bun, gives the Node version that Bun reports and Bun's SQLite version, and says that solarsql does not support Bun. Before, it named the runtime only by the Node version that it imitates.
