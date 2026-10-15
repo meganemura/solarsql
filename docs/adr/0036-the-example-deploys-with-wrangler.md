@@ -37,6 +37,11 @@ Measured on the remote database: `begin` and `Begin` fail, `BEGIN` passes, and t
 The migration writer now writes both keywords uppercase in every trigger, whatever the declaration wrote; the diff compares them case-insensitively, so nothing else changes.
 A Worker's own D1 binding takes one statement per call and is not affected.
 
+To re-measure, run `test/remote.test.ts` with `SOLARSQL_REMOTE_URL` and `SOLARSQL_REMOTE_TOKEN` set, from a checkout whose `example/wrangler.jsonc` names the deployed database and whose wrangler is logged in.
+Its test "D1's HTTP API refuses a trigger body opened by a lowercase begin, and takes BEGIN" creates a throwaway table with `wrangler d1 execute DB --remote`, expects a trigger opened by `begin` to fail with `incomplete input` and the same trigger opened by `BEGIN` to pass, and drops the table even when an assertion fails.
+Only the 2026-09-06 measurement above is recorded here so far.
+On local D1 (`wrangler d1 execute --local`, wrangler 4.127.1), the trigger opened by `begin` is accepted whole, so no local run stands in for this one.
+
 The second remote run applied a table rebuild: migration 0005 puts a CHECK on `customers.name`, and customers is referenced by orders, so the file opens with `pragma defer_foreign_keys = on`, drops the view, copies the rows, drops and renames the table, and creates the view again.
 wrangler applied the file in one call; the schema after shows the CHECK and the recreated view, no `_solarsql_*` table remained, and the CHECK arrives as a value on both targets.
 The tables were empty when it ran there, so the copy moved no row; the rows under a rebuild are checked on Miniflare's D1 in `test/d1-migration.test.ts` (now `test/miniflare/d1-migration.test.ts`) and by the migration property test.
