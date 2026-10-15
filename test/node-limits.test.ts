@@ -31,8 +31,15 @@ function recurse(depth: number): void {
   db.exec("insert into t (n) values (0)");
 }
 
+// SQLite 3.54.0 reworded the trigger-depth refusal. Node 26.12.0 ships 3.54.0
+// and says "triggers nested too deep"; 3.53.4 (Node 24.20.0 to 26.11.1, and
+// the pinned workerd) says "too many levels of trigger recursion". Both are
+// the same SQLITE_LIMIT_TRIGGER_DEPTH refusal, and either one still tells it
+// apart from a syntax or constraint error.
+const triggerDepthRefusal = /too many levels of trigger recursion|triggers nested too deep/;
+
 test("an 11-deep recursive trigger fails under NODE_TEST_LIMITS", () => {
-  assert.throws(() => recurse(11), /too many levels of trigger recursion/);
+  assert.throws(() => recurse(11), triggerDepthRefusal);
 });
 
 test("a 10-deep recursive trigger passes under NODE_TEST_LIMITS", () => {

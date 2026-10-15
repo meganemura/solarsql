@@ -24,8 +24,10 @@
 // complex" (50 passes); an 11-deep recursive trigger (pragma
 // recursive_triggers=on; a trigger re-inserting a row until a depth guard
 // stops it) fails with "too many levels of trigger recursion" (10 passes) --
-// the same messages Miniflare's D1 and a Durable Object give
-// (test/miniflare/node-limits.test.ts pins the match).
+// the same messages Miniflare's D1 and a Durable Object give. SQLite 3.54.0
+// (Node 26.12.0) words the trigger refusal "triggers nested too deep"; the
+// boundary is the same. test/miniflare/node-limits.test.ts pins the
+// boundaries on D1 and a Durable Object, not the message text.
 //
 // The row-size limit is left out on purpose: the candidates measured are
 // 2 MiB (Cloudflare's docs), 4 MiB (the pinned workerd release) and 8 MiB +
