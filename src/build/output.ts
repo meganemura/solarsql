@@ -28,12 +28,16 @@ export function writeGeneratedFile(path: string, text: string): void {
   }
 }
 
+// BigInt stats, because a Number cannot hold every 64-bit file id. On NTFS
+// the id is the MFT record's sequence number above bit 48 and its index
+// below it, so once a reused record's sequence number reaches 32, adjacent
+// records round to the same Number and two distinct files compare equal.
 export function protectInputs(output: string, inputs: readonly string[]): void {
   const target = destination(output);
-  const outputFile = statSync(target, { throwIfNoEntry: false });
+  const outputFile = statSync(target, { throwIfNoEntry: false, bigint: true });
   for (const input of inputs) {
     const source = destination(input);
-    const inputFile = statSync(source, { throwIfNoEntry: false });
+    const inputFile = statSync(source, { throwIfNoEntry: false, bigint: true });
     if (target === source || (outputFile && inputFile && outputFile.dev === inputFile.dev && outputFile.ino === inputFile.ino)) {
       throw new BuildError("The generated output must differ from every input and SQLite companion file, including file aliases.");
     }

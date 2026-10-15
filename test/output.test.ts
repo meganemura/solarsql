@@ -33,6 +33,19 @@ test("input protection accepts distinct missing and existing paths", () => {
   }
 });
 
+test("input protection accepts every pair of files created one after another", () => {
+  // Consecutive files tend to take adjacent file ids. A file id read as a
+  // Number loses its low bits on NTFS once a reused record's sequence number
+  // is high, so neighbours compared equal there; a run of files gives that
+  // rounding many chances to show up on such a volume.
+  const dir = directory();
+  const files = Array.from({ length: 64 }, (_, i) => join(dir, `file-${i}`));
+  for (const file of files) writeFileSync(file, file);
+  for (let i = 1; i < files.length; i++) {
+    assert.doesNotThrow(() => protectInputs(files[i]!, [files[i - 1]!]), `${files[i]} and ${files[i - 1]}`);
+  }
+});
+
 test("input protection rejects hard links and symbolic aliases", () => {
   const dir = directory();
   const source = join(dir, "source");
