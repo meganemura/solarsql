@@ -25,7 +25,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { D1Harness, type WorkerOk } from "../d1.ts";
-import { WORKERD_SQLITE_VERSION } from "../../src/runtime/runtime-check.ts";
+import { runtimeRefusal, WORKERD_SQLITE_VERSION } from "../../src/runtime/runtime-check.ts";
 
 async function d1SqliteVersion(): Promise<string> {
   const d1 = new D1Harness();
@@ -87,7 +87,7 @@ async function durableObjectSqliteVersion(): Promise<string> {
   }
 }
 
-test("node:sqlite, D1, and a Durable Object each report the pinned WORKERD_SQLITE_VERSION", async () => {
+test("D1 and a Durable Object report the pinned WORKERD_SQLITE_VERSION, and node:sqlite a SQLite the runtime check accepts", async () => {
   const nodeVersion = new DatabaseSync(":memory:").prepare("select sqlite_version() as v").get()!.v as string;
   const [d1Version, doVersion] = await Promise.all([d1SqliteVersion(), durableObjectSqliteVersion()]);
   console.log(`sqlite versions: node:sqlite=${nodeVersion} D1=${d1Version} DurableObject=${doVersion}`);
@@ -99,9 +99,15 @@ test("node:sqlite, D1, and a Durable Object each report the pinned WORKERD_SQLIT
   // version does, and the message tells a reader which case it is.
   const mismatch = (label: string, v: string) =>
     `${label} reported "${v}", not the pinned WORKERD_SQLITE_VERSION "${WORKERD_SQLITE_VERSION}". If the probe itself stopped answering, fix the probe; otherwise follow docs/releasing.md's MODULE.bazel step and update the constant.`;
-  assert.equal(nodeVersion, WORKERD_SQLITE_VERSION, mismatch("node:sqlite", nodeVersion));
   assert.equal(d1Version, WORKERD_SQLITE_VERSION, mismatch("D1", d1Version));
   assert.equal(doVersion, WORKERD_SQLITE_VERSION, mismatch("the Durable Object", doVersion));
+  // The constant is workerd's SQLite, and for node:sqlite it is a floor, open
+  // upward (ADR 0129, ADR 0145 rule 3): a Node release can ship a newer
+  // SQLite before the pinned workerd does, as Node 26.12.0 did with 3.54.0.
+  // So node:sqlite is held to the gate node() and the CLI apply, and an
+  // older SQLite (a floor job on a stale Node) still fails here. Whether a
+  // newer one still returns what workerd returns is the value probes' job.
+  assert.equal(runtimeRefusal(process.versions, nodeVersion)?.message ?? null, null);
 });
 
 // Each probe below is a value two SQLite builds sharing a major.minor were
