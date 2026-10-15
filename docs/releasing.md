@@ -1,10 +1,10 @@
 # Releasing
 
-Each version step below is one command, run from the root, on a clean `main` that CI has passed.
+Each version step below is one command, run from the root, on a clean checkout of the `queue` tip that CI has passed.
 
-solarsql is already on npm. Pushing a `v*` tag runs [`.github/workflows/publish.yml`](../.github/workflows/publish.yml). The workflow checks out that tag, installs from the lockfile, builds `dist/`, runs the release checks, and runs `npm publish`. npm authenticates with the GitHub Actions OIDC token for the GitHub Environment `publish`. Provenance is attached because the repository and the package are public. The environment is the human gate: the job waits until it is approved. The workflow stores no `NPM_TOKEN`, and the repository secrets do not keep one.
+solarsql is already on npm. A push to `main` that changes `package.json` runs [`.github/workflows/publish.yml`](../.github/workflows/publish.yml). Its `check` job reads the `package.json` version and looks for the tag `v<version>`. When that tag exists, the push releases nothing, so a dependency bump or a revert of a version bump publishes nothing. When the tag is missing, the publish job checks out the pushed commit, installs from the lockfile, builds `dist/`, runs the release checks, and runs `npm publish`. npm authenticates with the GitHub Actions OIDC token for the GitHub Environment `publish`. Provenance is attached because the repository and the package are public. The environment is the human gate: the job waits until it is approved. The workflow stores no `NPM_TOKEN`, and the repository secrets do not keep one.
 
-After `npm publish` succeeds, the workflow's `release` job creates the GitHub release from that version's CHANGELOG section. That job is separate so `contents: write` never sits on the job that holds the npm OIDC token. The publish job keeps `contents: read`.
+After `npm publish` succeeds, the workflow's `release` job creates the tag `v<version>` at the published commit and the GitHub release from that version's CHANGELOG section. Nobody pushes a `v*` tag by hand. That job is separate so `contents: write` never sits on the job that holds the npm OIDC token. The publish job keeps `contents: read`.
 
 `dist/` is gitignored. The workflow builds it, then `prepublishOnly` builds it again, and that tree is what is published. The tarball contains `src/`, `dist/`, `skills/`, `README.md`, `CHANGELOG.md`, `LICENSE`, `llms.txt`, and `package.json`.
 
@@ -24,9 +24,9 @@ A trusted publisher created after 3 September 2026 starts with `npm stage publis
 
 `package.json` `repository.url` is `git+https://github.com/meganemura/solarsql.git`. npm checks that URL against the workflow repository.
 
-The package already exists, so there is no token bootstrap and no short-lived `NPM_TOKEN`. The Environment `publish` already requires reviewers. Recreate that environment, with required reviewers, only when it is missing.
+The package already exists, so there is no token bootstrap and no short-lived `NPM_TOKEN`. The Environment `publish` already requires reviewers. Recreate that environment, with required reviewers, only when it is missing. The publish job runs from a push to `main`, not from a tag, so the environment must allow deployments from `main`. If its deployment branches and tags rule names only `v*` tags, the owner changes it to allow `main`.
 
-An approval appears only after a `v*` tag starts `publish.yml` and the job waits on the Environment `publish`. Registering the trusted publisher does not queue an approval.
+An approval appears only after a version bump on `main` starts `publish.yml` and the job waits on the Environment `publish`. Registering the trusted publisher does not queue an approval.
 
 After a successful OIDC `npm publish`, the package settings can require two-factor authentication and disallow token publishing. That hardening is optional. The trusted publisher keeps working.
 
@@ -53,10 +53,10 @@ The constant is also the lowest SQLite that `node()` and the CLI accept (ADR 014
 2. `npm install --package-lock-only` so the lock file carries the version.
 3. `npm run test:all`, `npm run typecheck`, and `npm run archstrict`.
 4. `npm pack --dry-run` and read the file list: `src/`, `dist/`, `skills/`, `README.md`, `CHANGELOG.md`, `LICENSE`, `llms.txt`, `package.json`, and nothing else.
-5. Commit as `release: <version>`, tag `v<version>`, push the commit and the tag. The tag without the leading `v` is the `package.json` version; the workflow stops when they differ. The tag push starts the workflow.
-6. Approve the `publish` environment on that Actions run. The approval is requested when the job waits on that environment, which happens only after the tag starts `publish.yml`. The workflow uses Node 24 on `ubuntu-latest` with the npm registry URL set. It requires Node 24.20 or later on that line and npm 11.5.1 or later. It runs `npm ci`, `npm run build`, a check that the build did not modify tracked files, `npm run typecheck`, `npm run archstrict`, and `npm run test:all`, then `npm publish`. `dist/` is gitignored, so the new build output is expected and is what gets packed.
-7. After `npm publish` succeeds, the workflow's `release` job creates the GitHub release. It extracts only that version's section from `CHANGELOG.md` (the whole file would carry every version), and it skips a release that already exists, so re-running the tag is safe. If that job fails, extract the section and create the release by hand: `awk -v v=<version> '$0 ~ "^## " v " " {in_version=1; next} /^## /{in_version=0} in_version' CHANGELOG.md > notes.md`, then `gh release create v<version> --title v<version> --notes-file notes.md --verify-tag`.
+5. Commit the version, the lock file, and the CHANGELOG section together as `release: <version>`. Land that commit on `main` through `queue`: push it to `queue`, and once CI passes on the queue tip, `main` fast-forwards to it. The push to `main` that changes `package.json` starts the workflow. Do not push a tag: the workflow creates it.
+6. Approve the `publish` environment on that Actions run. The approval is requested when the job waits on that environment, which happens only after a version bump on `main` starts `publish.yml`. The workflow uses Node 24 on `ubuntu-latest` with the npm registry URL set. It requires Node 24.20 or later on that line and npm 11.5.1 or later. It runs `npm ci`, `npm run build`, a check that the build did not modify tracked files, `npm run typecheck`, `npm run archstrict`, and `npm run test:all`, then `npm publish`. `dist/` is gitignored, so the new build output is expected and is what gets packed.
+7. After `npm publish` succeeds, the workflow's `release` job creates the tag `v<version>` at the published commit and the GitHub release. It extracts only that version's section from `CHANGELOG.md` (the whole file would carry every version), and it skips a release that already exists, so re-running the job is safe. If that job fails, re-run only that job from the Actions page. A new run of the whole workflow finds no tag and runs `npm publish` again, which npm refuses for a version it already holds. The owner can also extract the section and create the release by hand: `awk -v v=<version> '$0 ~ "^## " v " " {in_version=1; next} /^## /{in_version=0} in_version' CHANGELOG.md > notes.md`, then `gh release create v<version> --title v<version> --notes-file notes.md --target <published commit>`.
 
-The owner performs the commit, the tag, the push, and the approval of the `publish` environment. The workflow then publishes to npm and creates the GitHub release.
+The owner approves the `publish` environment. The workflow then publishes to npm, creates the tag, and creates the GitHub release.
 A change of the repository's visibility is the owner's to run.
 When the repository is public, private vulnerability reporting stays on in its Security settings; `SECURITY.md` points there, and the setting exists only for a public repository.

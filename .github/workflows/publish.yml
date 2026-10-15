@@ -1,7 +1,10 @@
-# Publishes the npm package for a v* tag, then creates the GitHub release.
-# solarsql is already on npm, so this file is the only publish path.
-# Boundary: the publish job checks out the tag, builds dist/, runs the
-# release checks, and npm publish. The GitHub Environment `publish`
+# Publishes the npm package when a push to main brings a package.json
+# version that has no v<version> tag yet, then creates that tag and the
+# GitHub release. solarsql is already on npm, so this file is the only
+# publish path. Nobody pushes a v* tag by hand: the release job creates it
+# at the published commit, so the tag can only name a version npm has.
+# Boundary: the publish job checks out the pushed commit, builds dist/, runs
+# the release checks, and npm publish. The GitHub Environment `publish`
 # approves that job. npm authenticates with that environment's OIDC token.
 # This file never reads NPM_TOKEN. The release job runs only after publish
 # succeeds, and it is the only job with contents:write, so that token never
@@ -10,11 +13,42 @@ name: Publish
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
+    paths: [package.json]
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
 
 jobs:
+  # A push to main that changes package.json releases its version when no
+  # v<version> tag exists yet. Any other change to package.json, such as a
+  # dependency bump, finds the tag and releases nothing.
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read the version and look for its tag
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v${version}" >/dev/null 2>&1; then
+            echo "v${version} already exists, so this push releases nothing"
+          else
+            echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+          fi
+
   publish:
+    needs: check
+    if: needs.check.outputs.tag != ''
     runs-on: ubuntu-latest
     environment: publish
     permissions:
@@ -51,14 +85,6 @@ jobs:
           }
           EOF
 
-      - name: Match the tag to package.json
-        run: |
-          tag="${GITHUB_REF_NAME#v}"
-          pkg="$(node -p "require('./package.json').version")"
-          if [ "$tag" != "$pkg" ]; then
-            echo "tag ${GITHUB_REF_NAME} does not match package.json version ${pkg}" >&2
-            exit 1
-          fi
 
       - run: npm ci
       - run: npm run build
@@ -67,7 +93,7 @@ jobs:
           # The package publishes compiled dist/, and dist/ is gitignored, so
           # the build is expected to add untracked output. Refuse only
           # modifications of files git already tracks. Do not treat a new
-          # dist/ as a dirty tagged tree.
+          # dist/ as a dirty release tree.
           if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
             git status --porcelain --untracked-files=no
             exit 1
@@ -80,7 +106,7 @@ jobs:
   # Runs only after npm publish succeeds. A separate job keeps contents:write
   # away from the job that holds the npm OIDC token.
   release:
-    needs: publish
+    needs: [check, publish]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -90,17 +116,20 @@ jobs:
       - name: Create the GitHub release from this version's changelog section
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check.outputs.tag }}
+          PUBLISHED_SHA: ${{ github.sha }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${TAG#v}"
           # --notes-file CHANGELOG.md would carry every version, so extract only this one.
           awk -v v="$version" '$0 ~ "^## " v " " {in_version=1; next} /^## /{in_version=0} in_version' CHANGELOG.md > notes.md
           if [ ! -s notes.md ]; then
             echo "CHANGELOG.md has no section for ${version}" >&2
             exit 1
           fi
-          # A re-run of the same tag must not fail on a release that already exists.
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            echo "release ${GITHUB_REF_NAME} already exists"
+          # A re-run must not fail on a release that already exists.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release ${TAG} already exists"
             exit 0
           fi
-          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag
+          # The tag does not exist yet: this call creates it on the published commit.
+          gh release create "$TAG" --title "$TAG" --notes-file notes.md --target "$PUBLISHED_SHA"

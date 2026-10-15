@@ -49,7 +49,7 @@ If you want to cite an internal document, write its substance in place instead.
 - Adapter and runtime imports of compiler types also fail the architecture check. Worker code rejects recognized Node builtin imports. ADR 0144 records the host tags and the unresolved `node:sqlite` limitation.
 - `npx vitest run --project slow test/slow/architecture.test.ts` runs architecture positive controls through `archstrict simulate`, without writing source files.
 - `.github/workflows/ci.yml` runs the tests, the typecheck, the module-boundary check (not on Windows, where archstrict 0.1.0 misreads paths), the example's `build --check`, and the nukadoko scenario (not on Windows) for every push to main or queue and every pull request to main: Node 26 on ubuntu, macOS, and Windows, and Node 24 and each line's floor (24.20.0 and 26.7.0) on ubuntu only.
-- `.github/workflows/publish.yml` runs on a `v*` tag. The steps and the trusted-publisher settings are in `docs/releasing.md`.
+- `.github/workflows/publish.yml` runs on a push to `main` that changes `package.json`. When no `v<version>` tag exists yet, it publishes after the `publish` environment is approved, then creates the tag and the GitHub release. Nobody pushes a `v*` tag by hand. The steps and the trusted-publisher settings are in `docs/releasing.md`.
 - `npm run build` emits `dist/` from `src/`. Only the pack test needs it.
 - `node src/build/cli.ts build example/solarsql.config.ts` builds the example from the source.
 - `solarsql init <module>` starts a project; it needs the installed package, so `test/slow/pack.test.ts` is where it runs.
