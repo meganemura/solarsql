@@ -139,6 +139,7 @@ The order in a file: drop views, drop triggers and indexes, drop tables, change 
 Before the build uses a plan, it replays the existing files and the generated statements and compares the result with the declared schema. When they differ, `build`, `build --check`, and `migration` stop with an error that names each object that differs, and `migration` writes no migration file (ADR 0142).
 The rebuild check examines incoming references in both schemas, including self-references; cheap ALTER changes remain available.
 A trigger in a migration file opens with an uppercase `BEGIN`, whatever the declaration wrote: D1's HTTP API keeps a trigger body whole only then.
+A `--> statement-breakpoint` line follows each statement in a generated file. wrangler and `migrate()` read it as a comment, and Void splits the file into one D1 batch at it ([deploy](deploy.md), "Deploy on Void").
 Automatic table rebuilds preserve accessible row identifiers when both schema versions have them. If all identifier spellings are shadowed, or a new primary-key alias would change their meaning, generation reports a blocked migration; keep an accessible identifier with the same alias, or write an explicit migration with a data check (ADR 0068). When both versions use AUTOINCREMENT, rebuilds also retain its sequence history, including deleted maximum identifiers (ADR 0070).
 
 ## A project where every database starts empty

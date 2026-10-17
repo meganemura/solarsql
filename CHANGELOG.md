@@ -4,6 +4,8 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Changed: a generated migration file ends each statement with a `--> statement-breakpoint` line. Void applies such a file to D1 as one batch; before, it sent a file with a trigger to D1 `exec()`, which fails on a multi-line statement. wrangler, `migrate()`, and the build read the line as a comment. Files already written do not change (ADR 0146). The deploy reference has a new section, "Deploy on Void".
+
 ## 0.8.0 (2026-10-16)
 
 - Changed: a version bump in `package.json` that lands on `main` now starts the publish workflow. After `npm publish`, the workflow creates the `v<version>` tag and the GitHub release. Nobody pushes a release tag by hand.

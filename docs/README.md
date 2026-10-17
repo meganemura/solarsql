@@ -158,6 +158,7 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0143](adr/0143-a-file-that-drops-a-view-records-the-views-triggers.md) | A file that drops a view records the view's triggers |
 | [0144](adr/0144-worker-and-compiler-import-boundaries.md) | Worker and compiler import boundaries |
 | [0145](adr/0145-the-runtime-check-names-the-runtime-and-reads-the-sqlite-build.md) | The runtime check names the runtime and reads the SQLite build |
+| [0146](adr/0146-a-statement-breakpoint-line-follows-each-generated-statement.md) | A statement-breakpoint line follows each generated statement |
 
 ## Measurements
 
