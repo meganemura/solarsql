@@ -74,7 +74,7 @@
     "@types/node": "26.4.0",
     "archstrict": "0.1.0",
     "miniflare": "5.20260828.0-alpha",
-    "nukadoko": "0.17.0",
+    "nukadoko": "0.18.0",
     "stryker-agent-reporter": "0.1.0",
     "typescript": "7.0.2",
     "vitest": "4.1.11",
