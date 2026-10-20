@@ -32,6 +32,14 @@ const cases = [
     pointer: "edges.point[0]",
   },
   {
+    // archstrict resolves node:sqlite, which has no bare-name alias, from 0.4.0 on.
+    name: "a Worker adapter cannot import node:sqlite",
+    path: "src/durable.ts",
+    statement: 'import { DatabaseSync } from "node:sqlite";',
+    rule: "point-rule",
+    pointer: "edges.point[0]",
+  },
+  {
     name: "shared SQL text cannot import Node builtin types",
     path: "src/build/scan.ts",
     statement: 'import type { Performance } from "node:perf_hooks";',
@@ -40,9 +48,8 @@ const cases = [
   },
 ];
 
-// archstrict 0.1.0 reports false surface bypasses on Windows.
 for (const proof of cases) {
-  test.skipIf(process.platform === "win32")(proof.name, () => {
+  test(proof.name, () => {
     const file = new URL(`../../${proof.path}`, import.meta.url);
     const content = `${proof.statement}\n${readFileSync(file, "utf8")}`;
     const child = spawnSync(process.execPath, [cli, "simulate", "--json"], {

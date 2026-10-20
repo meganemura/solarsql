@@ -84,3 +84,5 @@ The project typecheck, configuration typecheck, and 1,372 unit tests passed.
 One unit test was skipped because its remote execution target was not configured.
 
 Rechecked on 2026-10-09, with the later changes on main: the architecture check reports 29 modules, 80 edges, and no violations or todo entries, and the four positive controls pass. The CLI now imports `build.ts` with a dynamic import after the runtime check (ADR 0145, amendment of 2026-10-09), so the CLI line of the first example no longer matches `cli.ts`.
+
+Rechecked on 2026-10-20 with archstrict 0.4.0: `node:sqlite` resolves and carries `pkg:node`, so the host rule now covers it, and a fifth positive control imports it into `src/durable.ts`. The false public-file bypasses on Windows are gone, so CI runs the architecture check and the positive controls on Windows too. The check reports 29 modules, 80 edges, and no violations or todo entries. The `io:pure` point rules stay: they name the builtins the schema diff must not grow, and `facts.ts` and `migration.ts` still import `node:sqlite`.

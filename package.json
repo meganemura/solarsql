@@ -73,7 +73,7 @@
     "@stryker-mutator/core": "10.0.0",
     "@stryker-mutator/vitest-runner": "10.0.0",
     "@types/node": "26.4.0",
-    "archstrict": "0.1.0",
+    "archstrict": "0.4.0",
     "miniflare": "5.20260828.0-alpha",
     "nukadoko": "0.18.0",
     "stryker-agent-reporter": "0.1.0",
