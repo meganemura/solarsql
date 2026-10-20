@@ -159,6 +159,7 @@ A change to a decision gets a new ADR that supersedes the old one.
 | [0144](adr/0144-worker-and-compiler-import-boundaries.md) | Worker and compiler import boundaries |
 | [0145](adr/0145-the-runtime-check-names-the-runtime-and-reads-the-sqlite-build.md) | The runtime check names the runtime and reads the SQLite build |
 | [0146](adr/0146-a-statement-breakpoint-line-follows-each-generated-statement.md) | A statement-breakpoint line follows each generated statement |
+| [0147](adr/0147-node-accepts-bun-and-the-cli-does-not.md) | node() accepts Bun 1.4.3 or later, and the CLI does not |
 
 ## Measurements
 

@@ -86,15 +86,19 @@ test('node() checks the runtime without a statement on the database it wraps, wh
   } finally { raw.close(); }
 });
 
-test('node() refuses a process whose versions name Bun, with the SQLite that node:sqlite runs', () => {
+test('node() refuses a Bun release below its range, with the SQLite that node:sqlite runs', () => {
   const raw = new DatabaseSync(':memory:');
   const sqlite = String(raw.prepare('select sqlite_version() as version').get()!.version);
-  Object.defineProperty(process.versions, 'bun', { value: '1.4.2', configurable: true, enumerable: true });
+  // On real Bun the key exists, and deleting it would hide Bun from the
+  // rest of the file; put back whatever was there.
+  const real = Object.getOwnPropertyDescriptor(process.versions, 'bun');
+  Object.defineProperty(process.versions, 'bun', { value: '1.4.2', configurable: true, enumerable: true, writable: true });
   try {
     assert.throws(() => node(raw), (e: unknown) => e instanceof UnsupportedRuntimeError && e.code === 'UNSUPPORTED_RUNTIME'
       && e.message.includes(`This process runs Bun 1.4.2, which reports Node ${process.versions.node}, and its node:sqlite runs SQLite ${sqlite}.`));
   } finally {
-    delete (process.versions as Record<string, string | undefined>).bun;
+    if (real) Object.defineProperty(process.versions, 'bun', real);
+    else delete (process.versions as Record<string, string | undefined>).bun;
     raw.close();
   }
 });
@@ -1535,7 +1539,8 @@ test("a file that only repoints which of a parent table's two UNIQUE columns a c
 
 // The adapter checks the running Node version when it is built. The test
 // replaces process.versions.node for one call and restores it afterwards.
-test("node() refuses to build an adapter on a Node version below the floor", () => {
+// Bun's verdict does not read that version (ADR 0147), so the Bun job skips it.
+test.skipIf(process.versions.bun !== undefined)("node() refuses to build an adapter on a Node version below the floor", () => {
   const previous = Object.getOwnPropertyDescriptor(process.versions, "node")!;
   const db = new DatabaseSync(":memory:");
   Object.defineProperty(process.versions, "node", { ...previous, value: "24.19.0" });

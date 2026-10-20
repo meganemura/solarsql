@@ -367,7 +367,7 @@ const queryCommand = args[0] === "query";
 const reportsJson = args.includes("--json") || ["inspect", "rehearse", "analyze"].includes(args[0] ?? "");
 const answered = discovery(args);
 if (answered !== undefined) process.exit(answered);
-const refusal = runtimeRefusal(process.versions, linkedSqliteVersion());
+const refusal = runtimeRefusal(process.versions, linkedSqliteVersion(), "cli");
 if (refusal) {
   if (queryCommand) process.exit(queryFailure(refusal.message));
   if (reportsJson) await printReport({ version: 1, ok: false, diagnostics: [{ code: refusal.code, message: refusal.message }] });

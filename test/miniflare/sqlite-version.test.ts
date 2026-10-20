@@ -107,7 +107,7 @@ test("D1 and a Durable Object report the pinned WORKERD_SQLITE_VERSION, and node
   // So node:sqlite is held to the gate node() and the CLI apply, and an
   // older SQLite (a floor job on a stale Node) still fails here. Whether a
   // newer one still returns what workerd returns is the value probes' job.
-  assert.equal(runtimeRefusal(process.versions, nodeVersion)?.message ?? null, null);
+  assert.equal(runtimeRefusal(process.versions, nodeVersion, "node()")?.message ?? null, null);
 });
 
 // Each probe below is a value two SQLite builds sharing a major.minor were

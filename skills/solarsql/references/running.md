@@ -67,12 +67,13 @@ A caller that picks a data source by table, or drops a cache by table, reads it 
 | `durable(ctx.storage, options?)` from `solarsql/durable` | a Durable Object's SQLite storage | one `transactionSync` |
 | `node(db, options?)` from `solarsql/node` | a `DatabaseSync` of node:sqlite | one savepoint; an enclosing transaction remains owned by its caller |
 
-`node()` and the CLI run only on Node `^24.20.0 || >=26.7.0` whose node:sqlite runs SQLite 3.53.4 or later (ADR 0145).
+`node()` and the CLI run on Node `^24.20.0 || >=26.7.0` whose node:sqlite runs SQLite 3.53.4 or later (ADR 0145). `node()` also runs on Bun `>=1.4.3` whose node:sqlite runs SQLite 3.53.4 or later; the CLI does not (ADR 0147).
 On another runtime, `node()` throws `UnsupportedRuntimeError` from `solarsql/node`, with the code `UNSUPPORTED_RUNTIME`.
 The message names the runtime, the Node version it reports, and its SQLite version.
 The CLI prints the same message as one line on stderr and exits 1. For `--json`, `inspect`, `rehearse`, and `analyze`, whose failures are JSON reports, the report's diagnostic code is `UNSUPPORTED_RUNTIME`. `query` prints the line after `error: ` and exits 2, the same as its other failures.
 On a runtime with no node:sqlite (Node 20, Bun 1.3.14), the CLI and `node()` refuse it in the same way, and the message says that its node:sqlite reports no SQLite version. A program that imports node:sqlite itself fails at that import, before solarsql runs.
-Bun is not supported, and the check refuses it by name: Bun sets `process.versions.node` to the Node release it imitates, which says nothing about its node:sqlite, and on macOS 26.5.2 Bun 1.4.2's node:sqlite runs the system SQLite 3.51.0. Run the tests and the scripts with Node.
+On Bun, the check reads Bun's own version, not the Node release that Bun reports in `process.versions.node`. `node()` refuses a Bun release before 1.4.3, and one whose node:sqlite runs a SQLite older than 3.53.4 (on macOS 26.5.2, Bun 1.4.2's node:sqlite runs the system SQLite 3.51.0). The CLI refuses Bun by name: the build depends on Node's module loader. CI runs the adapter's tests on Bun 1.4.3 on Linux only.
+On Bun, `close()` on a `DatabaseSync` that prepared a statement keeps the file open, with its lock, until the garbage collector runs; `node()` prepares statements. A step that needs the file released after the close, such as changing its journal mode or deleting it on Windows, runs in a new process or on Node.
 
 A caller that keeps its own reference to a session made with `withSession(...)` can call `.getBookmark()` on that reference directly, after passing the same object into `d1()` -- `d1()` never takes ownership of it. That bookmark is how a caller builds read-your-writes consistency across two requests: read it after the first request's call, and pass it into the next request's own `withSession(bookmark)`. solarsql does not wrap `getBookmark()` on `D1Like` or `Database`, since the caller already holds what it needs.
 

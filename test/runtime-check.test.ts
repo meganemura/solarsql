@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { runtimeRefusal } from "../src/runtime/runtime-check.ts";
 
 const REQUIREMENT = "solarsql requires Node ^24.20.0 || >=26.7.0 and node:sqlite on SQLite 3.53.4 or later, the SQLite that workerd runs in the release's tests.";
+const BUN_REQUIREMENT = "node() runs on Node ^24.20.0 || >=26.7.0 or Bun >=1.4.3, with node:sqlite on SQLite 3.53.4 or later, the SQLite that workerd runs in the release's tests.";
 
 const cli = fileURLToPath(new URL("../src/build/cli.ts", import.meta.url));
 const asBun = `data:text/javascript,${encodeURIComponent('Object.defineProperty(process.versions, "bun", { value: "1.4.2", enumerable: true, configurable: true });')}`;
@@ -39,7 +40,7 @@ test("the CLI prints the refusal as one line, and as a JSON diagnostic when it r
   const probe = new DatabaseSync(":memory:");
   const sqlite = String(probe.prepare("select sqlite_version() as version").get()!.version);
   probe.close();
-  const message = `${REQUIREMENT} This process runs Bun 1.4.2, which reports Node ${process.versions.node}, and its node:sqlite runs SQLite ${sqlite}. solarsql does not support Bun; run the command with Node.`;
+  const message = `${REQUIREMENT} This process runs Bun 1.4.2, which reports Node ${process.versions.node}, and its node:sqlite runs SQLite ${sqlite}. The solarsql CLI does not support Bun; run the command with Node.`;
   const human = runAsBun("build");
   assert.deepEqual([human.status, human.stdout, human.stderr], [1, "", `${message}\n`]);
   const machine = runAsBun("build", "--json");
@@ -68,36 +69,36 @@ test("the CLI answers --version without the runtime check", () => {
 });
 
 test("Node 26.7.0 with SQLite 3.53.4 is accepted", () => {
-  assert.equal(runtimeRefusal({ node: "26.7.0" }, "3.53.4"), null);
+  assert.equal(runtimeRefusal({ node: "26.7.0" }, "3.53.4", "cli"), null);
 });
 
-test("Bun is refused by name, with the Node version it reports and its own SQLite", () => {
-  const refusal = runtimeRefusal({ node: "26.3.0", bun: "1.4.2" }, "3.51.0");
+test("the CLI refuses Bun by name, with the Node version it reports and its own SQLite", () => {
+  const refusal = runtimeRefusal({ node: "26.3.0", bun: "1.4.2" }, "3.51.0", "cli");
   assert.equal(refusal?.code, "UNSUPPORTED_RUNTIME");
   assert.equal(refusal?.name, "UnsupportedRuntimeError");
-  assert.equal(refusal?.message, `${REQUIREMENT} This process runs Bun 1.4.2, which reports Node 26.3.0, and its node:sqlite runs SQLite 3.51.0. solarsql does not support Bun; run the command with Node.`);
+  assert.equal(refusal?.message, `${REQUIREMENT} This process runs Bun 1.4.2, which reports Node 26.3.0, and its node:sqlite runs SQLite 3.51.0. The solarsql CLI does not support Bun; run the command with Node.`);
 });
 
 test("Deno is refused by name", () => {
-  assert.equal(runtimeRefusal({ node: "24.20.0", deno: "2.5.0" }, "3.53.4")?.message,
+  assert.equal(runtimeRefusal({ node: "24.20.0", deno: "2.5.0" }, "3.53.4", "cli")?.message,
     `${REQUIREMENT} This process runs Deno 2.5.0, which reports Node 24.20.0, and its node:sqlite runs SQLite 3.53.4. solarsql does not support Deno; run the command with Node.`);
 });
 
 test("a Node release outside the range is refused with its SQLite", () => {
-  assert.equal(runtimeRefusal({ node: "24.18.0" }, "3.53.1")?.message,
+  assert.equal(runtimeRefusal({ node: "24.18.0" }, "3.53.1", "cli")?.message,
     `${REQUIREMENT} This process runs Node 24.18.0, and its node:sqlite runs SQLite 3.53.1. Install a Node release in that range.`);
 });
 
 test("a Node release in the range whose node:sqlite runs an older SQLite is refused", () => {
-  assert.equal(runtimeRefusal({ node: "26.7.0" }, "3.50.4")?.message,
+  assert.equal(runtimeRefusal({ node: "26.7.0" }, "3.50.4", "cli")?.message,
     `${REQUIREMENT} This process runs Node 26.7.0, but its node:sqlite runs SQLite 3.50.4, older than 3.53.4. A Node build that links a system SQLite can do this; use an official Node build.`);
 });
 
 test("a node:sqlite that gives no SQLite version is refused, and a Bun process is still named first", () => {
-  assert.equal(runtimeRefusal({ node: "26.7.0" }, null)?.message,
+  assert.equal(runtimeRefusal({ node: "26.7.0" }, null, "cli")?.message,
     `${REQUIREMENT} This process runs Node 26.7.0, but its node:sqlite reports no SQLite version.`);
-  assert.equal(runtimeRefusal({ node: "26.3.0", bun: "1.3.14" }, null)?.message,
-    `${REQUIREMENT} This process runs Bun 1.3.14, which reports Node 26.3.0, and its node:sqlite reports no SQLite version. solarsql does not support Bun; run the command with Node.`);
+  assert.equal(runtimeRefusal({ node: "26.3.0", bun: "1.3.14" }, null, "cli")?.message,
+    `${REQUIREMENT} This process runs Bun 1.3.14, which reports Node 26.3.0, and its node:sqlite reports no SQLite version. The solarsql CLI does not support Bun; run the command with Node.`);
 });
 
 const nodeCases: [string, boolean][] = [
@@ -114,7 +115,7 @@ const nodeCases: [string, boolean][] = [
 
 for (const [version, accepted] of nodeCases) {
   test(`Node ${version} is ${accepted ? "accepted" : "refused"}`, () => {
-    assert.equal(runtimeRefusal({ node: version }, "3.53.4") === null, accepted);
+    assert.equal(runtimeRefusal({ node: version }, "3.53.4", "cli") === null, accepted);
   });
 }
 
@@ -132,7 +133,7 @@ const sqliteCases: [string, boolean][] = [
 
 for (const [version, accepted] of sqliteCases) {
   test(`SQLite ${version} is ${accepted ? "accepted" : "refused"} on Node 26.7.0`, () => {
-    assert.equal(runtimeRefusal({ node: "26.7.0" }, version) === null, accepted);
+    assert.equal(runtimeRefusal({ node: "26.7.0" }, version, "cli") === null, accepted);
   });
 }
 
@@ -144,7 +145,7 @@ test("patch digits and trailing text preserve the major and minor decision", asy
     const suffix = tc.draw(gs.text({ maxSize: 30 }));
     for (const [base, accepted] of [["24.19", false], ["24.20", true], ["25.20", false], ["26.6", false], ["26.7", true], ["27.0", true]] as const) {
       const version = `${base}.${patch}${suffix}`;
-      const refusal = runtimeRefusal({ node: version }, "3.53.4");
+      const refusal = runtimeRefusal({ node: version }, "3.53.4", "cli");
       if (accepted) assert.equal(refusal, null);
       else assert.ok(refusal?.message.includes(`This process runs Node ${version}, and`));
     }
@@ -159,18 +160,67 @@ test("the SQLite floor compares each component as a number", async () => {
     const minor = tc.draw(gs.integers({ minValue: 0, maxValue: 120 }));
     const patch = tc.draw(gs.integers({ minValue: 0, maxValue: 120 }));
     const atLeastFloor = major > 3 || (major === 3 && (minor > 53 || (minor === 53 && patch >= 4)));
-    assert.equal(runtimeRefusal({ node: "26.7.0" }, `${major}.${minor}.${patch}`) === null, atLeastFloor);
+    assert.equal(runtimeRefusal({ node: "26.7.0" }, `${major}.${minor}.${patch}`, "cli") === null, atLeastFloor);
   });
 });
 
-test("a Bun process is refused whatever Node version it reports and whatever SQLite it runs", async () => {
+test("the CLI refuses a Bun process whatever Node version it reports and whatever SQLite it runs", async () => {
   const { test: property } = await import("@hegeldev/hegel");
   const gs = await import("@hegeldev/hegel/generators");
   property(tc => {
     const bun = tc.draw(gs.text({ maxSize: 20 }));
     const reported = tc.draw(gs.sampledFrom(["24.20.0", "26.3.0", "26.7.0", "99.0.0"]));
     const sqlite = tc.draw(gs.sampledFrom(["3.51.0", "3.53.4", "3.60.0"]));
-    const refusal = runtimeRefusal({ node: reported, bun }, sqlite);
+    const refusal = runtimeRefusal({ node: reported, bun }, sqlite, "cli");
     assert.ok(refusal?.message.includes(`This process runs Bun ${bun}, which reports Node ${reported}, and its node:sqlite runs SQLite ${sqlite}.`));
+  });
+});
+
+test("node() accepts Bun 1.4.3 with SQLite 3.53.4, whatever Node version it reports", () => {
+  assert.equal(runtimeRefusal({ node: "26.3.0", bun: "1.4.3" }, "3.53.4", "node()"), null);
+  assert.equal(runtimeRefusal({ node: "24.3.0", bun: "1.5.0" }, "3.54.0", "node()"), null);
+});
+
+test("node() refuses a Bun release below the range, with the Node version it reports and its SQLite", () => {
+  assert.equal(runtimeRefusal({ node: "26.3.0", bun: "1.4.2" }, "3.53.2", "node()")?.message,
+    `${BUN_REQUIREMENT} This process runs Bun 1.4.2, which reports Node 26.3.0, and its node:sqlite runs SQLite 3.53.2. Install a Bun release in that range, or run with Node.`);
+  assert.equal(runtimeRefusal({ node: "24.3.0", bun: "1.3.14" }, null, "node()")?.message,
+    `${BUN_REQUIREMENT} This process runs Bun 1.3.14, which reports Node 24.3.0, and its node:sqlite reports no SQLite version. Install a Bun release in that range, or run with Node.`);
+});
+
+test("node() refuses a Bun release in the range whose node:sqlite runs an older SQLite or none", () => {
+  assert.equal(runtimeRefusal({ node: "26.3.0", bun: "1.4.3" }, "3.51.0", "node()")?.message,
+    `${BUN_REQUIREMENT} This process runs Bun 1.4.3, but its node:sqlite runs SQLite 3.51.0, older than 3.53.4. A Bun build that links a system SQLite can do this; run with Node.`);
+  assert.equal(runtimeRefusal({ node: "26.3.0", bun: "1.4.3" }, null, "node()")?.message,
+    `${BUN_REQUIREMENT} This process runs Bun 1.4.3, but its node:sqlite reports no SQLite version.`);
+});
+
+test("node() still refuses Deno by name", () => {
+  assert.equal(runtimeRefusal({ node: "24.20.0", deno: "2.5.0" }, "3.53.4", "node()")?.message,
+    `${REQUIREMENT} This process runs Deno 2.5.0, which reports Node 24.20.0, and its node:sqlite runs SQLite 3.53.4. solarsql does not support Deno; run the command with Node.`);
+});
+
+test("node() accepts a Bun process exactly when its release and its SQLite are at or above their floors", async () => {
+  const { test: property } = await import("@hegeldev/hegel");
+  const gs = await import("@hegeldev/hegel/generators");
+  property(tc => {
+    const release = [tc.draw(gs.integers({ minValue: 0, maxValue: 2 })), tc.draw(gs.integers({ minValue: 0, maxValue: 12 })), tc.draw(gs.integers({ minValue: 0, maxValue: 12 }))];
+    const engine = [3, tc.draw(gs.integers({ minValue: 40, maxValue: 60 })), tc.draw(gs.integers({ minValue: 0, maxValue: 12 }))];
+    const reported = tc.draw(gs.sampledFrom(["24.3.0", "26.3.0", "99.0.0", "not-a-version"]));
+    const bunOk = release[0]! > 1 || (release[0] === 1 && (release[1]! > 4 || (release[1] === 4 && release[2]! >= 3)));
+    const sqliteOk = engine[1]! > 53 || (engine[1] === 53 && engine[2]! >= 4);
+    assert.equal(runtimeRefusal({ node: reported, bun: release.join(".") }, engine.join("."), "node()") === null, bunOk && sqliteOk);
+  });
+});
+
+test("node() and the CLI give the same verdict and message to a process that does not name Bun", async () => {
+  const { test: property } = await import("@hegeldev/hegel");
+  const gs = await import("@hegeldev/hegel/generators");
+  property(tc => {
+    const node = tc.draw(gs.sampledFrom(["24.19.0", "24.20.0", "26.7.0", "27.1.0", "not-a-version"]));
+    const sqlite = tc.draw(gs.sampledFrom(["3.51.0", "3.53.4", "3.60.0", null]));
+    const deno = tc.draw(gs.sampledFrom([undefined, "2.5.0"]));
+    const versions = deno === undefined ? { node } : { node, deno };
+    assert.equal(runtimeRefusal(versions, sqlite, "node()")?.message, runtimeRefusal(versions, sqlite, "cli")?.message);
   });
 });

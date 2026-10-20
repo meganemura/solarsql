@@ -15,7 +15,7 @@ import { linkedSqliteVersion, runtimeRefusal } from "./runtime/runtime-check.ts"
 export function node(db: DatabaseSync, options: AdapterOptions = {}): Database {
   // Checked once here, at construction, so solarsql query and any script
   // that builds a Database through node() are covered without a second check.
-  const refusal = runtimeRefusal(process.versions, linkedSqliteVersion());
+  const refusal = runtimeRefusal(process.versions, linkedSqliteVersion(), "node()");
   if (refusal) throw refusal;
   return durable(storageOf(db), options);
 }

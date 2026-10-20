@@ -4,6 +4,9 @@ The format follows Keep a Changelog, and the versions follow SemVer. Before 1.0,
 
 ## Unreleased
 
+- Changed: `node()` accepts Bun 1.4.3 or later whose node:sqlite runs SQLite 3.53.4 or later. It reads Bun's own version, not the Node version that Bun reports, and refuses an earlier Bun release with a message that names the Bun range. The CLI still refuses Bun, and its message now says that the solarsql CLI does not support Bun. Deno is refused as before. On Bun, `close()` on a database that `node()` used keeps the file open until garbage collection (ADR 0147).
+- Added: a CI job runs the node adapter's tests on Bun 1.4.3 on Linux, through `npm run test:bun`.
+
 - Changed: a generated migration file ends each statement with a `--> statement-breakpoint` line. Void applies such a file to D1 as one batch; before, it sent a file with a trigger to D1 `exec()`, which fails on a multi-line statement. wrangler, `migrate()`, and the build read the line as a comment. Files already written do not change (ADR 0146). The deploy reference has a new section, "Deploy on Void".
 
 ## 0.8.0 (2026-10-16)
