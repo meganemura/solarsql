@@ -55,6 +55,15 @@ C database <workspace> <file.sqlite>
 
 Scaffolding for `query`: creates the file in the project with every `migrations/*.sql` applied in order. solarsql itself applies no migration (wrangler applies them to D1), so this stands in for that step. It refuses a file that exists.
 
+A scenario step runs against the same workspace, because its handle is a path:
+
+```sh
+npx nuka do <step> --args '{"project":"<project>"}'
+npx nuka do <next step> --use <step record id>
+```
+
+`nuka do` runs the step under its contract and prints a step record with the processes it ran. `--use` fills the next step's `from` keys from that record, so a scenario's When and Then can run one at a time on a workspace an agent has already driven by hand. For example, after `C cli <workspace> -- init orders`: `add-note-column` with `{"project":"<project>","module":"modules/orders"}`, then `run-build-check` with `{"project":"<project>"}`, then `assert-check-refused --use <run-build-check's record id>`.
+
 The feature files give the exact commands per feature.
 
 ## Evidence
