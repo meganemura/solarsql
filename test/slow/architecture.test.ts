@@ -62,10 +62,12 @@ for (const proof of cases) {
     const result: unknown = JSON.parse(child.stdout);
     assert.ok(typeof result === "object" && result !== null && "added" in result && Array.isArray(result.added));
     const added: unknown[] = result.added;
+    // archstrict reports a path with forward slashes on every platform.
+    const expected = fileURLToPath(file).replaceAll("\\", "/");
     assert.ok(added.some(violation => {
       if (typeof violation !== "object" || violation === null) return false;
       if (!("rule" in violation) || violation.rule !== proof.rule) return false;
-      if (!("path" in violation) || violation.path !== fileURLToPath(file)) return false;
+      if (!("path" in violation) || violation.path !== expected) return false;
       if (!("config" in violation) || typeof violation.config !== "object" || violation.config === null) return false;
       return "pointer" in violation.config && violation.config.pointer === proof.pointer;
     }), child.stdout);
