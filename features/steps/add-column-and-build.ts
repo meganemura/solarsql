@@ -1,17 +1,9 @@
 import { defineStep, z } from "nukadoko";
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import initProject from "./init-project.ts";
 import installPackedSolarsql from "./install-packed-solarsql.ts";
+import { addNoteColumn } from "./lib/note-column.ts";
 import { runSolarsql } from "../../.claude/skills/verify-solarsql/lib/workspace.ts";
 
-function replaceOnce(source: string, from: string, to: string): string {
-  if (!source.includes(from)) throw new Error(`module.ts no longer holds ${JSON.stringify(from)}; init's template changed`);
-  return source.replace(from, to);
-}
-
-// The edit is to the text init wrote, so a change to that template fails this
-// step by name instead of producing a schema nobody meant.
 export default defineStep({
   description:
     "Adds `note text` to the orders table in module.ts, adds `note` to the `all` query's select list, and runs `solarsql build`.",
@@ -25,12 +17,8 @@ export default defineStep({
   from: { project: [installPackedSolarsql, "project"], module: [initProject, "module"] },
   mutates: true,
   async run({}, { project, module }) {
-    const path = join(project, module, "module.ts");
-    let source = readFileSync(path, "utf8");
-    source = replaceOnce(source, "check (done in (0, 1))\n", "check (done in (0, 1)),\n    note text\n");
-    source = replaceOnce(source, "all: `select id, name, done from orders", "all: `select id, name, done, note from orders");
-    writeFileSync(path, source);
+    const column = addNoteColumn(project, module);
     const { exitCode, stdout, stderr } = await runSolarsql(project, ["build"]);
-    return { exitCode, output: `${stdout}${stderr}`, column: "note" };
+    return { exitCode, output: `${stdout}${stderr}`, column };
   },
 });

@@ -6,7 +6,7 @@
 
 - `build-types` writes the generated file, and a new nullable column is `string | null` in the query's row type. Proven by `features/start-change-migrate.feature:8`.
 - `build-pending` exits 0 on a schema change with no migration yet, prints the statement, and names `npx solarsql migration <name>`. Proven by `features/start-change-migrate.feature:8`.
-- `build-check-stale` exits 1 on an edit the build has not seen, writes no file, and names `npx solarsql build`. Proven by: no scenario.
+- `build-check-stale` exits 1 on an edit the build has not seen, writes no file, and names `npx solarsql build`. Proven by `features/check-before-build.feature:8`.
 - `build-check-pending` exits 1 after the build while a migration is still pending. Proven by: no scenario.
 - `build-current` exits 0 with `migrations are current` once the migration exists. Proven by `features/start-change-migrate.feature:8`.
 - `build-json` prints the generation result as JSON. Proven by: no scenario.
