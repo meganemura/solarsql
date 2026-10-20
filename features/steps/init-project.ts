@@ -1,6 +1,6 @@
 import { defineStep, z } from "nukadoko";
 import installPackedSolarsql from "./install-packed-solarsql.ts";
-import { runSolarsql } from "../../.claude/skills/verify-solarsql/lib/workspace.ts";
+import { runSolarsql } from "./lib/workspace.ts";
 
 // init refuses a project that already has a config, so its exit code is
 // checked here rather than in a later step.

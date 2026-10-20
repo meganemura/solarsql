@@ -1,5 +1,5 @@
 import { defineStep, z } from "nukadoko";
-import { createProject, packCheckout } from "../../.claude/skills/verify-solarsql/lib/workspace.ts";
+import { createProject, packCheckout } from "./lib/workspace.ts";
 
 // The packed tarball is what a user installs, so the scenario does too: a
 // file left out of the package's files list fails here and nowhere else. The

@@ -1,6 +1,6 @@
 import { defineStep, z } from "nukadoko";
 import installPackedSolarsql from "./install-packed-solarsql.ts";
-import { runSolarsql } from "../../.claude/skills/verify-solarsql/lib/workspace.ts";
+import { runSolarsql } from "./lib/workspace.ts";
 
 // The file name comes from the command's own `wrote` line, so the step
 // follows the numbering solarsql chose.

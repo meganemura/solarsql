@@ -9,7 +9,7 @@ solarsql's user surface is the `solarsql` command a project runs through `npx`, 
 
 One **workspace** is the instance this skill drives: a directory that holds this checkout's tarball, a project with that tarball installed, and an `evidence/` directory. It lives across many calls, so an agent can run a command, edit a file, and run the next command against the same state. `bin/control-solarsql.ts` is the control CLI. Every command takes the workspace path that `launch` printed.
 
-The control CLI and the nukadoko steps in `features/steps/` share `lib/workspace.ts`. An operation tried here by hand is the same function a scenario runs. The feature map in [features/](features/README.md) links each sub-feature to the scenario that proves it.
+The control CLI and the nukadoko steps share `features/steps/lib/workspace.ts`. An operation tried here by hand is the same function a scenario runs. The library sits with the steps so that the acceptance scenarios do not depend on this skill's directory. The feature map in [features/](features/README.md) links each sub-feature to the scenario that proves it.
 
 Below, `C` stands for `node .claude/skills/verify-solarsql/bin/control-solarsql.ts`, run from the checkout root.
 
@@ -83,4 +83,4 @@ Removes `app/` and `pack/` and keeps `evidence/` and the marker file. Every comm
 ## Helpers
 
 - `bin/control-solarsql.ts`: the control CLI. Executable; `C` with no arguments prints its usage.
-- `lib/workspace.ts`: `packCheckout`, `createProject`, `runSolarsql`, `installedVersion`, `checkoutFingerprint`, `projectFiles`, `changedFiles`, `applyMigrations`. Processes go through nukadoko's `runCommand`, so a step that calls them lists each process in its step record, and a call from the control CLI runs unrecorded.
+- `features/steps/lib/workspace.ts`: `packCheckout`, `createProject`, `runSolarsql`, `installedVersion`, `checkoutFingerprint`, `projectFiles`, `changedFiles`, `applyMigrations`. Processes go through nukadoko's `runCommand`, imported directly: a step that calls them lists each process in its step record, and a call from the control CLI runs the same way, unrecorded. No runner is passed in.

@@ -2,12 +2,12 @@
 // The control CLI for verifying solarsql: one workspace is one long-lived
 // instance (a project with this checkout's tarball installed) that an agent
 // drives, inspects, and tears down across many calls. Each command is a thin
-// layer over lib/workspace.ts. It never touches a directory it did not create:
+// layer over features/steps/lib/workspace.ts. It never touches a directory it did not create:
 // every command but launch requires the workspace's marker file.
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
-import { CHECKOUT, applyMigrations, changedFiles, checkoutFingerprint, createProject, installedVersion, packCheckout, projectFiles, runSolarsql } from "../lib/workspace.ts";
+import { CHECKOUT, applyMigrations, changedFiles, checkoutFingerprint, createProject, installedVersion, packCheckout, projectFiles, runSolarsql } from "../../../../features/steps/lib/workspace.ts";
 
 const MARKER = "verify-solarsql.json";
 

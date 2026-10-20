@@ -1,5 +1,5 @@
 import { defineStep, z } from "nukadoko";
-import { changedFiles, projectFiles, runSolarsql } from "../../.claude/skills/verify-solarsql/lib/workspace.ts";
+import { changedFiles, projectFiles, runSolarsql } from "./lib/workspace.ts";
 import installPackedSolarsql from "./install-packed-solarsql.ts";
 
 // The files are compared around the command itself, so "writes nothing" is

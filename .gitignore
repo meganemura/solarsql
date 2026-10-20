@@ -8,7 +8,7 @@ node_modules/
 dist/
 
 # Local Claude Code settings for this checkout. The verification skill under
-# .claude/skills/ is shared, and the scenarios import its library.
+# .claude/skills/ is shared.
 .claude/*
 !.claude/skills/
 

@@ -2,7 +2,7 @@ import { defineStep, z } from "nukadoko";
 import initProject from "./init-project.ts";
 import installPackedSolarsql from "./install-packed-solarsql.ts";
 import { addNoteColumn } from "./lib/note-column.ts";
-import { runSolarsql } from "../../.claude/skills/verify-solarsql/lib/workspace.ts";
+import { runSolarsql } from "./lib/workspace.ts";
 
 export default defineStep({
   description:

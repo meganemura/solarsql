@@ -12,7 +12,7 @@ import { join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 
-export const CHECKOUT = fileURLToPath(new URL("../../../..", import.meta.url));
+export const CHECKOUT = fileURLToPath(new URL("../../..", import.meta.url));
 
 export interface CliResult {
   exitCode: number;
