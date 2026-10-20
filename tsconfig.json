@@ -20,6 +20,7 @@
     "test",
     "example",
     "features",
+    ".claude/skills",
     "nukadoko.config.ts"
   ],
   "exclude": [

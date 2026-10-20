@@ -1,6 +1,6 @@
 import { defineStep, z } from "nukadoko";
 import installPackedSolarsql from "./install-packed-solarsql.ts";
-import { runSolarsql } from "./solarsql-cli.ts";
+import { runSolarsql } from "../../.claude/skills/verify-solarsql/lib/workspace.ts";
 
 // The file name comes from the command's own `wrote` line, so the step
 // follows the numbering solarsql chose.
@@ -20,6 +20,6 @@ export default defineStep({
     const migration = await runSolarsql(project, ["migration", "add_note"]);
     const file = /^wrote (migrations\/\S+\.sql)$/m.exec(migration.stdout)?.[1] ?? "";
     const build = await runSolarsql(project, ["build"]);
-    return { migrationExit: migration.exitCode, file, buildExit: build.exitCode, buildOutput: build.stdout };
+    return { migrationExit: migration.exitCode, file, buildExit: build.exitCode, buildOutput: `${build.stdout}${build.stderr}` };
   },
 });

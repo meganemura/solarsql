@@ -1,6 +1,6 @@
 import { defineStep, z } from "nukadoko";
 import installPackedSolarsql from "./install-packed-solarsql.ts";
-import { runSolarsql } from "./solarsql-cli.ts";
+import { runSolarsql } from "../../.claude/skills/verify-solarsql/lib/workspace.ts";
 
 // init refuses a project that already has a config, so its exit code is
 // checked here rather than in a later step.
@@ -12,8 +12,8 @@ export default defineStep({
   from: { project: [installPackedSolarsql, "project"] },
   mutates: true,
   async run({}, { project }) {
-    const { exitCode, stdout } = await runSolarsql(project, ["init", "orders"]);
-    if (exitCode !== 0) throw new Error(`init exited ${exitCode}:\n${stdout}`);
+    const { exitCode, stdout, stderr } = await runSolarsql(project, ["init", "orders"]);
+    if (exitCode !== 0) throw new Error(`init exited ${exitCode}:\n${stdout}${stderr}`);
     return { module: "modules/orders" };
   },
 });
