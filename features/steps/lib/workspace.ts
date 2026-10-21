@@ -5,7 +5,7 @@
 // It knows nothing of nukadoko's fixtures: a caller hands it directories. Its
 // processes go through nukadoko's runCommand, which a step's record measures
 // and which runs unmeasured anywhere else.
-import { runCommand } from "nukadoko";
+import { runCommand, type ProcessFiles } from "nukadoko";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -18,6 +18,9 @@ export interface CliResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+  /** What the command changed under the project, as nukadoko measured it;
+   * present inside a step. */
+  files?: ProcessFiles;
 }
 
 // npm pack builds dist/ through prepack, so the tarball is what a user would
@@ -47,7 +50,7 @@ export async function runSolarsql(project: string, args: string[]): Promise<CliR
   const manifest = JSON.parse(readFileSync(join(project, "node_modules/solarsql/package.json"), "utf8")) as { bin: { solarsql: string } };
   const { NODE_TEST_CONTEXT: _, ...env } = process.env;
   const result = await runCommand(process.execPath, [join(project, "node_modules/solarsql", manifest.bin.solarsql), ...args], { cwd: project, env });
-  return { exitCode: result.exitCode ?? 1, stdout: result.stdout, stderr: result.stderr };
+  return { exitCode: result.exitCode ?? 1, stdout: result.stdout, stderr: result.stderr, ...(result.files === undefined ? {} : { files: result.files }) };
 }
 
 export function installedVersion(project: string): string | undefined {
