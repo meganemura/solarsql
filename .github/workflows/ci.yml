@@ -37,11 +37,7 @@ jobs:
       - run: npm run archstrict
       - run: npm run test:all
       - run: node src/build/cli.ts build --check example/solarsql.config.ts
-      # The scenario starts npm through spawn, and Node refuses to spawn
-      # npm.cmd without a shell. The packed install it checks does not
-      # depend on the OS; the pack test covers Windows.
       - run: npm run test:scenarios
-        if: runner.os != 'Windows'
   bun:
     runs-on: ubuntu-latest
     steps:
