@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defineConfig, type FixtureDeps, type UseFn } from "nukadoko";
+import { defineConfig } from "nukadoko";
 import { packCheckout } from "./features/steps/lib/workspace.ts";
 
 // Every config key nukadoko reads, one line each: docs/spec.md, "Environments and secrets"
@@ -12,7 +12,7 @@ export default defineConfig({
     // change during a run, so one tarball serves every scenario; each one
     // still installs it into a project of its own.
     packedSolarsql: [
-      async ({}: FixtureDeps, use: UseFn) => {
+      async ({}, use) => {
         const dir = mkdtempSync(join(tmpdir(), "solarsql-scenario-pack-"));
         await use(await packCheckout(dir));
         rmSync(dir, { recursive: true, force: true });
